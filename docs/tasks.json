@@ -301,10 +301,10 @@
     "type": "task",
     "title": "Build validation on real toolchain",
     "desc": "รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.",
-    "status": "todo",
+    "status": "done",
     "priority": "critical",
     "module": "infra",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   },
   {
@@ -323,10 +323,10 @@
     "type": "bug",
     "title": "Blocked: cargo/rustc toolchain is not ready/installed",
     "desc": "สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้",
-    "status": "blocked",
+    "status": "done",
     "priority": "critical",
     "module": "infra",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   }
 ]

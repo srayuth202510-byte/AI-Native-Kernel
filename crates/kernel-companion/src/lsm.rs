@@ -65,6 +65,12 @@ impl LsmAttachment {
     }
 }
 
+impl Default for LsmAttachment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn attach_lsm_hooks(_engine: Arc<LsmPolicyEngine>) -> Result<LsmAttachment> {
     Ok(LsmAttachment::new())
 }

@@ -37,11 +37,19 @@ impl PolicyEngine {
 
     #[must_use]
     pub fn authorize(&self, token: &CapabilityToken, scope: &Scope, capability: &str) -> bool {
-        matches!(self.decision(token, scope, capability), PolicyDecision::Allow)
+        matches!(
+            self.decision(token, scope, capability),
+            PolicyDecision::Allow
+        )
     }
 
     #[must_use]
-    pub fn decision(&self, token: &CapabilityToken, scope: &Scope, capability: &str) -> PolicyDecision {
+    pub fn decision(
+        &self,
+        token: &CapabilityToken,
+        scope: &Scope,
+        capability: &str,
+    ) -> PolicyDecision {
         if !token.is_valid()
             || !token.allows(capability)
             || !self.allowed_capabilities.contains(capability)

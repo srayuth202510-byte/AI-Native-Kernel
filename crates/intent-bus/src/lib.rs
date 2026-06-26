@@ -1,10 +1,10 @@
 #![deny(unsafe_code)]
 
-use std::future::Future;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Intent {
@@ -88,7 +88,9 @@ pub enum IntentBusError {
 impl IntentFilter {
     #[must_use]
     pub fn passes(&self, intent: &Intent) -> bool {
-        self.conditions.iter().all(|condition| condition.matches(intent))
+        self.conditions
+            .iter()
+            .all(|condition| condition.matches(intent))
     }
 }
 
@@ -189,9 +191,14 @@ mod tests {
             "user",
         );
 
-        bus.publish(intent.clone()).await.expect("publish should succeed");
+        bus.publish(intent.clone())
+            .await
+            .expect("publish should succeed");
 
-        let received = subscriber.receive().await.expect("subscriber should receive intent");
+        let received = subscriber
+            .receive()
+            .await
+            .expect("subscriber should receive intent");
         assert_eq!(received.id, intent.id);
         assert_eq!(received.intent_type, intent.intent_type);
         assert_eq!(received.payload, intent.payload);

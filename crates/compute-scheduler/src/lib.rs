@@ -100,7 +100,9 @@ mod tests {
         ];
 
         assert_eq!(
-            scheduler.choose_best(&candidates).expect("candidate should exist"),
+            scheduler
+                .choose_best(&candidates)
+                .expect("candidate should exist"),
             ComputeTarget::Gpu
         );
     }

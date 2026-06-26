@@ -29,6 +29,11 @@ impl WarmStore {
         self.entries.len()
     }
 
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn evict_oldest(&mut self) -> Option<(String, Vec<u8>)> {
         let key = self.order.pop_front()?;
         self.entries.remove(&key).map(|value| (key, value))

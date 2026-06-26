@@ -733,10 +733,10 @@ const SEED = [
         "type": "task",
         "title": "Build validation on real toolchain",
         "desc": "รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.",
-        "status": "todo",
+        "status": "done",
         "priority": "critical",
         "module": "infra",
-        "assignee": "—",
+        "assignee": "AI",
         "due": ""
     },
     {
@@ -755,10 +755,10 @@ const SEED = [
         "type": "bug",
         "title": "Blocked: cargo/rustc toolchain is not ready/installed",
         "desc": "สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้",
-        "status": "blocked",
+        "status": "done",
         "priority": "critical",
         "module": "infra",
-        "assignee": "—",
+        "assignee": "AI",
         "due": ""
     }
 ];
@@ -781,6 +781,24 @@ function load() {
 }
 function save() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks: state.tasks, nextSeq: state.nextSeq }));
+    if (window.location.protocol.startsWith("http")) {
+        fetch("/api/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tasks: state.tasks })
+        })
+        .then(res => {
+            if (!res.ok) throw new Error("Sync failed");
+            return res.json();
+        })
+        .then(data => {
+            console.log("Auto-synced tasks to central tasks.json");
+        })
+        .catch(err => {
+            console.error("Auto-sync error:", err);
+            toast("⚠️ Sync to disk failed");
+        });
+    }
 }
 function nextId() {
     const n = state.nextSeq++;

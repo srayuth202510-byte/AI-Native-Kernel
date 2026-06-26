@@ -71,11 +71,21 @@ impl ContextMemoryManager {
             return Ok(value);
         }
 
-        if let Some(value) = self.warm.read().expect("warm memory lock poisoned").get(key) {
+        if let Some(value) = self
+            .warm
+            .read()
+            .expect("warm memory lock poisoned")
+            .get(key)
+        {
             return Ok(value);
         }
 
-        if let Some(value) = self.cold.read().expect("cold memory lock poisoned").get(key) {
+        if let Some(value) = self
+            .cold
+            .read()
+            .expect("cold memory lock poisoned")
+            .get(key)
+        {
             return Ok(value);
         }
 

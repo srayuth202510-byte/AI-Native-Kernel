@@ -1,5 +1,5 @@
-use crate::weights::AdaptiveWeights;
 use crate::ComputeProfile;
+use crate::weights::AdaptiveWeights;
 
 #[must_use]
 pub fn score_target(profile: ComputeProfile, weights: &AdaptiveWeights) -> f64 {

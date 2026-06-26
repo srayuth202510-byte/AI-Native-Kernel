@@ -6,7 +6,7 @@ pub mod token;
 
 use crate::audit::{AuditEntry, AuditLogger};
 use crate::policy::{PolicyDecision, PolicyEngine};
-use crate::token::{CapabilityToken, Scope};
+pub use crate::token::{CapabilityToken, Scope};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use thiserror::Error;
@@ -54,7 +54,10 @@ impl CapabilitySecurityManager {
 
     #[must_use]
     pub fn authorize_token(&self, token: &CapabilityToken, capability: &str) -> bool {
-        let allowed = token.is_valid() && self.policy_engine.authorize(token, &token.scope, capability);
+        let allowed = token.is_valid()
+            && self
+                .policy_engine
+                .authorize(token, &token.scope, capability);
         let entry = if allowed {
             AuditEntry::allowed(token.id)
         } else {
@@ -112,9 +115,9 @@ impl Default for CapabilitySecurityManager {
 
 #[cfg(test)]
 mod tests {
+    use crate::CapabilitySecurityManager;
     use crate::policy::PolicyDecision;
     use crate::token::{CapabilityToken, Scope};
-    use crate::CapabilitySecurityManager;
     use std::time::{Duration, SystemTime};
 
     #[test]

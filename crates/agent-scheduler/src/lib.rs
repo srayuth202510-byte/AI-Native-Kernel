@@ -13,7 +13,7 @@ use intent_bus::{Intent, IntentBus, IntentType};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 pub use capability_security::{CapabilityToken, Scope};
 pub use priority::{PriorityAgent, PriorityQueue};
@@ -169,34 +169,44 @@ impl AgentScheduler {
 
     pub async fn pause_agent(&self, agent_id: u64) -> Result<(), SchedulerError> {
         let mut agents = self.agents.write().await;
-        let agent = agents.get_mut(&agent_id).ok_or(SchedulerError::AgentNotFound)?;
+        let agent = agents
+            .get_mut(&agent_id)
+            .ok_or(SchedulerError::AgentNotFound)?;
 
         if agent.state != AgentState::Running {
             return Err(SchedulerError::AgentNotRunning);
         }
 
         agent.state = AgentState::Paused;
-        let _ = self.monitoring_tx.send(AgentEvent::AgentPaused(agent.clone()));
+        let _ = self
+            .monitoring_tx
+            .send(AgentEvent::AgentPaused(agent.clone()));
         Ok(())
     }
 
     pub async fn resume_agent(&self, agent_id: u64) -> Result<(), SchedulerError> {
         let mut agents = self.agents.write().await;
-        let agent = agents.get_mut(&agent_id).ok_or(SchedulerError::AgentNotFound)?;
+        let agent = agents
+            .get_mut(&agent_id)
+            .ok_or(SchedulerError::AgentNotFound)?;
 
         if agent.state != AgentState::Paused {
             return Err(SchedulerError::AgentNotPaused);
         }
 
         agent.state = AgentState::Running;
-        let _ = self.monitoring_tx.send(AgentEvent::AgentResumed(agent.clone()));
+        let _ = self
+            .monitoring_tx
+            .send(AgentEvent::AgentResumed(agent.clone()));
         Ok(())
     }
 
     pub async fn terminate_agent(&self, agent_id: u64) -> Result<(), SchedulerError> {
         let mut agents = self.agents.write().await;
         let event = {
-            let agent = agents.get_mut(&agent_id).ok_or(SchedulerError::AgentNotFound)?;
+            let agent = agents
+                .get_mut(&agent_id)
+                .ok_or(SchedulerError::AgentNotFound)?;
             agent.state = AgentState::Terminating;
             agent.clone()
         };
@@ -207,15 +217,22 @@ impl AgentScheduler {
 
     pub async fn fail_agent(&self, agent_id: u64) -> Result<(), SchedulerError> {
         let mut agents = self.agents.write().await;
-        let agent = agents.get_mut(&agent_id).ok_or(SchedulerError::AgentNotFound)?;
+        let agent = agents
+            .get_mut(&agent_id)
+            .ok_or(SchedulerError::AgentNotFound)?;
         agent.state = AgentState::Failed;
-        let _ = self.monitoring_tx.send(AgentEvent::AgentFailed(agent.clone()));
+        let _ = self
+            .monitoring_tx
+            .send(AgentEvent::AgentFailed(agent.clone()));
         Ok(())
     }
 
     pub async fn get_agent(&self, agent_id: u64) -> Result<AgentControlBlock, SchedulerError> {
         let agents = self.agents.read().await;
-        agents.get(&agent_id).cloned().ok_or(SchedulerError::AgentNotFound)
+        agents
+            .get(&agent_id)
+            .cloned()
+            .ok_or(SchedulerError::AgentNotFound)
     }
 
     pub async fn get_running_agents(&self) -> Vec<AgentControlBlock> {
@@ -244,7 +261,9 @@ impl AgentScheduler {
         self.context_memory.put(context_key.clone(), value);
 
         let mut agents = self.agents.write().await;
-        let agent = agents.get_mut(&agent_id).ok_or(SchedulerError::AgentNotFound)?;
+        let agent = agents
+            .get_mut(&agent_id)
+            .ok_or(SchedulerError::AgentNotFound)?;
         agent.context_key = Some(context_key.clone());
         let _ = self
             .monitoring_tx
@@ -276,7 +295,9 @@ impl AgentScheduler {
         self.capability_security.issue_token(token.clone());
 
         let mut agents = self.agents.write().await;
-        let agent = agents.get_mut(&agent_id).ok_or(SchedulerError::AgentNotFound)?;
+        let agent = agents
+            .get_mut(&agent_id)
+            .ok_or(SchedulerError::AgentNotFound)?;
         agent.capabilities.push(token.clone());
         let _ = self
             .monitoring_tx
@@ -314,13 +335,28 @@ mod tests {
 
         assert_eq!(scheduler.get_running_agents().await.len(), 1);
 
-        scheduler.pause_agent(agent_id).await.expect("pause should succeed");
-        assert_eq!(scheduler.get_agent(agent_id).await.unwrap().state, AgentState::Paused);
+        scheduler
+            .pause_agent(agent_id)
+            .await
+            .expect("pause should succeed");
+        assert_eq!(
+            scheduler.get_agent(agent_id).await.unwrap().state,
+            AgentState::Paused
+        );
 
-        scheduler.resume_agent(agent_id).await.expect("resume should succeed");
-        assert_eq!(scheduler.get_agent(agent_id).await.unwrap().state, AgentState::Running);
+        scheduler
+            .resume_agent(agent_id)
+            .await
+            .expect("resume should succeed");
+        assert_eq!(
+            scheduler.get_agent(agent_id).await.unwrap().state,
+            AgentState::Running
+        );
 
-        scheduler.terminate_agent(agent_id).await.expect("terminate should succeed");
+        scheduler
+            .terminate_agent(agent_id)
+            .await
+            .expect("terminate should succeed");
         assert!(matches!(
             scheduler.get_agent(agent_id).await,
             Err(SchedulerError::AgentNotFound)
@@ -364,7 +400,10 @@ mod tests {
             "system",
         );
 
-        scheduler.route_intent(intent).await.expect("route should succeed");
+        scheduler
+            .route_intent(intent)
+            .await
+            .expect("route should succeed");
 
         assert_eq!(scheduler.get_running_agents().await.len(), 1);
     }
@@ -391,12 +430,21 @@ mod tests {
             .metadata
             .insert("context_key".to_string(), "ctx-1".to_string());
 
-        scheduler.route_intent(intent).await.expect("route should succeed");
+        scheduler
+            .route_intent(intent)
+            .await
+            .expect("route should succeed");
 
-        let agent = scheduler.get_agent(agent_id).await.expect("agent should exist");
+        let agent = scheduler
+            .get_agent(agent_id)
+            .await
+            .expect("agent should exist");
         assert_eq!(agent.context_key.as_deref(), Some("ctx-1"));
         assert_eq!(
-            scheduler.context_memory().get("ctx-1").expect("context should exist"),
+            scheduler
+                .context_memory()
+                .get("ctx-1")
+                .expect("context should exist"),
             b"payload-data".to_vec()
         );
     }
@@ -420,7 +468,10 @@ mod tests {
             .await
             .expect("grant should succeed");
 
-        let agent = scheduler.get_agent(agent_id).await.expect("agent should exist");
+        let agent = scheduler
+            .get_agent(agent_id)
+            .await
+            .expect("agent should exist");
         assert_eq!(agent.capabilities.len(), 1);
         assert_eq!(agent.capabilities[0].id, token.id);
     }

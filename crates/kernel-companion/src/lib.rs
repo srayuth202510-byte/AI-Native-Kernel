@@ -2,15 +2,15 @@
 
 use agent_scheduler::AgentScheduler;
 use capability_security::CapabilitySecurityManager;
-use compute_scheduler::ComputeScheduler;
 use compute_scheduler::ComputeProfile;
+use compute_scheduler::ComputeScheduler;
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
 
 pub mod lsm;
 
-pub use lsm::{attach_lsm_hooks, LsmAttachment, LsmDecision, LsmPolicyEngine};
+pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
 
 pub struct KernelCompanion {
     lsm_engine: Arc<LsmPolicyEngine>,
@@ -160,9 +160,15 @@ mod tests {
     fn classify_intent_returns_expected_queue_class() {
         let companion = KernelCompanion::new();
 
-        assert_eq!(companion.classify_intent(&IntentType::NaturalLanguage), "interactive");
+        assert_eq!(
+            companion.classify_intent(&IntentType::NaturalLanguage),
+            "interactive"
+        );
         assert_eq!(companion.classify_intent(&IntentType::Structured), "batch");
-        assert_eq!(companion.classify_intent(&IntentType::Interrupt), "realtime");
+        assert_eq!(
+            companion.classify_intent(&IntentType::Interrupt),
+            "realtime"
+        );
     }
 
     #[tokio::test]

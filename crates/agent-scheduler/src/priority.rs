@@ -35,6 +35,7 @@ impl PartialOrd for PriorityAgent {
     }
 }
 
+#[derive(Default)]
 pub struct PriorityQueue {
     heap: BinaryHeap<PriorityAgent>,
 }
@@ -42,9 +43,7 @@ pub struct PriorityQueue {
 impl PriorityQueue {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            heap: BinaryHeap::new(),
-        }
+        Self::default()
     }
 
     pub fn push(&mut self, agent: PriorityAgent) {

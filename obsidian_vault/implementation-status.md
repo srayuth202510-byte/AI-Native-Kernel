@@ -50,6 +50,8 @@ This note tracks the current state of the repository as implemented in code, not
 - **[ANK-022] Cargo workspace skeleton (7 crates)**: Workspace manifests และ crate wiring ถูกแก้ให้ coherent แล้วในระดับ source tree.
 - **[ANK-023] Unit test baseline for core crates**: เพิ่ม tests ขั้นต้นให้ scheduler, intent bus, capability security, context memory, compute scheduler และ kernel companion แล้ว.
 - **[ANK-024] Documentation + implementation status note**: อัปเดต obsidian docs และเพิ่ม implementation-status note ให้สะท้อนสถานะจริงของ prototype.
+- **[ANK-028] Build validation on real toolchain**: รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.
+- **[ANK-030] Blocked: cargo/rustc toolchain is not ready/installed**: สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้
 <!-- IMPLEMENTED_NOW_END -->
 
 ## Not Implemented Yet
@@ -60,7 +62,6 @@ This note tracks the current state of the repository as implemented in code, not
 - **[ANK-019] Persistent WORM audit logger** (todo, high): ปัจจุบัน audit trail เป็น in-memory เท่านั้น ต้องย้ายไป append-only persistent store สำหรับ Phase 1 security baseline.
 - **[ANK-020] Security hardening: constant-time token comparison** (todo, high): แทนที่การเทียบ token แบบปกติด้วย constant_time_eq ตาม security guideline ใน AGENTS.md.
 - **[ANK-025] CI: clippy + test + audit pipeline** (todo, high): GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.
-- **[ANK-028] Build validation on real toolchain** (todo, critical): รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.
 - **[ANK-029] Security: sanitize .secret/ + .gitignore** (todo, critical): ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).
 - **[ANK-003] Real eBPF syscall tracer (Aya)** (backlog, critical): โปรแกรม eBPF ที่ trace syscalls บน x86_64 ผ่าน tracepoint/raw_tracepoint. ส่ง events ออกทาง ring buffer. เป้า overhead < 3% CPU.
 - **[ANK-004] Real LSM policy decision point** (backlog, high): เชื่อม LSM hook จริงให้ดัก security decisions และส่งต่อมายัง Rust policy engine แทน host-side stub ปัจจุบัน.
@@ -77,7 +78,6 @@ This note tracks the current state of the repository as implemented in code, not
 
 <!-- VALIDATION_STATUS_START -->
 - The repository has meaningful unit tests in several crates.
-- **Blocked: [ANK-030] Blocked: cargo/rustc toolchain is not ready/installed** - สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้
 - Before calling this baseline stable, run:
 
 ```bash
