@@ -4,14 +4,19 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+/// รายการบันทึกประวัติการตรวจสอบการเข้าใช้งานหรือการตัดสินใจด้านความปลอดภัย (Audit Entry)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEntry {
+    /// การกระทำที่เกิดขึ้น (เช่น "issued", "allowed", "denied")
     pub action: String,
+    /// รหัสเฉพาะตัวของโทเค็นความสามารถที่เกี่ยวข้อง
     pub token_id: u64,
+    /// เวลาที่เกิดการกระทำขึ้นในรูปแบบวินาทีสะสมนับตั้งแต่ UNIX Epoch
     pub timestamp: u64,
 }
 
 impl AuditEntry {
+    /// สร้างข้อมูลบันทึกประวัติการตรวจสอบใหม่
     #[must_use]
     pub fn new(action: &str, token_id: u64) -> Self {
         let timestamp = SystemTime::now()
@@ -25,36 +30,43 @@ impl AuditEntry {
         }
     }
 
+    /// สร้างข้อมูลบันทึกประวัติสำหรับการ "ออกโทเค็น" (Issued)
     #[must_use]
     pub fn issued(token_id: u64) -> Self {
         Self::new("issued", token_id)
     }
 
+    /// สร้างข้อมูลบันทึกประวัติสำหรับการ "อนุญาตให้เข้าใช้งาน" (Allowed)
     #[must_use]
     pub fn allowed(token_id: u64) -> Self {
         Self::new("allowed", token_id)
     }
 
+    /// สร้างข้อมูลบันทึกประวัติสำหรับการ "ปฏิเสธการเข้าใช้งาน" (Denied)
     #[must_use]
     pub fn denied(token_id: u64) -> Self {
         Self::new("denied", token_id)
     }
 }
 
+/// ตัวบันทึกข้อมูลการตรวจสอบการทำงานและความปลอดภัยลงในระบบจัดเก็บไฟล์ถาวร (Audit Logger)
 #[derive(Debug)]
 pub struct AuditLogger {
+    /// พาธสำหรับจัดเก็บไฟล์บันทึกประวัติ (Log File)
     log_path: PathBuf,
 }
 
 impl AuditLogger {
+    /// สร้างตัวบันทึกข้อมูลการตรวจสอบ `AuditLogger` ใหม่พร้อมพาธของไฟล์ล็อก
     #[must_use]
     pub fn new(log_path: PathBuf) -> Self {
         Self { log_path }
     }
 
+    /// บันทึกรายการตรวจสอบลงในไฟล์ล็อก
     pub fn record(&self, entry: AuditEntry) {
-        // Open in append-only mode, create if it doesn't exist.
-        // This is a WORM (Write Once Read Many) style operation at OS level.
+        // เปิดไฟล์แบบเขียนต่อท้ายอย่างเดียว (append-only) และสร้างใหม่หากยังไม่มี
+        // ซึ่งเป็นการทำงานรูปแบบ WORM (Write Once Read Many) ในระดับระบบปฏิบัติการเพื่อความปลอดภัยของข้อมูลประวัติ
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
             .append(true)
@@ -66,6 +78,7 @@ impl AuditLogger {
         }
     }
 
+    /// ดึงประวัติรายการการตรวจสอบทั้งหมดจากไฟล์ล็อก
     #[must_use]
     pub fn entries(&self) -> Vec<AuditEntry> {
         let mut entries = Vec::new();
@@ -82,6 +95,7 @@ impl AuditLogger {
 }
 
 impl Default for AuditLogger {
+    /// สร้างค่าเริ่มต้นสำหรับตัวบันทึกข้อมูล โดยกำหนดให้ไฟล์บันทึกเริ่มต้นชื่อ "audit.log"
     fn default() -> Self {
         Self::new(PathBuf::from("audit.log"))
     }

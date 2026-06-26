@@ -1,3 +1,9 @@
+//! # Agent Scheduler
+//!
+//! โมดูลนี้ทำหน้าที่จัดการวงจรชีวิต (Lifecycle), จัดลำดับความสำคัญ (Priority),
+//! และการแยกส่วนการทำงาน (Isolation) ของ Agent แต่ละตัวในระบบ AI-Native Kernel.
+//! ทำงานประสานงานกับ Intent Bus, Context Memory, และ Capability Security.
+
 #![deny(unsafe_code)]
 
 pub mod block;
@@ -19,51 +25,80 @@ pub use capability_security::{CapabilityToken, Scope};
 pub use priority::{PriorityAgent, PriorityQueue};
 pub use supervisor::SupervisorService as Supervisor;
 
+/// ข้อผิดพลาดต่างๆ ที่เกิดขึ้นในระหว่างการทำงานของ Scheduler
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum SchedulerError {
+    /// เกิดขึ้นเมื่อพยายามจะสร้าง Agent ที่มี ID ซ้ำกับที่มีอยู่แล้ว
     #[error("agent already exists")]
     AgentAlreadyExists,
+    /// ไม่พบ Agent ที่ระบุ
     #[error("agent not found")]
     AgentNotFound,
+    /// Agent ไม่ได้อยู่ในสถานะ Running
     #[error("agent is not running")]
     AgentNotRunning,
+    /// Agent ไม่ได้อยู่ในสถานะ Paused
     #[error("agent is not paused")]
     AgentNotPaused,
+    /// การส่ง Intent ไปยัง Intent Bus ล้มเหลว
     #[error("intent dispatch failed")]
     IntentDispatchFailed,
+    /// การปรับปรุงข้อมูลบริบท (Context Update) ของ Agent ล้มเหลว
     #[error("context update failed")]
     ContextUpdateFailed,
+    /// การขอใช้งานสิทธิ์ (Capability) ถูกปฏิเสธ
     #[error("capability denied")]
     CapabilityDenied,
 }
 
+/// โครงสร้างหลักของ Agent Scheduler ที่ทำหน้าที่จัดการและควบคุม Agent ทั้งหมดในระบบ
 #[derive(Clone)]
 pub struct AgentScheduler {
+    /// แผนผังเก็บข้อมูล AgentControlBlock ของ Agent ทั้งหมดโดยระบุด้วย ID (มีระบบ Lock สำหรับอ่าน/เขียน)
     agents: Arc<RwLock<HashMap<u64, AgentControlBlock>>>,
+    /// ID ถัดไปที่จะใช้สำหรับสร้าง Agent ตัวใหม่ (เพิ่มขึ้นทีละ 1)
     next_agent_id: Arc<RwLock<u64>>,
+    /// Intent Bus สำหรับการกระจายข่าวสารและคำสั่งแบบ Event-driven
     intent_bus: Arc<IntentBus>,
+    /// ตัวจัดการหน่วยความจำบริบท (Hot/Warm/Cold paging) ของ Agent
     context_memory: Arc<ContextMemoryManager>,
+    /// ตัวจัดการความปลอดภัยและการตรวจสอบสิทธิ์ของ Agent (LSM Policy Engine)
     capability_security: Arc<CapabilitySecurityManager>,
+    /// บริการ Supervisor สำหรับเฝ้าระวังความล้มเหลวและ Restart Agent
     supervisor_service: Arc<SupervisorService>,
+    /// ช่องทางส่งข้อมูลความเคลื่อนไหว (Event) ของ Agent เพื่อใช้วิเคราะห์หรือทำ Audit Log
     monitoring_tx: broadcast::Sender<AgentEvent>,
 }
 
+/// เหตุการณ์สำคัญต่างๆ ที่เกิดขึ้นกับ Agent ในระบบ
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    /// สร้างข้อมูล Agent สำเร็จแต่ยังไม่ได้เปิดให้เริ่มทำงาน
     AgentCreated(AgentControlBlock),
+    /// Agent เริ่มต้นทำงาน (Spawned)
     AgentSpawned(AgentControlBlock),
+    /// Agent ถูกสั่งให้หยุดชั่วคราว (Paused)
     AgentPaused(AgentControlBlock),
+    /// Agent กลับมาทำงานต่ออีกครั้ง (Resumed)
     AgentResumed(AgentControlBlock),
+    /// Agent ทำงานเสร็จสิ้นและถูกลบออกจากสารระบบ (Terminated)
     AgentTerminated(AgentControlBlock),
+    /// Agent เกิดข้อผิดพลาดร้ายแรงและหยุดทำงาน (Failed)
     AgentFailed(AgentControlBlock),
+    /// Agent ถูกเริ่มต้นการทำงานใหม่หลังล้มเหลว (Restarted)
     AgentRestarted(AgentControlBlock),
+    /// ลำดับความสำคัญ (Priority) ของ Agent ถูกเปลี่ยน
     AgentPriorityChanged(u64, Priority),
+    /// บริบทข้อมูล (Context Key) ของ Agent ถูกเปลี่ยน/สลับ
     AgentContextSwitched(u64, String),
+    /// Agent ได้รับสิทธิ์ใหม่ (Capability Token Granted)
     AgentCapabilityGranted(u64, CapabilityToken),
+    /// สิทธิ์ของ Agent ถูกยกเลิก (Capability Token Revoked)
     AgentCapabilityRevoked(u64, u64),
 }
 
 impl AgentScheduler {
+    /// สร้างอินสแตนซ์ใหม่ของ `AgentScheduler`
     #[must_use]
     pub fn new(
         intent_bus: Arc<IntentBus>,
@@ -71,6 +106,7 @@ impl AgentScheduler {
         capability_security: Arc<CapabilitySecurityManager>,
     ) -> Self {
         let agents = Arc::new(RwLock::new(HashMap::new()));
+        // ตั้งค่า Supervisor Service เริ่มต้นให้มีจำนวน Restart สูงสุด 3 ครั้ง และ Backoff 100ms
         let supervisor_service = Arc::new(SupervisorService::new(agents.clone(), 3, 100));
         let (monitoring_tx, _) = broadcast::channel(1024);
 
@@ -85,51 +121,63 @@ impl AgentScheduler {
         }
     }
 
+    /// ดึงการอ้างอิงถึง `SupervisorService`
     #[must_use]
     pub fn supervisor(&self) -> Arc<SupervisorService> {
         Arc::clone(&self.supervisor_service)
     }
 
+    /// สมัครรับข้อมูลเหตุการณ์ (Event Stream) ของ Agent เพื่อนำไปใช้งานด้าน Monitoring หรือ Audit
     pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.monitoring_tx.subscribe()
     }
 
+    /// ดึงการอ้างอิงถึง `IntentBus` สำหรับสื่อสาร
     pub fn intent_bus(&self) -> Arc<IntentBus> {
         Arc::clone(&self.intent_bus)
     }
 
+    /// ดึงการอ้างอิงถึง `ContextMemoryManager`
     #[must_use]
     pub fn context_memory(&self) -> Arc<ContextMemoryManager> {
         Arc::clone(&self.context_memory)
     }
 
+    /// จัดสรร ID ใหม่สำหรับ Agent แบบไม่ซ้ำกันอย่างปลอดภัย (Thread-safe)
     pub async fn allocate_agent_id(&self) -> u64 {
         let mut next_agent_id = self.next_agent_id.write().await;
         let agent_id = *next_agent_id;
+        // ป้องกัน Overflow ด้วย saturating_add
         *next_agent_id = agent_id.saturating_add(1);
         agent_id
     }
 
+    /// นำ Agent เข้าสู่ระบบและเปลี่ยนสถานะเริ่มต้นให้พร้อมทำงาน
     pub async fn spawn_agent(&self, mut agent: AgentControlBlock) -> Result<u64, SchedulerError> {
+        // หากไม่มี ID ให้จัดสรรใหม่โดยอัตโนมัติ
         if agent.id == 0 {
             agent.id = self.allocate_agent_id().await;
         }
 
         let mut agents = self.agents.write().await;
+        // ตรวจสอบว่าไม่เกิด ID ซ้ำซ้อนในระบบ
         if agents.contains_key(&agent.id) {
             return Err(SchedulerError::AgentAlreadyExists);
         }
 
+        // หากสถานะเดิมคือ Creating ให้เปลี่ยนเป็น Running
         if agent.state == AgentState::Creating {
             agent.state = AgentState::Running;
         }
 
         let agent_id = agent.id;
         agents.insert(agent_id, agent.clone());
+        // ส่งเหตุการณ์ Spawned ออกไปยัง Monitoring Bus
         let _ = self.monitoring_tx.send(AgentEvent::AgentSpawned(agent));
         Ok(agent_id)
     }
 
+    /// ส่งต่อ Intent ไปยังระบบ Intent Bus
     pub async fn submit_intent(&self, intent: Intent) -> Result<(), SchedulerError> {
         self.intent_bus
             .publish(intent)
@@ -137,15 +185,19 @@ impl AgentScheduler {
             .map_err(|_| SchedulerError::IntentDispatchFailed)
     }
 
+    /// ถอดรหัสโครงสร้าง Intent และเรียกใช้งานคำสั่งตามความเหมาะสม
     pub async fn route_intent(&self, intent: Intent) -> Result<(), SchedulerError> {
         match intent.intent_type {
+            // คำสั่งตรงจากผู้ใช้หรือระบบ
             IntentType::Command => {
                 if intent.payload == "spawn-agent" {
+                    // หากเป็นคำสั่งสร้าง Agent ใหม่ ให้สร้าง บันทึก และประกาศ Event
                     let agent_id = self.spawn_agent(AgentControlBlock::new(0)).await?;
                     let agent = self.get_agent(agent_id).await?;
                     let _ = self.monitoring_tx.send(AgentEvent::AgentCreated(agent));
                 }
             }
+            // ข้อมูลที่มีโครงสร้างและต้องการนำไปอัปเดตบริบท (Context)
             IntentType::Structured => {
                 let Some(agent_id) = intent.metadata.get("agent_id") else {
                     return Ok(());
@@ -160,6 +212,7 @@ impl AgentScheduler {
 
                 let context_key = context_key.clone();
                 let payload = intent.payload.clone().into_bytes();
+                // บันทึกและสลับบริบทข้อมูลของ Agent
                 self.store_context(agent_id, context_key, payload).await?;
             }
             IntentType::NaturalLanguage | IntentType::Event | IntentType::Interrupt => {}
@@ -167,6 +220,7 @@ impl AgentScheduler {
         Ok(())
     }
 
+    /// หยุดการทำงานของ Agent ชั่วคราว (Pause) โดยต้องมีสถานะเดิมเป็น Running เท่านั้น
     pub async fn pause_agent(&self, agent_id: u64) -> Result<(), SchedulerError> {
         let mut agents = self.agents.write().await;
         let agent = agents
@@ -184,6 +238,7 @@ impl AgentScheduler {
         Ok(())
     }
 
+    /// สั่งให้ Agent ที่ถูกพักกลับมาทำงานใหม่ (Resume)
     pub async fn resume_agent(&self, agent_id: u64) -> Result<(), SchedulerError> {
         let mut agents = self.agents.write().await;
         let agent = agents
@@ -201,6 +256,7 @@ impl AgentScheduler {
         Ok(())
     }
 
+    /// สิ้นสุดการทำงานของ Agent และถอดถอนออกจากโครงสร้างหลัก
     pub async fn terminate_agent(&self, agent_id: u64) -> Result<(), SchedulerError> {
         let mut agents = self.agents.write().await;
         let event = {
@@ -215,6 +271,7 @@ impl AgentScheduler {
         Ok(())
     }
 
+    /// สั่งการให้ Agent เปลี่ยนสถานะเป็นล้มเหลว (Failed) เมื่อเกิดเหตุขัดข้อง
     pub async fn fail_agent(&self, agent_id: u64) -> Result<(), SchedulerError> {
         let mut agents = self.agents.write().await;
         let agent = agents
@@ -227,6 +284,7 @@ impl AgentScheduler {
         Ok(())
     }
 
+    /// ค้นหาและส่งข้อมูล Agent อ้างอิงจาก ID
     pub async fn get_agent(&self, agent_id: u64) -> Result<AgentControlBlock, SchedulerError> {
         let agents = self.agents.read().await;
         agents
@@ -235,6 +293,7 @@ impl AgentScheduler {
             .ok_or(SchedulerError::AgentNotFound)
     }
 
+    /// ดึงรายชื่อ Agent ทั้งหมดที่กำลังทำงานอยู่ในปัจจุบัน
     pub async fn get_running_agents(&self) -> Vec<AgentControlBlock> {
         let agents = self.agents.read().await;
         agents
@@ -244,6 +303,7 @@ impl AgentScheduler {
             .collect()
     }
 
+    /// บันทึกและปรับเปลี่ยน Context ของ Agent ในระบบ Context Memory
     pub async fn store_context(
         &self,
         agent_id: u64,
@@ -258,6 +318,7 @@ impl AgentScheduler {
             }
         }
 
+        // จัดเก็บในหน่วยความจำบริบทจริง
         self.context_memory.put(context_key.clone(), value);
 
         let mut agents = self.agents.write().await;
@@ -271,6 +332,7 @@ impl AgentScheduler {
         Ok(())
     }
 
+    /// มอบอำนาจความปลอดภัย (Capability Token) ให้แก่ Agent
     pub async fn grant_capability(
         &self,
         agent_id: u64,
@@ -283,6 +345,7 @@ impl AgentScheduler {
             }
         }
 
+        // ตรวจสอบความถูกต้องของสิทธิ์ผ่าน Capability Security Manager
         let capability_allowed = token
             .capabilities
             .iter()

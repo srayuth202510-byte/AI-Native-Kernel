@@ -13,27 +13,40 @@ use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, CapabilityError>;
 
+/// ข้อผิดพลาดประเภทต่างๆ ที่เกี่ยวข้องกับการตรวจสอบและจัดการสิทธิ์การเข้าถึง (Capability)
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum CapabilityError {
+    /// การยืนยันความถูกต้องของโทเค็นล้มเหลว
     #[error("token validation failed")]
     TokenValidationFailed,
+    /// การตัดสินใจตามนโยบายความปลอดภัยปฏิเสธการเข้าถึง
     #[error("policy decision denied")]
     PolicyDecisionDenied,
+    /// การบันทึกประวัติการเข้าถึงและการทำงาน (Audit Log) ล้มเหลว
     #[error("audit write failed")]
     AuditWriteFailed,
+    /// การขยายขอบเขตการเข้าถึง (Scope Expansion) ล้มเหลว
     #[error("scope expansion failed")]
     ScopeExpansionFailed,
+    /// เกิดข้อผิดพลาดเนื่องจากโทเค็นหมดอายุ
     #[error("token expiration error")]
     ExpirationError,
 }
 
+/// ตัวจัดการความปลอดภัยอิงความสามารถ (Capability-based Security Manager)
+/// ทำหน้าที่ควบคุมสิทธิ์ ออกโทเค็น ตรวจสอบสิทธิ์ และบันทึกประวัติความปลอดภัย
 #[derive(Debug)]
 pub struct CapabilitySecurityManager {
+    /// ตารางเก็บโทเค็นความสามารถทั้งหมด มีการใช้ `RwLock` เพื่อให้สามารถใช้งานข้ามเธรดได้อย่างปลอดภัย
     tokens: RwLock<HashMap<u64, CapabilityToken>>,
+    /// กลไกการประเมินนโยบายเพื่อตัดสินใจอนุญาตหรือปฏิเสธสิทธิ์
     policy_engine: PolicyEngine,
+    /// ตัวบันทึกประวัติการตรวจสอบการทำงานและความปลอดภัย (Audit Logger)
     audit_logger: AuditLogger,
 }
 
+/// ฟังก์ชันเปรียบเทียบข้อมูลไบต์อาร์เรย์ขนาด 32 ไบต์แบบคงเวลา (Constant-time comparison)
+/// เพื่อป้องกันการโจมตีประเภท Timing Attack เมื่อทำการเปรียบเทียบข้อมูลลับ (เช่น Token Secret Key)
 #[must_use]
 pub fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
     let mut result = 0;
@@ -44,6 +57,7 @@ pub fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 }
 
 impl CapabilitySecurityManager {
+    /// สร้างตัวจัดการความปลอดภัย `CapabilitySecurityManager` ใหม่ด้วยการตั้งค่าเริ่มต้น
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -53,6 +67,7 @@ impl CapabilitySecurityManager {
         }
     }
 
+    /// สร้างตัวจัดการความปลอดภัย `CapabilitySecurityManager` ใหม่พร้อมระบุพาธในการบันทึกไฟล์ประวัติการตรวจสอบ
     #[must_use]
     pub fn new_with_log_path(log_path: std::path::PathBuf) -> Self {
         Self {
@@ -62,6 +77,7 @@ impl CapabilitySecurityManager {
         }
     }
 
+    /// ออกโทเค็นความสามารถ (Capability Token) ใหม่ บันทึกลงในระบบเพื่อใช้งาน และบันทึกประวัติ (Audit Log)
     pub fn issue_token(&self, token: CapabilityToken) {
         self.tokens
             .write()
@@ -70,6 +86,8 @@ impl CapabilitySecurityManager {
         self.audit_logger.record(AuditEntry::issued(token.id));
     }
 
+    /// ตรวจสอบสิทธิ์ของโทเค็นโดยอ้างอิงกับ Capability ที่ร้องขอ
+    /// พร้อมทำบันทึกประวัติการอนุญาต (Allow) หรือปฏิเสธ (Deny) ลงไฟล์ประวัติการตรวจสอบ
     #[must_use]
     pub fn authorize_token(&self, token: &CapabilityToken, capability: &str) -> bool {
         let allowed = token.is_valid()
@@ -85,6 +103,8 @@ impl CapabilitySecurityManager {
         allowed
     }
 
+    /// ยืนยันความถูกต้องของโทเค็นโดยระบุ ID, รหัสลับ (Secret Key), ขอบเขต (Scope) และ Capability ที่ต้องการ
+    /// จะใช้วิธีเปรียบเทียบรหัสลับแบบคงเวลา (Constant-time comparison) เพื่อความปลอดภัยสูงสุด
     #[must_use]
     pub fn validate(
         &self,
@@ -98,6 +118,7 @@ impl CapabilitySecurityManager {
             return false;
         };
 
+        // ตรวจสอบความถูกต้องของรหัสลับ (Secret Key) แบบคงเวลาเพื่อป้องกัน Timing Attacks
         if !constant_time_eq(&token.secret, secret) {
             self.audit_logger.record(AuditEntry::denied(token_id));
             return false;
@@ -113,6 +134,8 @@ impl CapabilitySecurityManager {
         allowed
     }
 
+    /// ตัดสินใจเชิงนโยบายความปลอดภัย (Policy Decision) สำหรับการเข้าถึงที่ร้องขอ
+    /// คืนผลลัพธ์เป็น `PolicyDecision` (Allow หรือ Deny) พร้อมบันทึกประวัติลงไฟล์การตรวจสอบ
     #[must_use]
     pub fn decision_for(
         &self,
@@ -127,6 +150,7 @@ impl CapabilitySecurityManager {
             return PolicyDecision::Deny;
         };
 
+        // เปรียบเทียบรหัสลับด้วยวิธีคงเวลาเพื่อป้องกัน Timing Attacks ในการถอดรหัสลับ/เปรียบเทียบโทเค็น
         if !constant_time_eq(&token.secret, secret) {
             self.audit_logger.record(AuditEntry::denied(token_id));
             return PolicyDecision::Deny;
@@ -141,6 +165,7 @@ impl CapabilitySecurityManager {
         decision
     }
 
+    /// ดึงรายการประวัติการตรวจสอบการเข้าถึงทั้งหมดที่มีบันทึกไว้
     #[must_use]
     pub fn audit_entries(&self) -> Vec<AuditEntry> {
         self.audit_logger.entries()
@@ -148,6 +173,7 @@ impl CapabilitySecurityManager {
 }
 
 impl Default for CapabilitySecurityManager {
+    /// สร้างค่าเริ่มต้นสำหรับ `CapabilitySecurityManager`
     fn default() -> Self {
         Self::new()
     }

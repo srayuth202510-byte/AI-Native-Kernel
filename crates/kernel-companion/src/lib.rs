@@ -1,5 +1,8 @@
 #![deny(unsafe_code)]
 
+//! โมดูลหลักสำหรับ Kernel Companion
+//! ทำหน้าที่เป็นตัวกลางในการเชื่อมต่อระหว่างระบบปฏิบัติการ Linux (ผ่าน LSM/eBPF) และระบบจัดการ AI Agents
+
 use agent_scheduler::AgentScheduler;
 use capability_security::CapabilitySecurityManager;
 use compute_scheduler::ComputeProfile;
@@ -12,17 +15,26 @@ pub mod lsm;
 
 pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
 
+/// โครงสร้างหลักของ KernelCompanion ที่ทำหน้าที่ประสานงานระหว่างส่วนประกอบต่าง ๆ ของระบบ
 pub struct KernelCompanion {
+    /// ระบบตรวจสอบและตัดสินใจเชิงนโยบายความปลอดภัย LSM (LSM Policy Engine)
     lsm_engine: Arc<LsmPolicyEngine>,
+    /// บัสส่งผ่านเจตจำนง (Intent Bus) สำหรับรับส่งเหตุการณ์และคำสั่ง
     intent_bus: Arc<IntentBus>,
+    /// ระบบจัดการหน่วยความจำบริบท (Context Memory Manager) สำหรับย้ายหน้าหน่วยความจำ
     context_memory: Arc<ContextMemoryManager>,
+    /// ระบบจัดการความปลอดภัยตามสิทธิ์การใช้งาน (Capability & Security Manager)
     capability_security: Arc<CapabilitySecurityManager>,
+    /// ตัวจัดการคิวประมวลผล (Compute Scheduler) สำหรับคำนวณและปรับเปลี่ยนน้ำหนักการทำงาน
     compute_scheduler: Arc<ComputeScheduler>,
+    /// ตัวจัดตารางการทำงานของ Agent (Agent Scheduler) ควบคุมวงจรชีวิตของ Agent
     agent_scheduler: Arc<AgentScheduler>,
+    /// สถานะการเชื่อมต่อกับ LSM Hook ในระบบ Linux Kernel
     attachment: Option<LsmAttachment>,
 }
 
 impl KernelCompanion {
+    /// สร้างอินสแตนซ์ของ KernelCompanion ใหม่ พร้อมเริ่มต้นการเชื่อมต่อส่วนประกอบต่าง ๆ
     #[must_use]
     pub fn new() -> Self {
         let intent_bus = Arc::new(IntentBus::new(1024));
@@ -45,26 +57,36 @@ impl KernelCompanion {
         }
     }
 
+    /// ดึงการอ้างอิงไปยัง Intent Bus
     #[must_use]
     pub fn intent_bus(&self) -> Arc<IntentBus> {
         Arc::clone(&self.intent_bus)
     }
 
+    /// ดึงการอ้างอิงไปยัง Agent Scheduler
     #[must_use]
     pub fn agent_scheduler(&self) -> Arc<AgentScheduler> {
         Arc::clone(&self.agent_scheduler)
     }
 
+    /// ดึงการอ้างอิงไปยัง Compute Scheduler
     #[must_use]
     pub fn compute_scheduler(&self) -> Arc<ComputeScheduler> {
         Arc::clone(&self.compute_scheduler)
     }
 
+    /// เริ่มต้นการทำงาน (Boot) ของระบบ รวมถึงการแนบ LSM Hook และการสร้าง Task สำหรับรับส่งข่าวสารในระบบ
+    ///
+    /// # Errors
+    ///
+    /// ส่งคืนข้อผิดพลาดหากไม่สามารถติดตั้ง LSM Hooks สำเร็จ
     pub async fn boot(&mut self) -> anyhow::Result<()> {
+        // แนบ LSM Hook เข้ากับระบบ Kernel หากยังไม่ได้ดำเนินการ
         if self.attachment.is_none() {
             self.attachment = Some(attach_lsm_hooks(Arc::clone(&self.lsm_engine))?);
         }
 
+        // เริ่มต้นใช้งานโมดูลอื่น ๆ
         let _boot_context = self.context_memory();
         let _security = self.capability_security();
         let _warmup_score = self.compute_scheduler.score(ComputeProfile {
@@ -77,16 +99,19 @@ impl KernelCompanion {
         let mut intent_subscriber = self.intent_bus.subscribe();
         let supervisor = scheduler.supervisor();
 
+        // รัน Task สำหรับดักฟัง Intent Bus และส่งต่อไปยัง Agent Scheduler แบบ異步 (Async)
         let _routing_task = tokio::spawn(async move {
             while let Some(intent) = intent_subscriber.receive().await {
                 let _ = scheduler.route_intent(intent).await;
             }
         });
 
+        // รัน Task สำหรับเฝ้าดูแลระบบ (Supervisor Loop) เพื่อคอยตรวจสอบและรีสตาร์ต Agent ในกรณีที่พัง
         let _supervisor_task = tokio::spawn(async move {
             supervisor.start_monitoring_loop().await;
         });
 
+        // ส่งสัญญาณ (Publish) เหตุการณ์การ Boot สำเร็จไปยัง Intent Bus
         let _ = self
             .intent_bus
             .publish(Intent::new(
@@ -101,15 +126,23 @@ impl KernelCompanion {
         Ok(())
     }
 
+    /// รัน Kernel Companion Daemon โดยจะรอรับสัญญาณหยุดทำงาน (Ctrl+C)
+    ///
+    /// # Errors
+    ///
+    /// ส่งคืนข้อผิดพลาดหากขั้นตอน Boot ล้มเหลว หรือสัญญาณ Ctrl+C มีปัญหา
     pub async fn run(mut self) -> anyhow::Result<()> {
         self.boot().await?;
 
+        // รอคอยสัญญาณ Ctrl+C จากระบบปฏิบัติการ
         tokio::signal::ctrl_c().await?;
 
+        // เคลียร์ระบบและยกเลิกการแนบ Hook
         self.shutdown().await;
         Ok(())
     }
 
+    /// หยุดการทำงานของ Daemon และถอนการติดตั้ง LSM Hooks ออกจาก Linux Kernel
     pub async fn shutdown(&mut self) {
         if let Some(attachment) = self.attachment.as_mut() {
             attachment.detach();
@@ -117,6 +150,7 @@ impl KernelCompanion {
         self.attachment = None;
     }
 
+    /// จำแนกประเภทความสำคัญของคิวงานประมวลผล (Scheduler Queue Class) จากประเภทของ Intent
     #[must_use]
     pub fn classify_intent(&self, intent_type: &IntentType) -> &'static str {
         match intent_type {
@@ -128,16 +162,19 @@ impl KernelCompanion {
         }
     }
 
+    /// ดึงการอ้างอิงไปยัง Context Memory Manager
     #[must_use]
     pub fn context_memory(&self) -> Arc<ContextMemoryManager> {
         Arc::clone(&self.context_memory)
     }
 
+    /// ดึงการอ้างอิงไปยัง Capability Security Manager
     #[must_use]
     pub fn capability_security(&self) -> Arc<CapabilitySecurityManager> {
         Arc::clone(&self.capability_security)
     }
 
+    /// ตรวจสอบว่า LSM Hooks ถูกแนบเข้ากับระบบแล้วหรือไม่
     #[must_use]
     pub fn is_attached(&self) -> bool {
         self.attachment
