@@ -550,6 +550,7 @@ name = "intent-bus"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "serde",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -624,6 +625,8 @@ dependencies = [
  "criterion",
  "intent-bus",
  "proptest",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

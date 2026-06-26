@@ -16,6 +16,7 @@ use tracing::{info, instrument, warn};
 
 pub mod ebpf;
 pub mod lsm;
+pub mod uds;
 
 pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
 pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
@@ -147,6 +148,14 @@ impl KernelCompanion {
                     .start_monitoring_loop_until(supervisor_shutdown_rx)
                     .await;
             }));
+            
+            let cancel = tokio_util_cancel::CancellationToken::new();
+            let _ = uds::start_uds_server(
+                Arc::clone(&self.intent_bus),
+                "/tmp/ank-companion.sock",
+                cancel,
+            ).await;
+            
             self.shutdown_tx = Some(shutdown_tx);
         }
 

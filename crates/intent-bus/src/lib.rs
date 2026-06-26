@@ -6,9 +6,11 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{RwLock, broadcast};
 
+use serde::{Serialize, Deserialize};
+
 /// `Intent` คือตัวแทนของเจตจำนงหรือความต้องการที่ส่งเข้ามาในระบบ
 /// เพื่อให้ Agent หรือส่วนประกอบอื่น ๆ นำไปประมวลผลต่อ
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Intent {
     /// ไอดีเฉพาะสำหรับการอ้างอิง Intent แต่ละตัว
     pub id: String,
@@ -52,7 +54,7 @@ impl Intent {
 }
 
 /// `IntentType` กำหนดประเภทของเจตจำนง เพื่อจัดสรรให้กับโมดูลประมวลผลที่เหมาะสม
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IntentType {
     /// เจตจำนงในรูปแบบภาษาธรรมชาติ (เช่น ข้อความดิบจากผู้ใช้)
     NaturalLanguage,
@@ -67,7 +69,7 @@ pub enum IntentType {
 }
 
 /// `IntentPriority` กำหนดระดับความสำคัญในการประมวลผลเจตจำนง
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum IntentPriority {
     /// ลำดับความสำคัญต่ำ (เช่น งานเบื้องหลังที่รอได้)
     Low,
