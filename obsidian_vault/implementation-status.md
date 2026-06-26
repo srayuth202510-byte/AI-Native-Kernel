@@ -21,6 +21,7 @@ This note tracks the current state of the repository as implemented in code, not
 
 - **[ANK-001] Setup Rust workspace + companion crate layout**: Workspace manifest และ crate layout สำหรับ kernel-companion ถูกจัดให้ parse ได้และเชื่อมกับ crate อื่นแล้ว แต่ยังไม่ได้ยืนยันด้วย cargo build จริงใน environment นี้.
 - **[ANK-002] Prototype companion composition root**: kernel-companion สร้าง intent bus, memory, security, compute และ agent scheduler แล้ว boot/shutdown ได้ในระดับ prototype host-side.
+- **[ANK-004] Phase 2 kick-off: eBPF/LSM module**: Aya + LSM BPF integration เริ่มร่างโครงสร้างใน kernel-companion แล้ว (LSM attachment, policy default DENY, tracepoints). ขาดแค่ BPF maps และ eBPF program ที่ compile เป็น bytecode จริง.
 - **[ANK-005] Aya toolchain + kernel target validation**: ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.
 
 ### agent-scheduler
@@ -38,6 +39,8 @@ This note tracks the current state of the repository as implemented in code, not
 ### context-memory
 
 - **[ANK-011] Prototype context manager + tier modules**: มี hot/warm/cold modules และ API ระดับ prototype สำหรับเก็บ context แล้ว แต่ยังไม่ใช่ persistent paging จริง.
+- **[ANK-013] Tier migration: Hot<->Warm<->Cold**: Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.
+- **[ANK-014] Property test: context round-trip lossless**: Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล
 
 ### compute-scheduler
 
@@ -56,6 +59,7 @@ This note tracks the current state of the repository as implemented in code, not
 - **[ANK-023] Unit test baseline for core crates**: เพิ่ม tests ขั้นต้นให้ scheduler, intent bus, capability security, context memory, compute scheduler และ kernel companion แล้ว.
 - **[ANK-024] Documentation + implementation status note**: อัปเดต obsidian docs และเพิ่ม implementation-status note ให้สะท้อนสถานะจริงของ prototype.
 - **[ANK-025] CI: clippy + test + audit pipeline**: GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.
+- **[ANK-027] Observability: tracing + Prometheus exporter**: tracing spans (#[instrument], debug!, warn!) เพิ่มแล้วใน context-memory put/get และ kernel-companion boot/shutdown. Prometheus metrics exporter ยังไม่ได้ implement — ต้องเพิ่ม prometheus crate + /metrics endpoint.
 - **[ANK-028] Build validation on real toolchain**: รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.
 - **[ANK-029] Security: sanitize .secret/ + .gitignore**: ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).
 - **[ANK-030] Blocked: cargo/rustc toolchain is not ready/installed**: สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้
@@ -64,8 +68,6 @@ This note tracks the current state of the repository as implemented in code, not
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-- **[ANK-013] Tier migration: Hot<->Warm<->Cold** (backlog, med): Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.
-- **[ANK-014] Property test: context round-trip lossless** (backlog, med): Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล
 - **[ANK-016] Real device-aware placement policy** (backlog, high): เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.
 - **[ANK-026] CI: fuzz + chaos test harness** (backlog, med): cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).
 <!-- NOT_IMPLEMENTED_YET_END -->
