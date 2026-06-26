@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>AI-Native Kernel: Comprehensive Implementation Plan v3 (Rust)</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'base',
+            themeVariables: {
+                primaryColor: '#3182ce',
+                primaryTextColor: '#ffffff',
+                primaryBorderColor: '#2b6cb0',
+                lineColor: '#4a5568',
+                secondaryColor: '#edf2f7',
+                tertiaryColor: '#f7fafc',
+                fontFamily: 'Segoe UI, Tahoma, sans-serif',
+                fontSize: '13px'
+            },
+            flowchart: { htmlLabels: true, curve: 'basis' },
+            sequence: { actorMargin: 50 },
+            gantt: { fontSize: 11 }
+        });
+    </script>
+    <style>
+        @page {
+            size: A4;
+            margin: 20mm 15mm;
+            background-color: #f4f6f9;
+            @bottom-right {
+                content: counter(page);
+                font-family: 'Helvetica Neue', Arial, sans-serif;
+                font-size: 9pt;
+                color: #718096;
+            }
+            @bottom-left {
+                content: "AI-Native Kernel v0.3 - Specification & Implementation Plan";
+                font-family: 'Helvetica Neue', Arial, sans-serif;
+                font-size: 9pt;
+                color: #718096;
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #2d3748;
+            line-height: 1.6;
+            background-color: #f4f6f9;
+            margin: 0;
+            padding: 0;
+            font-size: 10.5pt;
+        }
+
+        .header-container {
+            margin: -20mm -15mm 25px -15mm;
+            padding: 35px 20mm;
+            background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
+            color: #ffffff;
+        }
+
+        h1 { font-size: 24pt; margin: 0 0 10px 0; font-weight: 700; letter-spacing: -0.5px; color: #ffffff; }
+        .subtitle { font-size: 13pt; color: #cbd5e0; margin: 0 0 20px 0; font-weight: 300; }
+        .meta-grid { display: table; width: 100%; margin-top: 15px; border-top: 1px solid #4a5568; padding-top: 15px; }
+        .meta-item { display: table-cell; font-size: 9.5pt; color: #a0aec0; }
+
+        h2 {
+            font-size: 15pt; color: #1a202c;
+            border-left: 4px solid #3182ce; padding-left: 10px;
+            margin-top: 30px; margin-bottom: 15px; page-break-after: avoid;
+        }
+        h3 { font-size: 12pt; color: #2b6cb0; margin-top: 20px; margin-bottom: 8px; page-break-after: avoid; }
+        h4 { font-size: 11pt; color: #2d3748; margin-top: 15px; margin-bottom: 6px; page-break-after: avoid; }
+        p { margin-top: 0; margin-bottom: 12px; text-align: justify; }
+        ul, ol { margin-top: 0; margin-bottom: 15px; padding-left: 20px; }
+        li { margin-bottom: 6px; }
+
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; page-break-inside: avoid; }
+        th { background-color: #2d3748; color: #ffffff; font-weight: bold; text-align: left; padding: 10px 12px; font-size: 10pt; border: 1px solid #2d3748; }
+        td { padding: 9px 12px; border: 1px solid #e2e8f0; font-size: 9.5pt; background-color: #ffffff; vertical-align: top; }
+        tr:nth-child(even) td { background-color: #f7fafc; }
+
+        pre {
+            background-color: #edf2f7; border-left: 3px solid #4a5568; padding: 12px;
+            font-family: 'Courier New', Courier, monospace; font-size: 9pt; margin: 15px 0;
+            border-radius: 4px; page-break-inside: avoid; white-space: pre-wrap; overflow-wrap: break-word;
+        }
+        code { font-family: 'Courier New', Courier, monospace; background-color: #edf2f7; padding: 1px 4px; border-radius: 3px; font-size: 9.5pt; }
+        .math { font-family: 'Times New Roman', serif; font-style: italic; font-weight: bold; color: #1a365d; }
+
+        .highlight-box { background-color: #ebf8ff; border-left: 4px solid #3182ce; padding: 15px; margin: 20px 0; border-radius: 0 4px 4px 0; page-break-inside: avoid; }
+        .danger-box { background-color: #fff5f5; border-left: 4px solid #e53e3e; padding: 15px; margin: 20px 0; border-radius: 0 4px 4px 0; page-break-inside: avoid; }
+        .success-box { background-color: #f0fff4; border-left: 4px solid #38a169; padding: 15px; margin: 20px 0; border-radius: 0 4px 4px 0; page-break-inside: avoid; }
+        .highlight-box p:last-child, .danger-box p:last-child, .success-box p:last-child { margin-bottom: 0; }
+
+        .badge { display: inline-block; padding: 2px 6px; background-color: #e2e8f0; color: #4a5568; border-radius: 4px; font-size: 8.5pt; font-family: monospace; }
+        .badge-success { display: inline-block; padding: 2px 6px; background-color: #c6f6d5; color: #22543d; border-radius: 4px; font-size: 8.5pt; font-family: monospace; }
+        .badge-warn { display: inline-block; padding: 2px 6px; background-color: #fefcbf; color: #744210; border-radius: 4px; font-size: 8.5pt; font-family: monospace; }
+
+        .changelog { background-color: #fffff0; border: 1px solid #ecc94b; padding: 15px; margin: 20px 0; border-radius: 4px; page-break-inside: avoid; }
+
+        /* Mermaid container styling */
+        .graph-container {
+            background-color: #ffffff; border: 1px solid #e2e8f0; padding: 20px;
+            margin: 20px 0; border-radius: 6px; page-break-inside: avoid; text-align: center;
+        }
+        .graph-caption { font-size: 9pt; color: #718096; font-style: italic; margin-top: 8px; }
+        .mermaid { font-family: 'Segoe UI', Tahoma, sans-serif !important; }
+    </style>
+</head>
+<body>
+
+    <div class="header-container">
+        <h1>AI-Native Kernel</h1>
+        <div class="subtitle">Next Generation Operating System Kernel for AI Era &mdash; Rust Implementation Plan</div>
+        <div class="meta-grid">
+            <div class="meta-item"><strong>Version:</strong> 3.0 (Graphified)</div>
+            <div class="meta-item"><strong>Language:</strong> Rust (Edition 2024)</div>
+            <div class="meta-item"><strong>Status:</strong> Ready for Prototype (Phase 1 MVP)</div>
+        </div>
+    </div>
+
+    <div class="changelog">
+        <p><strong>บันทึกการแก้ไข (v2.0 &rarr; v3.0):</strong></p>
+        <ul>
+            <li>แทนที่ ASCII diagrams ทั้งหมดด้วย <strong>Mermaid graphs</strong> (render ในเบราว์เซอร์)</li>
+            <li>เพิ่ม <strong>Crate Dependency Graph</strong> &mdash; โครงสร้าง workspace</li>
+            <li>เพิ่ม <strong>Agent State Machine</strong> &mdash; lifecycle transitions</li>
+            <li>เพิ่ม <strong>Context Paging Flow</strong> &mdash; Hot/Warm/Cold tier migration</li>
+            <li>เพิ่ม <strong>Recovery Sequence Diagram</strong> &mdash; fault handling แบบละเอียด</li>
+            <li>เพิ่ม <strong>Development Gantt Chart</strong> &mdash; Phase timeline</li>
+        </ul>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- 1. OVERVIEW & MVP SCOPE                                      -->
+    <!-- ============================================================ -->
+    <h2>1. ภาพรวมสถาปัตยกรรมและขอบเขต MVP</h2>
+    <p>การพัฒนา AI-Native Kernel ใน Phase 1 จะใช้แนวทาง <strong>Hybrid-Companion Model</strong> โดยทำงานร่วมกับ Linux Kernel ผ่านระบบ <span class="badge">eBPF</span> และ <span class="badge">LSM</span> เพื่อดักจับพฤติกรรมในระดับริงศูนย์ (Kernel Space) และส่งต่อการควบคุมมายังระบบหลักที่พัฒนาขึ้นด้วยภาษา Rust</p>
+
+    <div class="highlight-box">
+        <p><strong>หลักการออกแบบ (Design Principles):</strong></p>
+        <ul>
+            <li><strong>Memory Safety Without GC:</strong> Rust ป้องกัน Use-After-Free / Buffer Overflow โดยไม่ต้องมี Garbage Collector</li>
+            <li><strong>Async-First:</strong> ใช้ Tokio runtime รองรับ concurrency ของ AI Agents ได้หมื่นตัวพร้อมกัน</li>
+            <li><strong>Fail-Safe by Default:</strong> ทุก subsystem ต้องมี fallback path และต้องไม่ทำให้ระบบทั้งหมดล้มเหลว</li>
+            <li><strong>Observability Built-In:</strong> Metrics + Tracing ฝังอยู่ในทุก hot path ตั้งแต่วันแรก</li>
+        </ul>
+    </div>
+
+    <h3>1.1 ขอบเขต MVP (Phase 1 Definition of Done)</h3>
+    <table>
+        <thead><tr><th>คุณสมบัติ MVP (Phase 1)</th><th>ขอบเขต</th></tr></thead>
+        <tbody>
+            <tr><td>eBPF syscall tracer (read-only) ที่รันบน Linux x86_64</td><td><span class="badge-success">In-Scope</span></td></tr>
+            <tr><td>Agent runtime (สูงสุด 10 concurrent agents)</td><td><span class="badge-success">In-Scope</span></td></tr>
+            <tr><td>Capability Token issuer + LSM policy decision point</td><td><span class="badge-success">In-Scope</span></td></tr>
+            <tr><td>Context Memory Manager (RAM + NVMe 2-tier, ยังไม่มี VRAM)</td><td><span class="badge-success">In-Scope</span></td></tr>
+            <tr><td>Simple Intent Bus (channel-based)</td><td><span class="badge-success">In-Scope</span></td></tr>
+            <tr><td>Context Paging ไปยัง VRAM</td><td><span class="badge-warn">Out-of-Scope (Phase 2)</span></td></tr>
+            <tr><td>Compute Scheduler แบบ Adaptive (CPU + GPU + NPU)</td><td><span class="badge-warn">Out-of-Scope (Phase 2)</span></td></tr>
+            <tr><td>Semantic File System / Distributed Cluster</td><td><span class="badge-warn">Out-of-Scope (Phase 3/4)</span></td></tr>
+        </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <!-- 2. ARCHITECTURE DIAGRAMS                                     -->
+    <!-- ============================================================ -->
+    <h2>2. แผนภาพสถาปัตยกรรม (Architecture Diagrams)</h2>
+
+    <h3>2.1 High-Level System Architecture</h3>
+    <div class="graph-container">
+<div class="mermaid">
+flowchart TB
+    subgraph USER["User / AI Application Layer"]
+        UI[Natural Language Intent]
+    end
+
+    subgraph RUNTIME["AI-Native Kernel (Rust + Tokio)"]
+        IB["Intent Bus<br/>(tokio broadcast)"]
+        SCHED["Agent Scheduler<br/>(spawn / suspend / terminate)"]
+        CTX["Context Memory Manager<br/>(Hot / Warm / Cold)"]
+        CAP["Capability &amp; Security<br/>(LSM Policy Engine)"]
+        COMP["Compute Scheduler<br/>(CPU / GPU / NPU)"]
+        AUDIT["Audit Logger<br/>(WORM)"]
+    end
+
+    subgraph KERNEL["Linux Kernel (Hybrid-Companion)"]
+        EBPF["eBPF (Aya)<br/>Syscall Hook"]
+        LSM["LSM Hook<br/>Security Decision"]
+    end
+
+    subgraph HW["Hardware"]
+        CPU[CPU]
+        GPU[GPU]
+        NPU[NPU]
+        NVMe[NVMe]
+    end
+
+    UI --> IB
+    IB --> SCHED
+    SCHED --> CTX
+    SCHED --> CAP
+    CAP --> AUDIT
+    CAP -->|decision| LSM
+    SCHED --> COMP
+    COMP --> CPU
+    COMP --> GPU
+    COMP --> NPU
+    CTX --> NVMe
+    LSM --> EBPF
+    EBPF -->|ring buffer| IB
+
+    classDef userLayer fill:#ebf8ff,stroke:#3182ce,color:#1a365d
+    classDef runtimeLayer fill:#f0fff4,stroke:#38a169,color:#22543d
+    classDef kernelLayer fill:#fffaf0,stroke:#dd6b20,color:#7b341e
+    classDef hwLayer fill:#fff5f5,stroke:#e53e3e,color:#9b2c2c
+    class UI userLayer
+    class IB,SCHED,CTX,CAP,COMP,AUDIT runtimeLayer
+    class EBPF,LSM kernelLayer
+    class CPU,GPU,NPU,NVMe hwLayer
+</div>
+        <div class="graph-caption">รูปที่ 1 &mdash; ภาพรวมการไหลของข้อมูลจาก User Intent สู่ Hardware</div>
+    </div>
+
+    <h3>2.2 Crate Dependency Graph</h3>
+    <div class="graph-container">
+<div class="mermaid">
+flowchart BT
+    CORE["kernel-core<br/>(shared types: AgentId, ContextId)"]
+    CRYPTO["capability-security<br/>(CapabilityToken, LSM Policy)"]
+    CTX["context-memory<br/>(Hot/Warm/Cold paging)"]
+    SCHED["agent-scheduler<br/>(lifecycle, supervisor)"]
+    COMP["compute-scheduler<br/>(cost function, weights)"]
+    IB["intent-bus<br/>(event loop)"]
+    COMPANION["kernel-companion<br/>(eBPF/LSM bin)"]
+
+    CORE --> CRYPTO
+    CORE --> CTX
+    CORE --> SCHED
+    CORE --> IB
+    CRYPTO --> SCHED
+    CTX --> SCHED
+    SCHED --> COMP
+    SCHED --> IB
+    CRYPTO --> COMPANION
+    SCHED --> COMPANION
+    IB --> COMPANION
+
+    classDef crateStyle fill:#edf2f7,stroke:#4a5568,color:#2d3748
+    classDef binStyle fill:#feebc8,stroke:#dd6b20,color:#7b341e
+    class CORE,CRYPTO,CTX,SCHED,COMP,IB crateStyle
+    class COMPANION binStyle
+</div>
+        <div class="graph-caption">รูปที่ 2 &mdash; Cargo Workspace: dependency ระหว่าง crates (ลูกศร = depends on)</div>
+    </div>
+
+    <h3>2.3 Data Flow &mdash; Syscall Request Lifecycle</h3>
+    <div class="graph-container">
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant A as Agent
+    participant E as eBPF Hook (Aya)
+    participant L as Event Loop
+    participant P as Policy Engine
+    participant AU as Audit Logger
+    participant K as Linux Kernel
+
+    A->>E: syscall(open, "/etc/passwd")
+    E->>L: ring buffer event
+    L->>P: check CapabilityToken
+    alt ALLOW
+        P->>AU: log ALLOW
+        P->>K: permit
+        K-->>A: return fd / result
+    else DENY (fail-closed)
+        P->>AU: log DENY + reason
+        P-->>A: return EPERM
+    end
+</div>
+        <div class="graph-caption">รูปที่ 3 &mdash; ลำดับการตัดสินใจเมื่อ Agent ร้องขอ syscall (default = DENY)</div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- 3. MODULES                                                   -->
+    <!-- ============================================================ -->
+    <h2>3. แผนการพัฒนารายโมดูล</h2>
+
+    <h3>Module 1: Agent Scheduler</h3>
+    <p>ทำหน้าที่ควบคุมวงจรชีวิต (Lifecycle), ระดับความสำคัญ (Priority) และการแยกส่วน (Isolation) ของ Agent แต่ละตัว โดยใช้ <span class="badge">tokio::runtime</span> สร้าง Light-weight Green Threads</p>
+
+    <div class="graph-container">
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Ready: spawn()
+    Ready --> Running: dispatch
+    Running --> WaitingForContext: load ctx
+    WaitingForContext --> Running: ctx ready
+    Running --> WaitingForHumanApproval: risky action
+    WaitingForHumanApproval --> Running: approved
+    WaitingForHumanApproval --> Suspended: rejected
+    Running --> Suspended: supervisor pause
+    Suspended --> Ready: resume()
+    Running --> Failed: panic/timeout
+    Failed --> Ready: retry (count &lt; max)
+    Failed --> Terminated: max retries exceeded
+    Running --> Terminated: graceful exit
+    Suspended --> Terminated: kill()
+    Terminated --> [*]
+</div>
+        <div class="graph-caption">รูปที่ 4 &mdash; Agent State Machine: transition ทั้งหมดของ AgentControlBlock.state</div>
+    </div>
+
+    <h4>ตัวอย่างโครงสร้างข้อมูล:</h4>
+    <pre>pub enum AgentState {
+    Ready,
+    Running,
+    WaitingForHumanApproval,
+    WaitingForContext,
+    Suspended,
+    Terminated,
+    <span style="color:#3182ce">// fault state</span>
+    Failed { error_code: u32, recoverable: bool },
+}
+
+pub struct AgentControlBlock {
+    pub agent_id: u64,
+    pub name: String,
+    pub priority: u8,
+    pub state: AgentState,
+    pub capabilities: Vec&lt;CapabilityToken&gt;,
+    pub context_id: u64,
+    pub deadline: Option&lt;tokio::time::Instant&gt;,
+    pub retry_count: u8,
+    pub max_retries: u8,
+}</pre>
+
+    <h4>Module 1 &mdash; Performance Budget</h4>
+    <table>
+        <thead><tr><th>Metric</th><th>เป้าหมาย (P99)</th><th>วิธีวัด</th></tr></thead>
+        <tbody>
+            <tr><td>Agent spawn latency</td><td><strong>&lt; 500 µs</strong></td><td>histogram on spawn()</td></tr>
+            <tr><td>Context switch (agent &harr; agent)</td><td><strong>&lt; 50 µs</strong></td><td>tracing span</td></tr>
+            <tr><td>Concurrent agents (Phase 1 / 2+)</td><td><strong>10 / 1,000+</strong></td><td>load test</td></tr>
+            <tr><td>Scheduler overhead (% CPU)</td><td><strong>&lt; 3%</strong></td><td>perf stat</td></tr>
+        </tbody>
+    </table>
+
+    <h3>Module 2: Context Memory Manager</h3>
+    <p>ออกแบบโดยอาศัยหลักการ <strong>Context Paging Memory</strong> เพื่อสลับเปลี่ยนข้อมูลบริบทระหว่างเลเยอร์ต่างๆ</p>
+
+    <div class="graph-container">
+<div class="mermaid">
+flowchart LR
+    subgraph TIER1["Hot Tier"]
+        VRAM["GPU VRAM / NPU Cache<br/>(Tensor) &mdash; Phase 2"]
+        RAM["System RAM<br/>(Vec&lt;f32&gt;)"]
+    end
+    subgraph TIER2["Warm Tier"]
+        NVMe["NVMe SSD<br/>(RocksDB)"]
+    end
+    subgraph TIER3["Cold Tier"]
+        DISK["Disk File<br/>(fallback)"]
+    end
+
+    VRAM &lt;--&gt;|&lt;200ms| RAM
+    RAM &lt;--&gt;|&lt;10ms| NVMe
+    NVMe &lt;--&gt;|&lt;50ms| DISK
+
+    classDef hot fill:#fed7d7,stroke:#e53e3e,color:#9b2c2c
+    classDef warm fill:#feebc8,stroke:#dd6b20,color:#7b341e
+    classDef cold fill:#bee3f8,stroke:#3182ce,color:#2a436f
+    class VRAM,RAM hot
+    class NVMe warm
+    class DISK cold
+</div>
+        <div class="graph-caption">รูปที่ 5 &mdash; Context Paging: bidirectional migration ระหว่าง tiers (ตัวเลข = P99 latency)</div>
+    </div>
+
+    <div class="highlight-box">
+        <p><strong>Inference / Vector Stack ที่เลือก:</strong></p>
+        <ul>
+            <li><strong>Inference Engine (Phase 2):</strong> <span class="badge">llama.cpp</span> (CPU/NPU edge), <span class="badge">TensorRT-LLM</span> (GPU batch)</li>
+            <li><strong>Vector Store (Phase 3):</strong> <span class="badge">Qdrant Embedded</span> (แทน Neo4j เพื่อลด operational overhead)</li>
+        </ul>
+    </div>
+
+    <h3>Module 3: Compute Scheduler &amp; Decision Matrix</h3>
+    <p>คัดเลือกหน่วยประมวลผลที่ประหยัดพลังงานและได้ผลลัพธ์เร็วที่สุด โดยใช้ Cost Function:</p>
+
+    <div style="text-align:center; margin:15px 0; font-size:1.1em;">
+        <span class="math">Cost = (w&#8321; &times; Latency) + (w&#8322; &times; Power) + (w&#8323; &times; FinancialCost)</span>
+    </div>
+
+    <div class="highlight-box">
+        <p><strong>Adaptive Weights (3 โหมด):</strong></p>
+        <ul>
+            <li><strong>Battery Mode (Laptop/Edge):</strong> w&#8322; (Power) สูง &rarr; ลดการใช้ GPU</li>
+            <li><strong>Throughput Mode (Server):</strong> w&#8321; (Latency) สูง &rarr; เลือก GPU ก่อน</li>
+            <li><strong>Cost Mode (Cloud Burst):</strong> w&#8323; (FinancialCost) สูง &rarr; เลือก local NPU ก่อน</li>
+            <li><strong>Adaptive learning:</strong> ปรับ weight ทุก 100 runs ด้วย EWMA</li>
+        </ul>
+    </div>
+
+    <table>
+        <thead><tr><th>Task / โหลดงาน</th><th>CPU</th><th>GPU</th><th>NPU</th><th>Cloud</th></tr></thead>
+        <tbody>
+            <tr><td><strong>Kernel Logic / LSM Check</strong></td><td>✓ High Priority</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+            <tr><td><strong>Small LLM (Under 7B)</strong></td><td>&mdash;</td><td>&mdash;</td><td>✓ Optimal</td><td>&mdash;</td></tr>
+            <tr><td><strong>Large LLM (Reasoning)</strong></td><td>&mdash;</td><td>✓ Batch</td><td>&mdash;</td><td>✓ If Budget</td></tr>
+            <tr><td><strong>Semantic Vector Indexing</strong></td><td>&mdash;</td><td>✓ Parallel</td><td>✓ Streaming</td><td>&mdash;</td></tr>
+        </tbody>
+    </table>
+
+    <h3>Module 4: Capability &amp; Security Manager (Zero-Trust)</h3>
+    <p>ทุก System Calls ถูกดักจับที่ระดับลินุกซ์เคอร์เนลผ่าน <strong>LSM Hook</strong> แล้วส่งผ่าน IPC มาตรวจสอบที่ Policy Engine (<strong>default = DENY</strong>)</p>
+    <pre>pub struct CapabilityToken {
+    pub token_id: [u8; 32],
+    pub allowed_action: String,
+    pub resource_mask: String,
+    pub max_cost_limit: u64,
+    pub expires_at: tokio::time::Instant,
+    pub scope: Scope,
+}
+
+pub enum Scope {
+    ReadOnly,
+    ReadWrite { path_prefix: String },
+    Network { allowed_hosts: Vec&lt;String&gt; },
+}</pre>
+
+    <!-- ============================================================ -->
+    <!-- 4. EXECUTION PIPELINE                                        -->
+    <!-- ============================================================ -->
+    <h2>4. Execution Pipeline</h2>
+    <p>เมื่อผู้ใช้ส่งความต้องการ (Intent/Goal) เข้ามา วงจรการทำงานจะเป็นดังนี้:</p>
+
+    <div class="graph-container">
+<div class="mermaid">
+flowchart LR
+    I["1. Intent Bus<br/>Capture"] --> S["2. Agent<br/>Spawning"]
+    S --> C["3. Context<br/>Attachment"]
+    C --> T["4. Tool Execution<br/>&amp; Sandboxing"]
+    T --> AU["Audit Log<br/>(WORM)"]
+
+    classDef step fill:#ebf8ff,stroke:#3182ce,color:#1a365d
+    classDef audit fill:#f0fff4,stroke:#38a169,color:#22543d
+    class I,S,C,T step
+    class AU audit
+</div>
+        <div class="graph-caption">รูปที่ 6 &mdash; Execution Pipeline: 4 ขั้นตอนจาก Intent สู่ Audit</div>
+    </div>
+
+    <div class="danger-box">
+        <p><strong>Timeout Policy (ทุก external call):</strong> Syscall decision: <strong>1 ms</strong> &middot; Tool sandbox: <strong>30 s</strong> &middot; Context load NVMe: <strong>2 s</strong> &middot; GPU inference: <strong>60 s</strong></p>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- 5. FAULT TOLERANCE                                           -->
+    <!-- ============================================================ -->
+    <h2>5. Fault Tolerance &amp; Recovery</h2>
+    <p>สำหรับระบบระดับ Kernel เรากำหนด <strong>Failure Domains</strong> และ <strong>Recovery Strategy</strong> ชัดเจน:</p>
+
+    <table>
+        <thead><tr><th>Failure Domain</th><th>ตัวอย่าง</th><th>Recovery Strategy</th><th>ผลกระทบ</th></tr></thead>
+        <tbody>
+            <tr><td><strong>Agent Process</strong></td><td>panic / OOM / deadlock</td><td>Supervisor restart (max 3 retries)</td><td>จำกัดเฉพาะ Agent นั้น</td></tr>
+            <tr><td><strong>Context Store</strong></td><td>RocksDB corruption</td><td>Fallback ไป Cold (file)</td><td>Context ช้าลง</td></tr>
+            <tr><td><strong>Compute Backend</strong></td><td>GPU OOM / NPU hang</td><td>Circuit breaker + fallback CPU</td><td>Latency เพิ่ม</td></tr>
+            <tr><td><strong>eBPF Hook</strong></td><td>Aya load failure</td><td>Safe Mode (block new spawns)</td><td>ระบบทำงาน แต่งดรับ Agent</td></tr>
+            <tr><td><strong>Policy Engine</strong></td><td>Policy parse error</td><td><strong>Fail-DENY</strong> (fail-closed)</td><td>Syscall ใหม่ถูกปฏิเสธ</td></tr>
+        </tbody>
+    </table>
+
+    <h3>5.1 Recovery Sequence &mdash; GPU OOM Scenario</h3>
+    <div class="graph-container">
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant AG as Agent
+    participant CS as Compute Scheduler
+    participant CB as Circuit Breaker
+    participant GPU
+    participant CPU
+    participant AU as Audit Logger
+
+    AG->>CS: request inference (batch)
+    CS->>GPU: infer(batch) [timeout 60s]
+    GPU-->>CS: Error: OOM
+    CS->>CB: open(gpu)
+    CS->>AU: log backend failure
+    CS->>CPU: infer(batch) [fallback]
+    CPU-->>CS: result
+    CS-->>AG: result (with latency warning)
+    Note over CB: auto-close after cooldown
+</div>
+        <div class="graph-caption">รูปที่ 7 &mdash; Recovery flow เมื่อ GPU OOM: circuit breaker + fallback CPU</div>
+    </div>
+
+    <div class="danger-box">
+        <p><strong>Key Principle: Blast Radius Minimization.</strong> ความผิดพลาดของ Agent หนึ่งตัวจะต้องไม่ทำให้ระบบทั้งหมดล้มเหลว ใช้ <code>tokio::spawn</code> + <code>tokio::task::catch_unwind</code> สำหรับทุก agent task</p>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- 6. TESTING STRATEGY                                          -->
+    <!-- ============================================================ -->
+    <h2>6. กลยุทธ์การทดสอบ (Testing Strategy)</h2>
+    <p>ระบบระดับ Kernel ต้องมีการทดสอบที่ครอบคลุมทุกระดับ โดยแบ่งเป็น 5 ชั้น:</p>
+
+    <table>
+        <thead><tr><th>ชั้นการทดสอบ</th><th>เป้าหมายความคุ้มครอง</th><th>Tools</th><th>Target Coverage</th></tr></thead>
+        <tbody>
+            <tr><td><strong>Unit Tests</strong></td><td>Logic ของแต่ละ function/struct</td><td><span class="badge">#[cfg(test)]</span>, rstest</td><td><strong>&gt; 85%</strong> ทุก module</td></tr>
+            <tr><td><strong>Property Tests</strong></td><td>Invariants ของ scheduler, token, cost</td><td><span class="badge">proptest</span>, <span class="badge">quickcheck</span></td><td>100% of public invariants</td></tr>
+            <tr><td><strong>Integration Tests</strong></td><td>End-to-end pipeline</td><td><span class="badge">tokio::test</span>, mock eBPF/LSM</td><td>ทุก happy + error path</td></tr>
+            <tr><td><strong>Fuzz Tests</strong></td><td>Crash/panic จาก malformed input</td><td><span class="badge">cargo-fuzz</span>, AFL</td><td>100% of parser surface</td></tr>
+            <tr><td><strong>Chaos / Fault Injection</strong></td><td>Fault tolerance ภายใต้ failure</td><td><span class="badge">failpoints</span></td><td>ทุก Failure Domain</td></tr>
+        </tbody>
+    </table>
+
+    <div class="highlight-box">
+        <p><strong>Testing Invariants (Property Tests):</strong></p>
+        <ul>
+            <li><strong>Agent Scheduler:</strong> Running + Ready + Waiting == total active agents</li>
+            <li><strong>Capability Token:</strong> expired tokens always rejected (constant_time_eq)</li>
+            <li><strong>Context Memory:</strong> Hot&rarr;Warm&rarr;Cold&rarr;Warm&rarr;Hot round-trip lossless</li>
+            <li><strong>Cost Function:</strong> selected target is global minimum for given weights</li>
+        </ul>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- 7. OBSERVABILITY                                             -->
+    <!-- ============================================================ -->
+    <h2>7. Observability Stack</h2>
+    <table>
+        <thead><tr><th>Layer</th><th>Tool</th><th>What we capture</th></tr></thead>
+        <tbody>
+            <tr><td><strong>Metrics</strong></td><td><span class="badge">metrics</span> + Prometheus</td><td>Counter/Histogram/Gauge for all subsystems</td></tr>
+            <tr><td><strong>Tracing</strong></td><td><span class="badge">tracing</span> + OTel &rarr; Jaeger</td><td>Distributed trace: Intent &rarr; Agent &rarr; Syscall &rarr; Audit</td></tr>
+            <tr><td><strong>Structured Logging</strong></td><td><span class="badge">tracing-subscriber</span> JSON</td><td>PII-sanitized logs (no keys/tokens)</td></tr>
+            <tr><td><strong>Audit Log (WORM)</strong></td><td>SQLite WAL &rarr; PostgreSQL append-only</td><td>ทุก ALLOW/DENY + timestamp + agent_id + token_id</td></tr>
+            <tr><td><strong>eBPF Profiling</strong></td><td>perf events + Parca/Grafana</td><td>CPU flamegraphs, syscall latency</td></tr>
+        </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <!-- 8. COMPATIBILITY MATRIX                                      -->
+    <!-- ============================================================ -->
+    <h2>8. Hardware Compatibility Matrix</h2>
+    <table>
+        <thead><tr><th>Hardware Class</th><th>Vendor / Model</th><th>Feature</th><th>Phase</th></tr></thead>
+        <tbody>
+            <tr><td rowspan="3"><strong>CPU (x86_64)</strong></td><td>Intel (Gen 12+)</td><td>eBPF, scheduler</td><td>Phase 1</td></tr>
+            <tr><td>AMD (Zen 3+)</td><td>eBPF, scheduler</td><td>Phase 1</td></tr>
+            <tr><td>ARM64 (Apple, Graviton)</td><td>eBPF limited, scheduler</td><td>Phase 1 (basic)</td></tr>
+            <tr><td rowspan="3"><strong>GPU</strong></td><td>NVIDIA (CUDA 12+, SM 8.0+)</td><td>TensorRT-LLM</td><td>Phase 2</td></tr>
+            <tr><td>AMD (ROCm 6+)</td><td>ROCm, vLLM</td><td>Phase 2 (best-effort)</td></tr>
+            <tr><td>Apple Metal (M-series)</td><td>MPS, llama.cpp Metal</td><td>Phase 2 (best-effort)</td></tr>
+            <tr><td rowspan="2"><strong>NPU</strong></td><td>Intel NPU (Lunar Lake)</td><td>OpenVINO, ONNX</td><td>Phase 2</td></tr>
+            <tr><td>Qualcomm Hexagon</td><td>QNN, ONNX</td><td>Phase 2 (best-effort)</td></tr>
+            <tr><td rowspan="2"><strong>Storage</strong></td><td>NVMe Gen4/Gen5</td><td>RocksDB context store</td><td>Phase 1</td></tr>
+            <tr><td>Optane / CXL.mem</td><td>Warm-tier overflow</td><td>Out-of-scope</td></tr>
+        </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <!-- 9. ROADMAP (GANTT)                                           -->
+    <!-- ============================================================ -->
+    <h2>9. แผนงานการพัฒนา (Development Roadmap)</h2>
+
+    <div class="graph-container">
+<div class="mermaid">
+gantt
+    title AI-Native Kernel Development Timeline
+    dateFormat YYYY-MM-DD
+    axisFormat %b %Y
+
+    section Phase 1 - MVP
+    eBPF syscall tracer          :p1a, 2026-07-01, 60d
+    Agent runtime (10 agents)    :p1b, after p1a, 45d
+    Capability/LSM policy        :p1c, after p1a, 40d
+    Context Memory (RAM+NVMe)    :p1d, after p1b, 35d
+    Audit Log (WORM)             :p1e, after p1c, 20d
+    Integration + chaos tests    :p1f, after p1d, 30d
+    MVP Release                  :milestone, p1m, after p1f, 0d
+
+    section Phase 2 - AI Runtime
+    VRAM context paging          :p2a, after p1f, 50d
+    Compute Scheduler (GPU/NPU)  :p2b, after p2a, 60d
+    Adaptive weights (EWMA)      :p2c, after p2b, 30d
+
+    section Phase 3 - Semantic OS
+    Semantic File System         :p3a, after p2c, 90d
+
+    section Phase 4 - Distributed
+    Cluster compute sharing      :p4a, after p3a, 90d
+</div>
+        <div class="graph-caption">รูปที่ 8 &mdash; Gantt timeline: 4 เฟสการพัฒนา (วันที่เป็นเพียนการประมาณการ)</div>
+    </div>
+
+    <table>
+        <thead><tr><th>เฟส</th><th>ความเสี่ยงหลัก</th><th>Mitigation</th></tr></thead>
+        <tbody>
+            <tr><td><strong>Phase 1: MVP</strong></td><td>eBPF compat ตาม kernel version; privilege</td><td>Pin kernel version ใน CI; fallback auditd</td></tr>
+            <tr><td><strong>Phase 2: AI Runtime</strong></td><td>GPU OOM multi-tenant; driver instability</td><td>Circuit breaker; memory budgeting</td></tr>
+            <tr><td><strong>Phase 3: Semantic OS</strong></td><td>Index build cost; indexing latency</td><td>Incremental indexing; query cache</td></tr>
+            <tr><td><strong>Phase 4: Distributed</strong></td><td>Network partition; consistency</td><td>Tunable consistency; gossip health</td></tr>
+        </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <!-- 10. SUCCESS CRITERIA                                         -->
+    <!-- ============================================================ -->
+    <h2>10. Phase 1 MVP Success Criteria</h2>
+    <div class="success-box">
+        <p>Phase 1 จะถือว่า "สำเร็จ" เมื่อตรงเกณฑ์ทั้งหมด:</p>
+        <ul>
+            <li>✅ eBPF tracer intercept syscalls บน Linux 6.1+ (x86_64) โดย overhead &lt; 3% CPU</li>
+            <li>✅ Agent runtime รองรับ 10 concurrent agents, spawn P99 &lt; 500 µs</li>
+            <li>✅ Capability/LSM policy ตัดสินใจทุก syscall ภายใน 1 ms</li>
+            <li>✅ Audit Log บันทึก 100% security decisions แบบ append-only</li>
+            <li>✅ ผ่าน chaos test สำหรับทุก Failure Domain &mdash; ระบบไม่ล้มเหลว</li>
+            <li>✅ Unit test coverage &gt; 85%; fuzz 10M inputs ไม่พบ panic</li>
+            <li>✅ <code>rtk cargo clippy -- -D warnings</code> ผ่านโดยไม่มี warning</li>
+            <li>✅ <code>rtk cargo audit</code> ไม่พบ known CVE</li>
+        </ul>
+    </div>
+
+</body>
+</html>

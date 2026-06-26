@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kernel-companion",
+    "crates/agent-scheduler",
+    "crates/context-memory",
+    "crates/compute-scheduler",
+    "crates/capability-security",
+    "crates/intent-bus",
+]
+
+[workspace.dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tracing = { version = "0.1", features = ["std"] }
+thiserror = "1.0"
+anyhow = "1.0"
+secrecy = "0.8"
+zeroize = "1.0"
+aya = "0.4"
+aya-bpf = "0.4"
+aya-bpf-async = "0.4"
+rocksdb = { version = "0.21", features = ["snappy"] }
+flume = "0.11"
+dashmap = "5.5"
+parking_lot = "0.12"
+prometheus = "0.13"
+opentelemetry = "0.21"
+opentelemetry-sdk = "0.21"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anymap = "1.0"
+crossbeam-channel = "0.5"
+crossbeam-deque = "0.7"
+crossbeam-slab = "0.1"
+crossbeam-utils = "0.8"
+futures = "0.3"
+rayon = "1.5"
+thiserror = "1.0"
+assert_matches = "1.5"
+pretty_assertions = "1.4"
+log = "0.4"
+itertools = "0.11"
+ndslice = "0.3"
+criterion = "0.5"
+proptest = "1.0"
+quickcheck = "1.0"
+rstest = "0.18"
+tokio-test = "0.4"
+mockall = "0.12"
+mockall_derive = "0.12"
+mockiato = "0.31"
+pretty_env_logger = "0.5"
+env_logger = "0.10"
+derive_more = "0.99"
+uuid = { version = "1.0", features = ["v4"] }
+uuid-macro = "1.0"
+rustversion = "1.0"

@@ -1,0 +1,18 @@
+package = "intent-bus"
+edition = "2024"
+rust-version = "1.72"
+description = "AI Intent Bus - event-driven communication layer"
+license = "MIT"
+repository = "https://github.com/srayuth202510-byte/AI-Native-Kernel"
+keywords = ["ai", "intent", "bus", "event-driven"]
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+thiserror = "1.0"
+anyhow = "1.0"
+secrecy = "0.8"
+zeroize = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"

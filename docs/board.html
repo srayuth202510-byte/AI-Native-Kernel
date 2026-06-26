@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI-Native Kernel — Project Board</title>
+<style>
+    :root {
+        --bg: #f4f6f9;
+        --surface: #ffffff;
+        --ink: #2d3748;
+        --ink-soft: #4a5568;
+        --muted: #718096;
+        --line: #e2e8f0;
+        --accent: #3182ce;
+        --accent-dark: #2b6cb0;
+        --dark: #1a202c;
+        --green: #38a169;
+        --red: #e53e3e;
+        --orange: #dd6b20;
+        --yellow: #d69e2e;
+        --purple: #805ad5;
+        --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+        --shadow-lg: 0 10px 25px rgba(0,0,0,0.10), 0 4px 10px rgba(0,0,0,0.05);
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: var(--bg); color: var(--ink);
+        margin: 0; padding: 0; line-height: 1.5; font-size: 14px;
+    }
+
+    /* Header */
+    .header {
+        background: linear-gradient(135deg, var(--dark) 0%, #2d3748 100%);
+        color: #fff; padding: 22px 28px;
+    }
+    .header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+    .header .sub { color: #cbd5e0; font-size: 12.5px; margin-top: 4px; }
+    .header-meta { display: flex; gap: 18px; margin-top: 12px; font-size: 11.5px; color: #a0aec0; flex-wrap: wrap; }
+    .header-meta span { display: inline-flex; align-items: center; gap: 5px; }
+    .header-meta b { color: #e2e8f0; }
+
+    /* Toolbar */
+    .toolbar {
+        display: flex; align-items: center; gap: 12px;
+        padding: 12px 28px; background: var(--surface);
+        border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 50;
+        box-shadow: 0 1px 0 rgba(0,0,0,0.03); flex-wrap: wrap;
+    }
+    .tabs { display: flex; gap: 4px; background: var(--bg); padding: 4px; border-radius: 8px; }
+    .tab {
+        border: none; background: transparent; padding: 7px 16px;
+        font-size: 13px; font-weight: 600; color: var(--ink-soft);
+        border-radius: 6px; cursor: pointer; transition: all .15s; font-family: inherit;
+    }
+    .tab.active { background: var(--surface); color: var(--accent-dark); box-shadow: var(--shadow); }
+    .tab:hover:not(.active) { background: rgba(255,255,255,0.6); }
+
+    .spacer { flex: 1; }
+
+    .search-box {
+        display: flex; align-items: center; background: var(--bg);
+        border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; width: 220px;
+    }
+    .search-box input { border: none; background: transparent; outline: none; font-size: 13px; width: 100%; font-family: inherit; color: var(--ink); }
+    .search-box svg { width: 14px; height: 14px; color: var(--muted); flex-shrink: 0; }
+
+    .btn {
+        border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+        padding: 7px 13px; border-radius: 7px; cursor: pointer; font-size: 12.5px;
+        font-weight: 600; display: inline-flex; align-items: center; gap: 6px; transition: all .15s; font-family: inherit;
+    }
+    .btn:hover { border-color: var(--accent); color: var(--accent-dark); }
+    .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn-primary:hover { background: var(--accent-dark); border-color: var(--accent-dark); color: #fff; }
+    .btn-ghost { background: transparent; border-color: transparent; color: var(--muted); }
+    .btn-ghost:hover { color: var(--ink); background: var(--bg); }
+    .btn svg { width: 14px; height: 14px; }
+
+    /* Filter row */
+    .filter-row { display: flex; gap: 8px; padding: 10px 28px; background: var(--surface); border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
+    .filter-row .label { font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+    .chip {
+        font-size: 11.5px; padding: 3px 10px; border-radius: 20px; cursor: pointer;
+        border: 1px solid var(--line); background: var(--surface); color: var(--ink-soft);
+        font-weight: 600; transition: all .12s; user-select: none; font-family: inherit;
+    }
+    .chip:hover { border-color: var(--accent); }
+    .chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    /* Board */
+    .board-wrap { padding: 20px 28px 40px; }
+    .board { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 12px; min-height: 60vh; }
+    .column {
+        background: var(--bg); border-radius: 10px; min-width: 280px; width: 280px;
+        flex-shrink: 0; display: flex; flex-direction: column; max-height: calc(100vh - 240px);
+    }
+    .column.drag-over { outline: 2px dashed var(--accent); outline-offset: -2px; }
+    .column-header {
+        display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px;
+        font-weight: 700; font-size: 12.5px; color: var(--ink); text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .column-header .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .column-count {
+        margin-left: auto; background: rgba(0,0,0,0.06); color: var(--ink-soft);
+        font-size: 11px; padding: 1px 8px; border-radius: 10px; font-weight: 700;
+    }
+    .column-cards { padding: 4px 10px 12px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    .column-cards:empty::after {
+        content: "ลากการ์ดมาที่นี่"; color: var(--muted); font-size: 12px;
+        text-align: center; padding: 24px 8px; font-style: italic; opacity: 0.6;
+    }
+
+    /* Card */
+    .card {
+        background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+        padding: 11px 12px; cursor: grab; box-shadow: var(--shadow); transition: all .15s; position: relative;
+    }
+    .card:hover { border-color: var(--accent); box-shadow: var(--shadow-lg); transform: translateY(-1px); }
+    .card.dragging { opacity: 0.4; cursor: grabbing; }
+    .card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .card-id { font-family: 'Courier New', monospace; font-size: 10.5px; color: var(--muted); font-weight: 700; }
+    .card-priority {
+        font-size: 9.5px; padding: 1px 6px; border-radius: 4px; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.3px; margin-left: auto;
+    }
+    .card-title { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 4px; line-height: 1.35; }
+    .card-desc { font-size: 11.5px; color: var(--muted); margin-bottom: 8px; line-height: 1.4; }
+    .card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+    .tag {
+        font-size: 10px; padding: 2px 7px; border-radius: 4px; font-weight: 600;
+        background: #ebf8ff; color: #2b6cb0; border: 1px solid #bee3f8;
+    }
+    .card-foot { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+    .card-foot .assignee {
+        width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 10px; font-weight: 700;
+    }
+    .card-foot .due { margin-left: auto; }
+    .card-foot .due.overdue { color: var(--red); font-weight: 600; }
+    .card-actions { display: none; position: absolute; top: 8px; right: 8px; gap: 4px; }
+    .card:hover .card-actions { display: flex; }
+    .icon-btn {
+        width: 22px; height: 22px; border: none; background: var(--bg);
+        border-radius: 4px; cursor: pointer; color: var(--muted);
+        display: inline-flex; align-items: center; justify-content: center; padding: 0;
+    }
+    .icon-btn:hover { background: var(--line); color: var(--ink); }
+    .icon-btn svg { width: 13px; height: 13px; }
+    .icon-btn.del:hover { background: #fff5f5; color: var(--red); }
+
+    /* Issue list */
+    .issue-table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }
+    .issue-table th {
+        background: var(--dark); color: #fff; text-align: left; padding: 11px 14px;
+        font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700;
+    }
+    .issue-table td { padding: 12px 14px; border-top: 1px solid var(--line); font-size: 13px; vertical-align: middle; }
+    .issue-table tr:hover td { background: #f7fafc; cursor: pointer; }
+    .issue-table tr.done td { opacity: 0.55; }
+    .issue-table tr.done .issue-title { text-decoration: line-through; }
+    .issue-table .issue-id { font-family: 'Courier New', monospace; font-size: 11.5px; color: var(--muted); font-weight: 700; }
+    .issue-title { font-weight: 600; }
+    .status-pill {
+        font-size: 11px; padding: 3px 10px; border-radius: 20px; font-weight: 700;
+        display: inline-block; white-space: nowrap;
+    }
+    .status-backlog { background: #edf2f7; color: #4a5568; }
+    .status-todo { background: #feebc8; color: #7b341e; }
+    .status-doing { background: #bee3f8; color: #2a436f; }
+    .status-review { background: #e9d8fd; color: #553c9a; }
+    .status-done { background: #c6f6d5; color: #22543d; }
+
+    .priority-high { background: #fed7d7; color: #9b2c2c; }
+    .priority-med { background: #feebc8; color: #7b341e; }
+    .priority-low { background: #e2e8f0; color: #4a5568; }
+    .priority-critical { background: #9b2c2c; color: #fff; }
+
+    .issue-stats { display: flex; gap: 24px; padding: 0 28px 16px; flex-wrap: wrap; }
+    .stat { font-size: 12px; color: var(--muted); }
+    .stat b { color: var(--ink); font-size: 18px; display: block; font-weight: 700; }
+
+    /* Modal */
+    .modal-backdrop {
+        position: fixed; inset: 0; background: rgba(26,32,44,0.55);
+        display: none; align-items: center; justify-content: center; z-index: 100; padding: 20px;
+    }
+    .modal-backdrop.show { display: flex; }
+    .modal {
+        background: var(--surface); border-radius: 12px; width: 100%; max-width: 540px;
+        max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-lg);
+        animation: pop .15s ease-out;
+    }
+    @keyframes pop { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    .modal-head { padding: 18px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; }
+    .modal-head h3 { margin: 0; font-size: 16px; flex: 1; }
+    .modal-body { padding: 18px 22px; }
+    .modal-foot { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; }
+    .field { margin-bottom: 14px; }
+    .field label { display: block; font-size: 11.5px; font-weight: 700; color: var(--ink-soft); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.3px; }
+    .field input, .field select, .field textarea {
+        width: 100%; padding: 8px 11px; border: 1px solid var(--line); border-radius: 7px;
+        font-size: 13px; font-family: inherit; color: var(--ink); background: var(--surface); outline: none;
+    }
+    .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(49,130,206,0.12); }
+    .field textarea { resize: vertical; min-height: 70px; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    /* Priority legend */
+    .legend { display: flex; gap: 12px; padding: 10px 28px; background: var(--surface); border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; font-size: 11.5px; color: var(--muted); }
+    .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+    .legend-item .dot { width: 9px; height: 9px; border-radius: 50%; }
+
+    /* Toast */
+    .toast {
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        background: var(--dark); color: #fff; padding: 10px 18px; border-radius: 8px;
+        font-size: 13px; box-shadow: var(--shadow-lg); z-index: 200;
+        opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+
+    .empty { text-align: center; padding: 40px 20px; color: var(--muted); font-style: italic; }
+    .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<header class="header">
+    <h1>AI-Native Kernel — Project Board</h1>
+    <div class="sub">Phase 1 MVP · Tracking แผนงานจาก <code>docs/ai_native_kernel_plan_v2.html</code></div>
+    <div class="header-meta">
+        <span>📦 <b id="meta-total">0</b> tasks</span>
+        <span>✅ <b id="meta-done">0</b> done</span>
+        <span>⚡ <b id="meta-doing">0</b> in progress</span>
+        <span>🔥 <b id="meta-critical">0</b> critical</span>
+        <span style="margin-left:auto">💾 Auto-saved · <a href="#" id="reset-link" style="color:#a0aec0">reset</a></span>
+    </div>
+</header>
+
+<div class="toolbar">
+    <div class="tabs">
+        <button class="tab active" data-tab="kanban">🗂️ Kanban</button>
+        <button class="tab" data-tab="issues">📋 Issues</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="search-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="search" placeholder="ค้นหา task / issue...">
+    </div>
+    <button class="btn" id="export-btn" title="Export JSON">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Export
+    </button>
+    <button class="btn" id="import-btn" title="Import JSON">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Import
+    </button>
+    <button class="btn btn-primary" id="new-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New Task
+    </button>
+    <input type="file" id="import-file" accept=".json" class="hidden">
+</div>
+
+<div class="legend">
+    <span class="legend-item"><span class="dot" style="background:#718096"></span> Backlog</span>
+    <span class="legend-item"><span class="dot" style="background:#dd6b20"></span> To Do</span>
+    <span class="legend-item"><span class="dot" style="background:#3182ce"></span> In Progress</span>
+    <span class="legend-item"><span class="dot" style="background:#805ad5"></span> Review</span>
+    <span class="legend-item"><span class="dot" style="background:#38a169"></span> Done</span>
+    <span style="margin-left:auto; font-size:11px;">ลากการ์ดข้ามคอลัมน์เพื่อเปลี่ยนสถานะ · คลิกการ์ดเพื่อแก้ไข</span>
+</div>
+
+<div class="filter-row">
+    <span class="label">Module</span>
+    <button class="chip active" data-filter="module" data-value="all">ทั้งหมด</button>
+    <button class="chip" data-filter="module" data-value="kernel-companion">eBPF/LSM</button>
+    <button class="chip" data-filter="module" data-value="agent-scheduler">Agent Scheduler</button>
+    <button class="chip" data-filter="module" data-value="context-memory">Context Memory</button>
+    <button class="chip" data-filter="module" data-value="capability-security">Capability/Security</button>
+    <button class="chip" data-filter="module" data-value="intent-bus">Intent Bus</button>
+    <button class="chip" data-filter="module" data-value="infra">Infra/Test</button>
+</div>
+
+<!-- ============== KANBAN ============== -->
+<div id="kanban-view" class="board-wrap">
+    <div class="board" id="board"></div>
+</div>
+
+<!-- ============== ISSUES ============== -->
+<div id="issues-view" class="hidden">
+    <div class="issue-stats">
+        <div class="stat"><b id="is-total">0</b>total issues</div>
+        <div class="stat"><b id="is-open">0</b>open</div>
+        <div class="stat"><b id="is-closed">0</b>closed</div>
+        <div class="stat"><b id="is-bugs">0</b>bugs</div>
+        <div class="stat"><b id="is-features">0</b>features</div>
+    </div>
+    <div style="padding: 0 28px 40px;">
+        <table class="issue-table" id="issue-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Type</th>
+                    <th>Title</th>
+                    <th>Priority</th>
+                    <th>Status</th>
+                    <th>Module</th>
+                    <th>Assignee</th>
+                </tr>
+            </thead>
+            <tbody id="issue-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============== MODAL ============== -->
+<div class="modal-backdrop" id="modal">
+    <div class="modal">
+        <div class="modal-head">
+            <h3 id="modal-title">New Task</h3>
+            <button class="icon-btn" id="modal-close">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="field">
+                <label>Title *</label>
+                <input type="text" id="f-title" placeholder="เช่น Implement eBPF syscall tracer">
+            </div>
+            <div class="field">
+                <label>Description</label>
+                <textarea id="f-desc" placeholder="รายละเอียดของงาน..."></textarea>
+            </div>
+            <div class="field-row">
+                <div class="field">
+                    <label>Type</label>
+                    <select id="f-type">
+                        <option value="task">Task</option>
+                        <option value="feature">Feature</option>
+                        <option value="bug">Bug</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label>Priority</label>
+                    <select id="f-priority">
+                        <option value="low">Low</option>
+                        <option value="med" selected>Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field-row">
+                <div class="field">
+                    <label>Status / Column</label>
+                    <select id="f-status">
+                        <option value="backlog">Backlog</option>
+                        <option value="todo">To Do</option>
+                        <option value="doing">In Progress</option>
+                        <option value="review">Review</option>
+                        <option value="done">Done</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label>Module</label>
+                    <select id="f-module">
+                        <option value="kernel-companion" selected>eBPF/LSM</option>
+                        <option value="agent-scheduler">Agent Scheduler</option>
+                        <option value="context-memory">Context Memory</option>
+                        <option value="capability-security">Capability/Security</option>
+                        <option value="intent-bus">Intent Bus</option>
+                        <option value="infra">Infra/Test</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field-row">
+                <div class="field">
+                    <label>Assignee</label>
+                    <input type="text" id="f-assignee" placeholder="ชื่อ / ทีม">
+                </div>
+                <div class="field">
+                    <label>Due Date</label>
+                    <input type="date" id="f-due">
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
+            <button class="btn btn-danger-ghost hidden" id="modal-delete">Delete</button>
+            <button class="btn btn-primary" id="modal-save">Save</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ===========================================================
+   DATA MODEL & PERSISTENCE
+   =========================================================== */
+const STORAGE_KEY = "ank_board_v1";
+const COLUMNS = [
+    { id: "backlog", name: "Backlog",       color: "#718096" },
+    { id: "todo",    name: "To Do",         color: "#dd6b20" },
+    { id: "doing",   name: "In Progress",   color: "#3182ce" },
+    { id: "review",  name: "Review",        color: "#805ad5" },
+    { id: "done",    name: "Done",          color: "#38a169" },
+];
+const MODULE_LABELS = {
+    "kernel-companion": "eBPF/LSM",
+    "agent-scheduler": "Agent Scheduler",
+    "context-memory": "Context Memory",
+    "capability-security": "Capability/Security",
+    "intent-bus": "Intent Bus",
+    "infra": "Infra/Test",
+};
+const TYPE_ICON = { task: "🛠️", feature: "✨", bug: "🐛" };
+
+// Seed data from Phase 1 MVP plan
+const SEED = [
+    // --- kernel-companion (eBPF/LSM) ---
+    { id: "ANK-001", type: "task", title: "Setup eBPF dev environment (Aya + BPF target)",
+      desc: "ติดตั้ง toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+). Pin kernel version ใน CI.",
+      status: "todo", priority: "high", module: "kernel-companion", assignee: "—", due: "" },
+    { id: "ANK-002", type: "feature", title: "eBPF syscall tracer (read-only)",
+      desc: "โปรแกรม eBPF ที่ trace syscalls บน x86_64 ผ่าน tracepoint/raw_tracepoint. ส่ง events ออกทาง ring buffer. เป้า overhead < 3% CPU.",
+      status: "backlog", priority: "critical", module: "kernel-companion", assignee: "—", due: "" },
+    { id: "ANK-003", type: "task", title: "LSM policy decision point (PDP)",
+      desc: "Implement LSM hook ที่ดักจับ security decisions และส่งต่อมายัง Rust policy engine ผ่าน IPC.",
+      status: "backlog", priority: "high", module: "kernel-companion", assignee: "—", due: "" },
+
+    // --- agent-scheduler ---
+    { id: "ANK-004", type: "feature", title: "AgentControlBlock + AgentState enum",
+      desc: "นิยาม struct + state machine (Ready/Running/Waiting/Suspended/Terminated/Failed) ตาม plan §3 Module 1. รวม deadline, retry_count, max_retries.",
+      status: "todo", priority: "high", module: "agent-scheduler", assignee: "—", due: "" },
+    { id: "ANK-005", type: "feature", title: "Agent spawn/suspend/terminate API",
+      desc: "Async API บน tokio runtime. spawn() ต้อง < 500µs P99. ใช้ tokio::spawn + catch_unwind.",
+      status: "backlog", priority: "high", module: "agent-scheduler", assignee: "—", due: "" },
+    { id: "ANK-006", type: "feature", title: "Supervisor: restart/retry on fault",
+      desc: "Supervisor ที่ restart agent เมื่อ panic/timeout (max 3 retries). ทดสอบ blast radius minimization.",
+      status: "backlog", priority: "med", module: "agent-scheduler", assignee: "—", due: "" },
+    { id: "ANK-007", type: "task", title: "Property test: scheduler state invariant",
+      desc: "ใช้ proptest ตรวจสอบว่า Running+Ready+Waiting == total active agents เสมอ",
+      status: "backlog", priority: "med", module: "agent-scheduler", assignee: "—", due: "" },
+
+    // --- context-memory ---
+    { id: "ANK-008", type: "feature", title: "Hot tier (RAM): Vec<f32> store",
+      desc: "Hot context layer ใน System RAM. Read/write API + tracing span วัด latency < 10ms.",
+      status: "backlog", priority: "high", module: "context-memory", assignee: "—", due: "" },
+    { id: "ANK-009", type: "feature", title: "Warm tier (NVMe): RocksDB store",
+      desc: "Warm context layer บน NVMe ผ่าน RocksDB. Cold→Warm load < 50ms P99.",
+      status: "backlog", priority: "high", module: "context-memory", assignee: "—", due: "" },
+    { id: "ANK-010", type: "feature", title: "Tier migration: Hot<->Warm<->Cold",
+      desc: "Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.",
+      status: "backlog", priority: "med", module: "context-memory", assignee: "—", due: "" },
+    { id: "ANK-011", type: "task", title: "Property test: context round-trip lossless",
+      desc: "Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล",
+      status: "backlog", priority: "med", module: "context-memory", assignee: "—", due: "" },
+
+    // --- capability-security ---
+    { id: "ANK-012", type: "feature", title: "CapabilityToken struct + Scope enum",
+      desc: "นิยาม CapabilityToken (token_id, allowed_action, resource_mask, max_cost, expiry, scope) ตาม plan §3 Module 4.",
+      status: "todo", priority: "high", module: "capability-security", assignee: "—", due: "" },
+    { id: "ANK-013", type: "feature", title: "Policy Engine (fail-DENY)",
+      desc: "Policy decision point ที่ default = DENY เมื่อ error. ใช้ constant_time_eq สำหรับ token comparison. Decision latency < 1ms.",
+      status: "backlog", priority: "critical", module: "capability-security", assignee: "—", due: "" },
+    { id: "ANK-014", type: "feature", title: "WORM Audit Logger",
+      desc: "Append-only audit log (SQLite WAL Phase 1) บันทึกทุก ALLOW/DENY + timestamp + agent_id + token_id.",
+      status: "backlog", priority: "high", module: "capability-security", assignee: "—", due: "" },
+
+    // --- intent-bus ---
+    { id: "ANK-015", type: "feature", title: "Intent Bus (tokio broadcast)",
+      desc: "tokio::sync::broadcast channel สำหรับ Intent events. ไม่ใช่ distributed (Phase 1).",
+      status: "backlog", priority: "med", module: "intent-bus", assignee: "—", due: "" },
+
+    // --- infra ---
+    { id: "ANK-016", type: "task", title: "Cargo workspace skeleton (7 crates)",
+      desc: "สร้าง workspace ตาม Crate Dependency Graph (plan §2.2): kernel-core, agent-scheduler, context-memory, capability-security, compute-scheduler, intent-bus, kernel-companion.",
+      status: "doing", priority: "critical", module: "infra", assignee: "—", due: "" },
+    { id: "ANK-017", type: "task", title: "CI: clippy + test + audit pipeline",
+      desc: "GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.",
+      status: "todo", priority: "high", module: "infra", assignee: "—", due: "" },
+    { id: "ANK-018", type: "task", title: "CI: fuzz + chaos test harness",
+      desc: "cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).",
+      status: "backlog", priority: "med", module: "infra", assignee: "—", due: "" },
+    { id: "ANK-019", type: "task", title: "Observability: tracing + Prometheus exporter",
+      desc: "เพิ่ม tracing + OpenTelemetry + Prometheus metrics ในทุก hot path. PII-sanitized logs.",
+      status: "backlog", priority: "med", module: "infra", assignee: "—", due: "" },
+    { id: "ANK-020", type: "task", title: "Security: sanitize .secret/ + .gitignore",
+      desc: "ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).",
+      status: "todo", priority: "critical", module: "infra", assignee: "—", due: "" },
+];
+
+let state = { tasks: [], nextSeq: 21, view: "kanban", filters: { module: "all" } };
+
+function load() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            state.tasks = parsed.tasks || [];
+            state.nextSeq = parsed.nextSeq || 21;
+            return;
+        }
+    } catch (e) { console.warn("load failed", e); }
+    // first run: seed
+    state.tasks = SEED.map(t => ({ ...t }));
+}
+function save() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks: state.tasks, nextSeq: state.nextSeq }));
+}
+function nextId() {
+    const n = state.nextSeq++;
+    save();
+    return "ANK-" + String(n).padStart(3, "0");
+}
+
+/* ===========================================================
+   RENDER: KANBAN
+   =========================================================== */
+function renderKanban() {
+    const board = document.getElementById("board");
+    board.innerHTML = "";
+    const q = (document.getElementById("search").value || "").toLowerCase();
+    const modFilter = state.filters.module;
+
+    COLUMNS.forEach(col => {
+        const colEl = document.createElement("div");
+        colEl.className = "column";
+        colEl.dataset.status = col.id;
+
+        const cards = state.tasks.filter(t =>
+            t.status === col.id &&
+            (modFilter === "all" || t.module === modFilter) &&
+            matchSearch(t, q)
+        );
+
+        colEl.innerHTML = `
+            <div class="column-header">
+                <span class="dot" style="background:${col.color}"></span>
+                ${col.name}
+                <span class="column-count">${cards.length}</span>
+            </div>
+            <div class="column-cards" data-status="${col.id}"></div>
+        `;
+        const cardsContainer = colEl.querySelector(".column-cards");
+        cards.forEach(t => cardsContainer.appendChild(renderCard(t)));
+
+        board.appendChild(colEl);
+    });
+    renderMeta();
+}
+
+function renderCard(t) {
+    const el = document.createElement("div");
+    el.className = "card";
+    el.draggable = true;
+    el.dataset.id = t.id;
+    const prioClass = t.priority === "critical" ? "priority-critical"
+                    : t.priority === "high" ? "priority-high"
+                    : t.priority === "med" ? "priority-med" : "priority-low";
+    const prioLabel = t.priority === "critical" ? "CRITICAL"
+                    : t.priority === "high" ? "HIGH"
+                    : t.priority === "med" ? "MED" : "LOW";
+    const assigneeInitial = (t.assignee && t.assignee !== "—")
+        ? t.assignee.charAt(0).toUpperCase() : "?";
+    const overdueClass = isOverdue(t.due) && t.status !== "done" ? "overdue" : "";
+
+    el.innerHTML = `
+        <div class="card-top">
+            <span class="card-id">${t.id}</span>
+            <span style="font-size:13px">${TYPE_ICON[t.type] || "🛠️"}</span>
+            <span class="card-priority ${prioClass}">${prioLabel}</span>
+        </div>
+        <div class="card-title">${escapeHtml(t.title)}</div>
+        ${t.desc ? `<div class="card-desc">${escapeHtml(t.desc)}</div>` : ""}
+        <div class="card-tags">
+            <span class="tag">${MODULE_LABELS[t.module] || t.module}</span>
+        </div>
+        <div class="card-foot">
+            <span class="assignee">${assigneeInitial}</span>
+            <span>${escapeHtml(t.assignee || "unassigned")}</span>
+            ${t.due ? `<span class="due ${overdueClass}">📅 ${formatDate(t.due)}</span>` : ""}
+        </div>
+        <div class="card-actions">
+            <button class="icon-btn edit" title="Edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+            <button class="icon-btn del" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+        </div>
+    `;
+    // click to edit (but not on action buttons)
+    el.addEventListener("click", (e) => {
+        if (e.target.closest(".card-actions")) return;
+        openModal("edit", t);
+    });
+    el.querySelector(".edit").addEventListener("click", (e) => { e.stopPropagation(); openModal("edit", t); });
+    el.querySelector(".del").addEventListener("click", (e) => { e.stopPropagation(); deleteTask(t.id); });
+
+    // drag handlers
+    el.addEventListener("dragstart", () => { el.classList.add("dragging"); });
+    el.addEventListener("dragend", () => {
+        el.classList.remove("dragging");
+        document.querySelectorAll(".column").forEach(c => c.classList.remove("drag-over"));
+    });
+    return el;
+}
+
+/* ===========================================================
+   RENDER: ISSUES
+   =========================================================== */
+function renderIssues() {
+    const tbody = document.getElementById("issue-body");
+    tbody.innerHTML = "";
+    const q = (document.getElementById("search").value || "").toLowerCase();
+    const modFilter = state.filters.module;
+    let open = 0, closed = 0, bugs = 0, features = 0;
+
+    const sorted = [...state.tasks].sort((a, b) => {
+        const order = { critical: 0, high: 1, med: 2, low: 3 };
+        return order[a.priority] - order[b.priority];
+    });
+
+    sorted.filter(t =>
+        (modFilter === "all" || t.module === modFilter) && matchSearch(t, q)
+    ).forEach(t => {
+        if (t.status === "done") closed++; else open++;
+        if (t.type === "bug") bugs++;
+        if (t.type === "feature") features++;
+
+        const statusMap = {
+            backlog: ["status-backlog", "Backlog"],
+            todo: ["status-todo", "To Do"],
+            doing: ["status-doing", "In Progress"],
+            review: ["status-review", "Review"],
+            done: ["status-done", "Done"],
+        };
+        const [statusCls, statusLabel] = statusMap[t.status];
+        const prioClass = t.priority === "critical" ? "priority-critical"
+                        : t.priority === "high" ? "priority-high"
+                        : t.priority === "med" ? "priority-med" : "priority-low";
+        const prioLabel = t.priority === "critical" ? "CRITICAL"
+                        : t.priority === "high" ? "HIGH"
+                        : t.priority === "med" ? "MED" : "LOW";
+
+        const tr = document.createElement("tr");
+        if (t.status === "done") tr.classList.add("done");
+        tr.innerHTML = `
+            <td class="issue-id">${t.id}</td>
+            <td>${TYPE_ICON[t.type] || "🛠️"} ${t.type}</td>
+            <td class="issue-title">${escapeHtml(t.title)}</td>
+            <td><span class="card-priority ${prioClass}">${prioLabel}</span></td>
+            <td><span class="status-pill ${statusCls}">${statusLabel}</span></td>
+            <td><span class="tag">${MODULE_LABELS[t.module] || t.module}</span></td>
+            <td>${escapeHtml(t.assignee || "—")}</td>
+        `;
+        tr.addEventListener("click", () => openModal("edit", t));
+        tbody.appendChild(tr);
+    });
+
+    document.getElementById("is-total").textContent = open + closed;
+    document.getElementById("is-open").textContent = open;
+    document.getElementById("is-closed").textContent = closed;
+    document.getElementById("is-bugs").textContent = bugs;
+    document.getElementById("is-features").textContent = features;
+}
+
+function renderMeta() {
+    document.getElementById("meta-total").textContent = state.tasks.length;
+    document.getElementById("meta-done").textContent = state.tasks.filter(t => t.status === "done").length;
+    document.getElementById("meta-doing").textContent = state.tasks.filter(t => t.status === "doing").length;
+    document.getElementById("meta-critical").textContent = state.tasks.filter(t => t.priority === "critical").length;
+}
+
+/* ===========================================================
+   HELPERS
+   =========================================================== */
+function matchSearch(t, q) {
+    if (!q) return true;
+    return (t.title + " " + t.desc + " " + t.id + " " + (t.assignee || "")).toLowerCase().includes(q);
+}
+function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function isOverdue(due) {
+    if (!due) return false;
+    return new Date(due) < new Date(new Date().toDateString());
+}
+function formatDate(d) {
+    if (!d) return "";
+    const dt = new Date(d);
+    return dt.toLocaleDateString("th-TH", { day: "2-digit", month: "short" });
+}
+function toast(msg) {
+    const el = document.getElementById("toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove("show"), 2000);
+}
+
+/* ===========================================================
+   MODAL (CRUD)
+   =========================================================== */
+let editingId = null;
+function openModal(mode, task) {
+    const modal = document.getElementById("modal");
+    document.getElementById("modal-title").textContent = mode === "new" ? "New Task" : `Edit ${task.id}`;
+    document.getElementById("modal-delete").classList.toggle("hidden", mode === "new");
+
+    editingId = mode === "edit" ? task.id : null;
+    const t = mode === "edit" ? task : { title: "", desc: "", type: "task", priority: "med", status: "todo", module: "kernel-companion", assignee: "", due: "" };
+
+    document.getElementById("f-title").value = t.title;
+    document.getElementById("f-desc").value = t.desc;
+    document.getElementById("f-type").value = t.type;
+    document.getElementById("f-priority").value = t.priority;
+    document.getElementById("f-status").value = t.status;
+    document.getElementById("f-module").value = t.module;
+    document.getElementById("f-assignee").value = t.assignee === "—" ? "" : t.assignee;
+    document.getElementById("f-due").value = t.due || "";
+
+    modal.classList.add("show");
+    setTimeout(() => document.getElementById("f-title").focus(), 50);
+}
+function closeModal() {
+    document.getElementById("modal").classList.remove("show");
+    editingId = null;
+}
+function saveFromModal() {
+    const title = document.getElementById("f-title").value.trim();
+    if (!title) { toast("⚠️ กรุณาใส่ Title"); return; }
+    const data = {
+        title,
+        desc: document.getElementById("f-desc").value.trim(),
+        type: document.getElementById("f-type").value,
+        priority: document.getElementById("f-priority").value,
+        status: document.getElementById("f-status").value,
+        module: document.getElementById("f-module").value,
+        assignee: document.getElementById("f-assignee").value.trim() || "—",
+        due: document.getElementById("f-due").value,
+    };
+    if (editingId) {
+        const t = state.tasks.find(x => x.id === editingId);
+        Object.assign(t, data);
+        toast("✅ บันทึกแล้ว");
+    } else {
+        state.tasks.unshift({ id: nextId(), ...data });
+        toast("✅ สร้าง task ใหม่แล้ว");
+    }
+    save();
+    render();
+    closeModal();
+}
+function deleteTask(id) {
+    if (!confirm("ลบ task นี้ใช่ไหม?")) return;
+    state.tasks = state.tasks.filter(t => t.id !== id);
+    save();
+    render();
+    toast("🗑️ ลบแล้ว");
+}
+
+/* ===========================================================
+   DRAG & DROP (column-level)
+   =========================================================== */
+function setupDnd() {
+    document.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        const col = e.target.closest(".column");
+        if (col) col.classList.add("drag-over");
+    });
+    document.addEventListener("dragleave", (e) => {
+        const col = e.target.closest(".column");
+        if (col && !col.contains(e.relatedTarget)) col.classList.remove("drag-over");
+    });
+    document.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const col = e.target.closest(".column");
+        if (!col) return;
+        col.classList.remove("drag-over");
+        const newStatus = col.dataset.status;
+        const dragged = document.querySelector(".card.dragging");
+        if (!dragged) return;
+        const id = dragged.dataset.id;
+        const t = state.tasks.find(x => x.id === id);
+        if (t && t.status !== newStatus) {
+            t.status = newStatus;
+            save();
+            render();
+            toast(`→ ${COLUMNS.find(c => c.id === newStatus).name}`);
+        }
+    });
+}
+
+/* ===========================================================
+   EXPORT / IMPORT / RESET
+   =========================================================== */
+function exportData() {
+    const blob = new Blob([JSON.stringify({ tasks: state.tasks, nextSeq: state.nextSeq }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ank-board-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("💾 Export แล้ว");
+}
+function importData(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const parsed = JSON.parse(e.target.result);
+            if (!parsed.tasks || !Array.isArray(parsed.tasks)) throw new Error("bad");
+            if (!confirm(`Import ${parsed.tasks.length} tasks? (จะแทนที่ข้อมูลปัจจุบัน)`)) return;
+            state.tasks = parsed.tasks;
+            state.nextSeq = parsed.nextSeq || (parsed.tasks.length + 1);
+            save();
+            render();
+            toast("📥 Import สำเร็จ");
+        } catch (err) { toast("⚠️ ไฟล์ไม่ถูกต้อง"); }
+    };
+    reader.readAsText(file);
+}
+function resetData() {
+    if (!confirm("Reset กลับเป็นข้อมูล seed เริ่มต้น? (จะลบการเปลี่ยนแปลงทั้งหมด)")) return;
+    localStorage.removeItem(STORAGE_KEY);
+    state.tasks = SEED.map(t => ({ ...t }));
+    state.nextSeq = 21;
+    save();
+    render();
+    toast("🔄 Reset แล้ว");
+}
+
+/* ===========================================================
+   RENDER DISPATCH
+   =========================================================== */
+function render() {
+    if (state.view === "kanban") {
+        document.getElementById("kanban-view").classList.remove("hidden");
+        document.getElementById("issues-view").classList.add("hidden");
+        renderKanban();
+    } else {
+        document.getElementById("kanban-view").classList.add("hidden");
+        document.getElementById("issues-view").classList.remove("hidden");
+        renderIssues();
+    }
+    renderMeta();
+}
+
+/* ===========================================================
+   EVENT BINDINGS
+   =========================================================== */
+document.querySelectorAll(".tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        state.view = tab.dataset.tab;
+        render();
+    });
+});
+document.getElementById("search").addEventListener("input", render);
+document.querySelectorAll(".chip[data-filter]").forEach(chip => {
+    chip.addEventListener("click", () => {
+        const f = chip.dataset.filter;
+        document.querySelectorAll(`.chip[data-filter="${f}"]`).forEach(c => c.classList.remove("active"));
+        chip.classList.add("active");
+        state.filters[f] = chip.dataset.value;
+        render();
+    });
+});
+document.getElementById("new-btn").addEventListener("click", () => openModal("new"));
+document.getElementById("modal-save").addEventListener("click", saveFromModal);
+document.getElementById("modal-cancel").addEventListener("click", closeModal);
+document.getElementById("modal-delete").addEventListener("click", () => { if (editingId) deleteTask(editingId); closeModal(); });
+document.getElementById("modal-close").addEventListener("click", closeModal);
+document.getElementById("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+document.getElementById("export-btn").addEventListener("click", exportData);
+document.getElementById("import-btn").addEventListener("click", () => document.getElementById("import-file").click());
+document.getElementById("import-file").addEventListener("change", (e) => { if (e.target.files[0]) importData(e.target.files[0]); e.target.value = ""; });
+document.getElementById("reset-link").addEventListener("click", (e) => { e.preventDefault(); resetData(); });
+
+/* ===========================================================
+   INIT
+   =========================================================== */
+load();
+setupDnd();
+render();
+</script>
+</body>
+</html>
