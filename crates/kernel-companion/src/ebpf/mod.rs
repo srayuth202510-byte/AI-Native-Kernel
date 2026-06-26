@@ -20,12 +20,12 @@
 //! - Ring buffer poll interval: **1ms**
 //! - Syscall decision latency: **P99 < 1ms**
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::lsm::{LsmDecision, LsmPolicyEngine};
 

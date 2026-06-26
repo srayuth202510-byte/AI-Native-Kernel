@@ -42,4 +42,15 @@ impl ColdStore {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// ลบข้อมูลบริบทตาม key ออกจาก Cold Store และคืนค่า (ถ้ามี)
+    /// ใช้สำหรับ tier migration (promote) จาก cold กลับขึ้น hot
+    pub fn remove(&mut self, key: &str) -> Option<Vec<u8>> {
+        if let Some(value) = self.entries.remove(key) {
+            self.order.retain(|k| k != key);
+            Some(value)
+        } else {
+            None
+        }
+    }
 }

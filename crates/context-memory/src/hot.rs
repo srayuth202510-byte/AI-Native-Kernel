@@ -49,4 +49,15 @@ impl HotStore {
         let key = self.order.pop_front()?;
         self.entries.remove(&key).map(|value| (key, value))
     }
+
+    /// ลบข้อมูลบริบทตาม key ออกจาก Hot Store และคืนค่า (ถ้ามี)
+    /// ใช้สำหรับ tier migration (promote/demote) โดยไม่ต้องรอ evict
+    pub fn remove(&mut self, key: &str) -> Option<Vec<u8>> {
+        if let Some(value) = self.entries.remove(key) {
+            self.order.retain(|k| k != key);
+            Some(value)
+        } else {
+            None
+        }
+    }
 }

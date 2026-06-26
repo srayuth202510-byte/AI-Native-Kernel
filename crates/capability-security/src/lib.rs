@@ -1,8 +1,11 @@
 #![deny(unsafe_code)]
 
 pub mod audit;
+pub mod metrics;
 pub mod policy;
 pub mod token;
+
+pub use metrics::{render_metrics, SecurityMetrics};
 
 use crate::audit::{AuditEntry, AuditLogger};
 use crate::policy::{PolicyDecision, PolicyEngine};

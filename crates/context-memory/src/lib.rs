@@ -41,15 +41,22 @@ pub struct ContextMemoryManager {
 }
 
 impl ContextMemoryManager {
-    /// สร้างอินสแตนซ์ของ ContextMemoryManager พร้อมกำหนดค่าความจุเริ่มต้น
+    /// สร้างอินสแตนซ์ของ ContextMemoryManager พร้อมกำหนดค่าความจุเริ่มต้น (256 hot, 1024 warm)
     #[must_use]
     pub fn new() -> Self {
+        Self::with_capacity(256, 1_024)
+    }
+
+    /// สร้าง ContextMemoryManager ด้วยค่าความจุที่กำหนดเอง
+    /// เหมาะสำหรับ testing หรือ configuration ที่ต้องการขนาด tier ที่แน่นอน
+    #[must_use]
+    pub fn with_capacity(hot_capacity: usize, warm_capacity: usize) -> Self {
         Self {
             hot: Arc::new(std::sync::RwLock::new(HotStore::new())),
             warm: Arc::new(std::sync::RwLock::new(WarmStore::new())),
             cold: Arc::new(std::sync::RwLock::new(ColdStore::new())),
-            hot_capacity: 256,
-            warm_capacity: 1_024,
+            hot_capacity,
+            warm_capacity,
         }
     }
 
@@ -129,6 +136,90 @@ impl ContextMemoryManager {
         warn!("ไม่พบข้อมูลบริบทในทุก tier");
         Err(ContextError::NotFound)
     }
+
+    /// ยกระดับ (Promote) ข้อมูลจาก Warm หรือ Cold tier กลับขึ้นสู่ Hot tier
+    ///
+    /// ค้นหาใน Warm ก่อน ถ้าพบ → ลบออก → insert ใน Hot
+    /// ถ้าไม่พบใน Warm → ค้นหาใน Cold → ลบออก → insert ใน Hot
+    /// ถ้าข้อมูลอยู่ใน Hot อยู่แล้ว → no-op (คืน Ok)
+    ///
+    /// # Errors
+    /// คืน `ContextError::NotFound` หากไม่พบ key ในทุก tier
+    #[instrument(skip(self), fields(key = %key))]
+    pub fn promote(&self, key: &str) -> Result<()> {
+        // ถ้าอยู่ใน Hot อยู่แล้ว — no-op
+        if self.hot.read().expect("hot lock poisoned").get(key).is_some() {
+            debug!(tier = "hot", "ข้อมูลอยู่ใน Hot อยู่แล้ว — no-op");
+            return Ok(());
+        }
+        // ค้นหาและดึงออกจาก Warm
+        let warm_value = self.warm.write().expect("warm lock poisoned").remove(key);
+        if let Some(value) = warm_value {
+            debug!(tier = "warm->hot", "ยกระดับข้อมูลจาก Warm ขึ้น Hot");
+            self.hot
+                .write()
+                .expect("hot lock poisoned")
+                .insert(key.to_string(), value);
+            return Ok(());
+        }
+        // ค้นหาและดึงออกจาก Cold
+        let cold_value = self.cold.write().expect("cold lock poisoned").remove(key);
+        if let Some(value) = cold_value {
+            debug!(tier = "cold->hot", "ยกระดับข้อมูลจาก Cold ขึ้น Hot");
+            self.hot
+                .write()
+                .expect("hot lock poisoned")
+                .insert(key.to_string(), value);
+            return Ok(());
+        }
+        warn!("promote ล้มเหลว — ไม่พบ key ในทุก tier");
+        Err(ContextError::NotFound)
+    }
+
+    /// ลดระดับ (Demote) ข้อมูลจาก Hot tier ลงสู่ Warm tier
+    ///
+    /// ลบออกจาก Hot → insert ใน Warm
+    ///
+    /// # Errors
+    /// คืน `ContextError::NotFound` หากไม่พบ key ใน Hot Store
+    #[instrument(skip(self), fields(key = %key))]
+    pub fn demote(&self, key: &str) -> Result<()> {
+        let hot_value = self.hot.write().expect("hot lock poisoned").remove(key);
+        if let Some(value) = hot_value {
+            debug!(tier = "hot->warm", "ลดระดับข้อมูลจาก Hot ลง Warm");
+            self.warm
+                .write()
+                .expect("warm lock poisoned")
+                .insert(key.to_string(), value);
+            return Ok(());
+        }
+        warn!("demote ล้มเหลว — ไม่พบ key ใน Hot Store");
+        Err(ContextError::NotFound)
+    }
+
+    /// คืนชื่อ tier ที่เก็บข้อมูล key นั้นอยู่ในปัจจุบัน
+    /// ใช้สำหรับ debugging, testing และ observability
+    ///
+    /// คืน `Some("hot")`, `Some("warm")`, `Some("cold")` หรือ `None`
+    #[must_use]
+    pub fn tier_of(&self, key: &str) -> Option<&'static str> {
+        if self.hot.read().expect("hot lock poisoned").get(key).is_some() {
+            return Some("hot");
+        }
+        if self.warm.read().expect("warm lock poisoned").get(key).is_some() {
+            return Some("warm");
+        }
+        if self
+            .cold
+            .read()
+            .expect("cold lock poisoned")
+            .get(key)
+            .is_some()
+        {
+            return Some("cold");
+        }
+        None
+    }
 }
 
 impl Default for ContextMemoryManager {
@@ -152,7 +243,6 @@ mod tests {
 
     #[test]
     fn get_returns_not_found_for_missing_key() {
-        // ทดสอบว่าการดึงข้อมูลด้วย key ที่ไม่เคยบันทึกต้องคืน ContextError::NotFound
         let memory = ContextMemoryManager::new();
         let result = memory.get("does-not-exist");
         assert_eq!(result, Err(ContextError::NotFound));
@@ -160,7 +250,6 @@ mod tests {
 
     #[test]
     fn overwrite_updates_value_in_hot_store() {
-        // ทดสอบว่าการ put ครั้งที่สองด้วย key เดิมจะเขียนทับค่าเดิม (upsert semantics)
         let memory = ContextMemoryManager::new();
         memory.put("ctx-2", b"original".to_vec());
         memory.put("ctx-2", b"updated".to_vec());
@@ -171,7 +260,6 @@ mod tests {
 
     #[test]
     fn multiple_keys_are_independent() {
-        // ทดสอบว่า key หลายตัวไม่วนกัน แต่ละ key เก็บค่าเป็นอิสระ
         let memory = ContextMemoryManager::new();
         memory.put("key-a", b"alpha".to_vec());
         memory.put("key-b", b"beta".to_vec());
@@ -184,31 +272,113 @@ mod tests {
 
     #[test]
     fn eviction_to_warm_when_hot_capacity_exceeded() {
-        // ทดสอบว่าเมื่อเกิน hot_capacity (256) ข้อมูลเก่าจะถูกย้ายไป warm
-        // และยังคงดึงข้อมูลได้ผ่าน get()
         let memory = ContextMemoryManager::new();
-
-        // เพิ่มข้อมูลเกินความจุความจุ hot store (257 รายการ)
         let first_key = "evict-target-0".to_string();
         for i in 0..257usize {
             memory.put(format!("evict-target-{i}"), vec![i as u8]);
         }
-
-        // key แรกที่ถูก evict ควรยังคงดึงได้ผ่าน warm/cold store
         let result = memory.get(&first_key);
-        assert!(
-            result.is_ok(),
-            "ข้อมูลที่ถูก evict ควรยังคงดึงได้จาก warm/cold store"
-        );
+        assert!(result.is_ok(), "ข้อมูลที่ถูก evict ควรยังคงดึงได้จาก warm/cold store");
     }
 
     #[test]
     fn get_empty_byte_slice_is_valid() {
-        // ทดสอบว่าการเก็บไบต์เปล่า (empty vec) ยังเป็นม่าใช้และดึงคืนได้ถูกต้อง
         let memory = ContextMemoryManager::new();
         memory.put("empty-ctx", vec![]);
-
         let value = memory.get("empty-ctx").expect("empty context should exist");
         assert_eq!(value, Vec::<u8>::new());
+    }
+
+    // ---- ANK-013: Tier Migration API tests ----
+
+    #[test]
+    fn with_capacity_controls_eviction_boundary() {
+        let memory = ContextMemoryManager::with_capacity(2, 1024);
+        memory.put("a", b"1".to_vec());
+        memory.put("b", b"2".to_vec());
+        assert_eq!(memory.tier_of("a"), Some("hot"));
+        assert_eq!(memory.tier_of("b"), Some("hot"));
+        memory.put("c", b"3".to_vec()); // บังคับ evict "a" ไป warm
+        assert_eq!(memory.tier_of("a"), Some("warm"), "a ต้องถูก evict ไป warm");
+        assert_eq!(memory.tier_of("b"), Some("hot"));
+        assert_eq!(memory.tier_of("c"), Some("hot"));
+    }
+
+    #[test]
+    fn promote_from_warm_to_hot_succeeds() {
+        let memory = ContextMemoryManager::with_capacity(2, 1024);
+        memory.put("a", b"alpha".to_vec());
+        memory.put("b", b"beta".to_vec());
+        memory.put("c", b"gamma".to_vec()); // evict "a" ไป warm
+        assert_eq!(memory.tier_of("a"), Some("warm"));
+
+        memory.promote("a").expect("promote Warm→Hot ต้องสำเร็จ");
+        assert_eq!(memory.tier_of("a"), Some("hot"), "หลัง promote ต้องอยู่ใน Hot");
+        assert_eq!(
+            memory.get("a").expect("a ต้องดึงได้หลัง promote"),
+            b"alpha".to_vec(),
+            "ข้อมูลต้องไม่เปลี่ยนแปลง"
+        );
+    }
+
+    #[test]
+    fn demote_from_hot_to_warm_succeeds() {
+        let memory = ContextMemoryManager::new();
+        memory.put("hotkey", b"data".to_vec());
+        assert_eq!(memory.tier_of("hotkey"), Some("hot"));
+
+        memory.demote("hotkey").expect("demote Hot→Warm ต้องสำเร็จ");
+        assert_eq!(memory.tier_of("hotkey"), Some("warm"), "หลัง demote ต้องอยู่ใน Warm");
+        assert_eq!(
+            memory.get("hotkey").expect("ยังดึงได้จาก Warm"),
+            b"data".to_vec()
+        );
+    }
+
+    // ---- ANK-014: Round-trip property tests ----
+
+    #[test]
+    fn property_round_trip_hot_to_cold_and_back() {
+        let memory = ContextMemoryManager::with_capacity(1, 1);
+        memory.put("x", b"payload".to_vec());
+        memory.put("y", b"y".to_vec()); // x → warm
+        memory.put("z", b"z".to_vec()); // x → cold (warm full)
+
+        assert_eq!(memory.tier_of("x"), Some("cold"), "x ต้องถูก evict ถึง cold");
+        let val = memory.get("x").expect("x ต้องดึงได้จาก cold tier");
+        assert_eq!(val, b"payload".to_vec(), "ข้อมูลต้องไม่สูญหายระหว่าง tier migration");
+
+        // promote กลับขึ้น hot
+        memory.promote("x").expect("promote from cold ต้องสำเร็จ");
+        let promoted = memory.get("x").expect("x หลัง promote");
+        assert_eq!(promoted, b"payload".to_vec(), "ข้อมูลต้องครบหลัง promote");
+    }
+
+    #[test]
+    fn promote_nonexistent_returns_not_found() {
+        let memory = ContextMemoryManager::new();
+        assert_eq!(memory.promote("ghost"), Err(ContextError::NotFound));
+    }
+
+    #[test]
+    fn demote_nonexistent_returns_not_found() {
+        let memory = ContextMemoryManager::new();
+        assert_eq!(memory.demote("ghost"), Err(ContextError::NotFound));
+    }
+
+    #[test]
+    fn tier_of_returns_none_for_missing_key() {
+        let memory = ContextMemoryManager::new();
+        assert_eq!(memory.tier_of("missing"), None);
+    }
+
+    #[test]
+    fn promote_already_hot_is_noop() {
+        let memory = ContextMemoryManager::new();
+        memory.put("k", b"v".to_vec());
+        assert_eq!(memory.tier_of("k"), Some("hot"));
+        memory.promote("k").expect("promote hot เป็น no-op");
+        assert_eq!(memory.tier_of("k"), Some("hot"));
+        assert_eq!(memory.get("k").expect("k ยังอยู่"), b"v".to_vec());
     }
 }

@@ -55,6 +55,17 @@ impl WarmStore {
         let key = self.order.pop_front()?;
         self.entries.remove(&key).map(|value| (key, value))
     }
+
+    /// ลบข้อมูลบริบทตาม key ออกจาก Warm Store และคืนค่า (ถ้ามี)
+    /// ใช้สำหรับ tier migration (promote/demote) โดยตรง
+    pub fn remove(&mut self, key: &str) -> Option<Vec<u8>> {
+        if let Some(value) = self.entries.remove(key) {
+            self.order.retain(|k| k != key);
+            Some(value)
+        } else {
+            None
+        }
+    }
 }
 
 // ---- โหมด RocksDB จริง (feature = "rocksdb-warm") ----
@@ -135,5 +146,17 @@ impl WarmStore {
         self.count
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         Some((key, value))
+    }
+
+    /// ลบข้อมูลบริบทตาม key ออกจาก RocksDB Warm Store และคืนค่า (ถ้ามี)
+    /// ใช้สำหรับ tier migration (promote/demote) โดยตรง
+    pub fn remove(&mut self, key: &str) -> Option<Vec<u8>> {
+        let value = self.db.get(key.as_bytes()).ok().flatten()?;
+        self.db.delete(key.as_bytes()).ok();
+        let mut order = self.order.lock().expect("order lock poisoned");
+        order.retain(|k| k != key);
+        self.count
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        Some(value)
     }
 }
