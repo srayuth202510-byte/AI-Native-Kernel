@@ -201,27 +201,58 @@ mod tests {
 
     #[test]
     fn update_weights_converges_toward_sample() {
-        // ทดสอบว่า EWMA ค่อยๆ ดึงค่าน้ำหนักเข้าหา sample ตามสัมประสิทธิ์ alpha=0.1
+        // ทดสอบว่า EWMA ค่อยๆ ดึงค่าน้ำหนักเข้าหา normalized sample ตามสัมประสิทธิ์ alpha=0.1
         let scheduler = ComputeScheduler::new();
         let sample = ComputeProfile {
             latency_ms: 100.0,
+            power_watts: 10.0,
+            cost_units: 1.0,
+        };
+
+        let contrast_profile = ComputeProfile {
+            latency_ms: 1.0,
             power_watts: 100.0,
             cost_units: 100.0,
         };
 
-        // บันทึก score ก่อนอัปเดต
-        let score_before = scheduler.score(sample);
+        // บันทึก score ก่อนอัปเดต โดยใช้ profile ที่ไม่เหมือน sample เพื่อให้เห็นผลจาก weight shift ชัดเจน
+        let score_before = scheduler.score(contrast_profile);
         // อัปเดตน้ำหนักหลายรอบให้มีการเปลี่ยนแปลงมากพอ
         for _ in 0..20 {
             scheduler.update_weights(sample);
         }
-        let score_after = scheduler.score(sample);
+        let score_after = scheduler.score(contrast_profile);
 
         // หลัง update หลายรอบ คะแนนควรเปลี่ยนแปลง (EWMA มีผล)
         assert_ne!(
             (score_before * 1000.0) as i64,
             (score_after * 1000.0) as i64,
             "คะแนนต้องเปลี่ยนหลัง update weights"
+        );
+    }
+
+    #[test]
+    fn update_weights_preserves_normalized_weight_budget() {
+        let scheduler = ComputeScheduler::new();
+        let sample = ComputeProfile {
+            latency_ms: 1000.0,
+            power_watts: 10.0,
+            cost_units: 1.0,
+        };
+
+        for _ in 0..10 {
+            scheduler.update_weights(sample);
+        }
+
+        let weights = scheduler
+            .weights
+            .read()
+            .expect("compute weights lock poisoned");
+        let total = weights.latency + weights.power + weights.cost;
+
+        assert!(
+            (total - 1.0).abs() < 1e-9,
+            "weights must remain normalized, got {total}"
         );
     }
 

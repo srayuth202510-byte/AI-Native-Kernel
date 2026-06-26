@@ -10,6 +10,8 @@ use compute_scheduler::ComputeScheduler;
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tracing::{info, instrument, warn};
 
 pub mod ebpf;
@@ -34,6 +36,12 @@ pub struct KernelCompanion {
     agent_scheduler: Arc<AgentScheduler>,
     /// สถานะการเชื่อมต่อกับ LSM Hook ในระบบ Linux Kernel
     attachment: Option<LsmAttachment>,
+    /// ช่องสัญญาณใช้แจ้งให้ background tasks หยุดทำงาน
+    shutdown_tx: Option<watch::Sender<bool>>,
+    /// handle ของ routing task
+    routing_task: Option<JoinHandle<()>>,
+    /// handle ของ supervisor task
+    supervisor_task: Option<JoinHandle<()>>,
 }
 
 impl KernelCompanion {
@@ -57,6 +65,9 @@ impl KernelCompanion {
             compute_scheduler: Arc::new(ComputeScheduler::new()),
             agent_scheduler,
             attachment: None,
+            shutdown_tx: None,
+            routing_task: None,
+            supervisor_task: None,
         }
     }
 
@@ -102,21 +113,42 @@ impl KernelCompanion {
             cost_units: 1.0,
         });
 
-        let scheduler = Arc::clone(&self.agent_scheduler);
-        let mut intent_subscriber = self.intent_bus.subscribe();
-        let supervisor = scheduler.supervisor();
+        if self.shutdown_tx.is_none() {
+            let scheduler = Arc::clone(&self.agent_scheduler);
+            let mut intent_subscriber = self.intent_bus.subscribe();
+            let supervisor = scheduler.supervisor();
+            let (shutdown_tx, mut routing_shutdown_rx) = watch::channel(false);
+            let supervisor_shutdown_rx = shutdown_tx.subscribe();
 
-        // รัน Task สำหรับดักฟัง Intent Bus และส่งต่อไปยัง Agent Scheduler แบบ異步 (Async)
-        let _routing_task = tokio::spawn(async move {
-            while let Some(intent) = intent_subscriber.receive().await {
-                let _ = scheduler.route_intent(intent).await;
-            }
-        });
+            // รัน Task สำหรับดักฟัง Intent Bus และส่งต่อไปยัง Agent Scheduler แบบ Async
+            self.routing_task = Some(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        intent = intent_subscriber.receive() => {
+                            match intent {
+                                Some(intent) => {
+                                    let _ = scheduler.route_intent(intent).await;
+                                }
+                                None => break,
+                            }
+                        }
+                        changed = routing_shutdown_rx.changed() => {
+                            if changed.is_err() || *routing_shutdown_rx.borrow() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }));
 
-        // รัน Task สำหรับเฝ้าดูแลระบบ (Supervisor Loop) เพื่อคอยตรวจสอบและรีสตาร์ต Agent ในกรณีที่พัง
-        let _supervisor_task = tokio::spawn(async move {
-            supervisor.start_monitoring_loop().await;
-        });
+            // รัน Task สำหรับเฝ้าดูแลระบบ (Supervisor Loop) เพื่อคอยตรวจสอบและรีสตาร์ต Agent ในกรณีที่พัง
+            self.supervisor_task = Some(tokio::spawn(async move {
+                supervisor
+                    .start_monitoring_loop_until(supervisor_shutdown_rx)
+                    .await;
+            }));
+            self.shutdown_tx = Some(shutdown_tx);
+        }
 
         // ส่งสัญญาณ (Publish) เหตุการณ์การ Boot สำเร็จไปยัง Intent Bus
         let _ = self
@@ -154,6 +186,15 @@ impl KernelCompanion {
     #[instrument(skip(self))]
     pub async fn shutdown(&mut self) {
         warn!("KernelCompanion กำลัง shutdown — ถอน LSM hooks");
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(true);
+        }
+        if let Some(task) = self.routing_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.supervisor_task.take() {
+            let _ = task.await;
+        }
         if let Some(attachment) = self.attachment.as_mut() {
             attachment.detach();
         }
@@ -228,5 +269,33 @@ mod tests {
 
         companion.shutdown().await;
         assert!(!companion.is_attached());
+    }
+
+    #[tokio::test]
+    async fn repeated_boot_does_not_duplicate_routing_tasks() {
+        let mut companion = KernelCompanion::new();
+
+        companion.boot().await.expect("first boot should succeed");
+        companion.boot().await.expect("second boot should succeed");
+
+        companion
+            .intent_bus()
+            .publish(Intent::new(
+                "spawn-once",
+                IntentType::Command,
+                "spawn-agent",
+                intent_bus::IntentPriority::High,
+                "test",
+            ))
+            .await
+            .expect("publish should succeed");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            companion.agent_scheduler().get_running_agents().await.len(),
+            1
+        );
+
+        companion.shutdown().await;
     }
 }

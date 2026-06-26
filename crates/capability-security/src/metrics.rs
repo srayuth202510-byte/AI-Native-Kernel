@@ -158,9 +158,6 @@ mod tests {
         let registry = Registry::new();
         let _first = SecurityMetrics::register(&registry).expect("ครั้งแรกสำเร็จ");
         let second = SecurityMetrics::register(&registry);
-        assert!(
-            second.is_err(),
-            "การลงทะเบียนซ้ำต้องคืน error"
-        );
+        assert!(second.is_err(), "การลงทะเบียนซ้ำต้องคืน error");
     }
 }

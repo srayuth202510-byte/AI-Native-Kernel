@@ -1,5 +1,5 @@
 use context_memory::warm::WarmStore;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 fn bench_rocksdb_warm_store(c: &mut Criterion) {
@@ -32,7 +32,7 @@ fn bench_rocksdb_warm_store(c: &mut Criterion) {
     group.bench_function("evict_oldest_1kb", |b| {
         let mut store = WarmStore::new();
         let payload = vec![0u8; 1024];
-        
+
         // เราเติมค่าลงไปจำนวนหนึ่งก่อน
         for i in 0..1000 {
             store.insert(format!("fill_{}", i), payload.clone());

@@ -49,6 +49,9 @@ pub enum SchedulerError {
     /// การขอใช้งานสิทธิ์ (Capability) ถูกปฏิเสธ
     #[error("capability denied")]
     CapabilityDenied,
+    /// ระบบความปลอดภัยภายในล้มเหลวระหว่างการตรวจ policy/audit
+    #[error("capability security failure")]
+    CapabilitySecurityFailed,
 }
 
 /// โครงสร้างหลักของ Agent Scheduler ที่ทำหน้าที่จัดการและควบคุม Agent ทั้งหมดในระบบ
@@ -345,17 +348,24 @@ impl AgentScheduler {
             }
         }
 
-        // ตรวจสอบความถูกต้องของสิทธิ์ผ่าน Capability Security Manager
-        let capability_allowed = token
-            .capabilities
-            .iter()
-            .any(|capability| self.capability_security.authorize_token(&token, capability));
-
-        if !capability_allowed {
+        // ต้องผ่านทุก capability และต้องมี capability อย่างน้อยหนึ่งรายการ
+        if token.capabilities.is_empty() {
             return Err(SchedulerError::CapabilityDenied);
         }
 
-        self.capability_security.issue_token(token.clone());
+        for capability in &token.capabilities {
+            let allowed = self
+                .capability_security
+                .authorize_token(&token, capability)
+                .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
+            if !allowed {
+                return Err(SchedulerError::CapabilityDenied);
+            }
+        }
+
+        self.capability_security
+            .issue_token(token.clone())
+            .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
 
         let mut agents = self.agents.write().await;
         let agent = agents
@@ -551,6 +561,25 @@ mod tests {
             8,
             Scope::Global,
             vec!["write".to_string()],
+            Duration::from_secs(60),
+            [0u8; 32],
+        );
+
+        let result = scheduler.grant_capability(agent_id, token).await;
+        assert!(matches!(result, Err(SchedulerError::CapabilityDenied)));
+    }
+
+    #[tokio::test]
+    async fn grant_capability_rejects_mixed_allowed_and_denied_capabilities() {
+        let scheduler = scheduler();
+        let agent_id = scheduler
+            .spawn_agent(AgentControlBlock::new(0))
+            .await
+            .expect("spawn should succeed");
+        let token = CapabilityToken::new(
+            9,
+            Scope::Global,
+            vec!["read".to_string(), "write".to_string()],
             Duration::from_secs(60),
             [0u8; 32],
         );

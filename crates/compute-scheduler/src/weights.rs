@@ -46,9 +46,25 @@ impl AdaptiveWeights {
     /// โดยใช้สัมประสิทธิ์การปรับปรุง (alpha) เท่ากับ 0.1
     pub fn observe(&mut self, sample: crate::ComputeProfile) {
         let alpha = 0.1;
-        self.latency = self.latency * (1.0 - alpha) + sample.latency_ms * alpha;
-        self.power = self.power * (1.0 - alpha) + sample.power_watts * alpha;
-        self.cost = self.cost * (1.0 - alpha) + sample.cost_units * alpha;
+        let total = sample.latency_ms + sample.power_watts + sample.cost_units;
+        if total <= f64::EPSILON {
+            return;
+        }
+
+        let sample_latency = sample.latency_ms / total;
+        let sample_power = sample.power_watts / total;
+        let sample_cost = sample.cost_units / total;
+
+        self.latency = self.latency * (1.0 - alpha) + sample_latency * alpha;
+        self.power = self.power * (1.0 - alpha) + sample_power * alpha;
+        self.cost = self.cost * (1.0 - alpha) + sample_cost * alpha;
+
+        let normalized_total = self.latency + self.power + self.cost;
+        if normalized_total > f64::EPSILON {
+            self.latency /= normalized_total;
+            self.power /= normalized_total;
+            self.cost /= normalized_total;
+        }
     }
 }
 

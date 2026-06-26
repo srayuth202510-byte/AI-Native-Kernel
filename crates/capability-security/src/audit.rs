@@ -3,6 +3,17 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum AuditError {
+    #[error("failed to open audit log")]
+    Open(#[source] std::io::Error),
+    #[error("failed to serialize audit entry")]
+    Serialize(#[source] serde_json::Error),
+    #[error("failed to write audit entry")]
+    Write(#[source] std::io::Error),
+}
 
 /// รายการบันทึกประวัติการตรวจสอบการเข้าใช้งานหรือการตัดสินใจด้านความปลอดภัย (Audit Entry)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,18 +75,17 @@ impl AuditLogger {
     }
 
     /// บันทึกรายการตรวจสอบลงในไฟล์ล็อก
-    pub fn record(&self, entry: AuditEntry) {
+    pub fn record(&self, entry: AuditEntry) -> Result<(), AuditError> {
         // เปิดไฟล์แบบเขียนต่อท้ายอย่างเดียว (append-only) และสร้างใหม่หากยังไม่มี
         // ซึ่งเป็นการทำงานรูปแบบ WORM (Write Once Read Many) ในระดับระบบปฏิบัติการเพื่อความปลอดภัยของข้อมูลประวัติ
-        if let Ok(mut file) = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_path)
-        {
-            if let Ok(json_str) = serde_json::to_string(&entry) {
-                let _ = writeln!(file, "{}", json_str);
-            }
-        }
+            .map_err(AuditError::Open)?;
+        let json_str = serde_json::to_string(&entry).map_err(AuditError::Serialize)?;
+        writeln!(file, "{}", json_str).map_err(AuditError::Write)?;
+        Ok(())
     }
 
     /// ดึงประวัติรายการการตรวจสอบทั้งหมดจากไฟล์ล็อก

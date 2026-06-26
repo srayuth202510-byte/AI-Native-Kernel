@@ -5,7 +5,7 @@ pub mod metrics;
 pub mod policy;
 pub mod token;
 
-pub use metrics::{render_metrics, SecurityMetrics};
+pub use metrics::{SecurityMetrics, render_metrics};
 
 use crate::audit::{AuditEntry, AuditLogger};
 use crate::policy::{PolicyDecision, PolicyEngine};
@@ -81,18 +81,20 @@ impl CapabilitySecurityManager {
     }
 
     /// ออกโทเค็นความสามารถ (Capability Token) ใหม่ บันทึกลงในระบบเพื่อใช้งาน และบันทึกประวัติ (Audit Log)
-    pub fn issue_token(&self, token: CapabilityToken) {
+    pub fn issue_token(&self, token: CapabilityToken) -> Result<()> {
+        self.audit_logger
+            .record(AuditEntry::issued(token.id))
+            .map_err(|_| CapabilityError::AuditWriteFailed)?;
         self.tokens
             .write()
             .expect("capability tokens lock poisoned")
-            .insert(token.id, token.clone());
-        self.audit_logger.record(AuditEntry::issued(token.id));
+            .insert(token.id, token);
+        Ok(())
     }
 
     /// ตรวจสอบสิทธิ์ของโทเค็นโดยอ้างอิงกับ Capability ที่ร้องขอ
     /// พร้อมทำบันทึกประวัติการอนุญาต (Allow) หรือปฏิเสธ (Deny) ลงไฟล์ประวัติการตรวจสอบ
-    #[must_use]
-    pub fn authorize_token(&self, token: &CapabilityToken, capability: &str) -> bool {
+    pub fn authorize_token(&self, token: &CapabilityToken, capability: &str) -> Result<bool> {
         let allowed = token.is_valid()
             && self
                 .policy_engine
@@ -102,29 +104,32 @@ impl CapabilitySecurityManager {
         } else {
             AuditEntry::denied(token.id)
         };
-        self.audit_logger.record(entry);
-        allowed
+        self.audit_logger
+            .record(entry)
+            .map_err(|_| CapabilityError::AuditWriteFailed)?;
+        Ok(allowed)
     }
 
     /// ยืนยันความถูกต้องของโทเค็นโดยระบุ ID, รหัสลับ (Secret Key), ขอบเขต (Scope) และ Capability ที่ต้องการ
     /// จะใช้วิธีเปรียบเทียบรหัสลับแบบคงเวลา (Constant-time comparison) เพื่อความปลอดภัยสูงสุด
-    #[must_use]
     pub fn validate(
         &self,
         token_id: u64,
         secret: &[u8; 32],
         scope: &Scope,
         capability: &str,
-    ) -> bool {
+    ) -> Result<bool> {
         let tokens = self.tokens.read().expect("capability tokens lock poisoned");
         let Some(token) = tokens.get(&token_id) else {
-            return false;
+            return Ok(false);
         };
 
         // ตรวจสอบความถูกต้องของรหัสลับ (Secret Key) แบบคงเวลาเพื่อป้องกัน Timing Attacks
         if !constant_time_eq(&token.secret, secret) {
-            self.audit_logger.record(AuditEntry::denied(token_id));
-            return false;
+            self.audit_logger
+                .record(AuditEntry::denied(token_id))
+                .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            return Ok(false);
         }
 
         let allowed = token.is_valid() && self.policy_engine.authorize(token, scope, capability);
@@ -133,30 +138,35 @@ impl CapabilitySecurityManager {
         } else {
             AuditEntry::denied(token.id)
         };
-        self.audit_logger.record(entry);
-        allowed
+        self.audit_logger
+            .record(entry)
+            .map_err(|_| CapabilityError::AuditWriteFailed)?;
+        Ok(allowed)
     }
 
     /// ตัดสินใจเชิงนโยบายความปลอดภัย (Policy Decision) สำหรับการเข้าถึงที่ร้องขอ
     /// คืนผลลัพธ์เป็น `PolicyDecision` (Allow หรือ Deny) พร้อมบันทึกประวัติลงไฟล์การตรวจสอบ
-    #[must_use]
     pub fn decision_for(
         &self,
         token_id: u64,
         secret: &[u8; 32],
         scope: &Scope,
         capability: &str,
-    ) -> PolicyDecision {
+    ) -> Result<PolicyDecision> {
         let tokens = self.tokens.read().expect("capability tokens lock poisoned");
         let Some(token) = tokens.get(&token_id) else {
-            self.audit_logger.record(AuditEntry::denied(token_id));
-            return PolicyDecision::Deny;
+            self.audit_logger
+                .record(AuditEntry::denied(token_id))
+                .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            return Ok(PolicyDecision::Deny);
         };
 
         // เปรียบเทียบรหัสลับด้วยวิธีคงเวลาเพื่อป้องกัน Timing Attacks ในการถอดรหัสลับ/เปรียบเทียบโทเค็น
         if !constant_time_eq(&token.secret, secret) {
-            self.audit_logger.record(AuditEntry::denied(token_id));
-            return PolicyDecision::Deny;
+            self.audit_logger
+                .record(AuditEntry::denied(token_id))
+                .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            return Ok(PolicyDecision::Deny);
         }
 
         let decision = self.policy_engine.decision(token, scope, capability);
@@ -164,8 +174,10 @@ impl CapabilitySecurityManager {
             PolicyDecision::Allow => AuditEntry::allowed(token.id),
             PolicyDecision::Deny => AuditEntry::denied(token.id),
         };
-        self.audit_logger.record(entry);
-        decision
+        self.audit_logger
+            .record(entry)
+            .map_err(|_| CapabilityError::AuditWriteFailed)?;
+        Ok(decision)
     }
 
     /// ดึงรายการประวัติการตรวจสอบการเข้าถึงทั้งหมดที่มีบันทึกไว้
@@ -184,9 +196,9 @@ impl Default for CapabilitySecurityManager {
 
 #[cfg(test)]
 mod tests {
-    use crate::CapabilitySecurityManager;
     use crate::policy::PolicyDecision;
     use crate::token::{CapabilityToken, Scope};
+    use crate::{CapabilityError, CapabilitySecurityManager};
     use std::time::{Duration, SystemTime};
 
     #[test]
@@ -202,12 +214,24 @@ mod tests {
             [9u8; 32],
         );
 
-        manager.issue_token(token.clone());
+        manager
+            .issue_token(token.clone())
+            .expect("issue should succeed");
 
-        assert!(manager.validate(1, &[9u8; 32], &Scope::Process(42), "read"));
-        assert!(manager.authorize_token(&token, "read"));
+        assert!(
+            manager
+                .validate(1, &[9u8; 32], &Scope::Process(42), "read")
+                .expect("validate should succeed")
+        );
+        assert!(
+            manager
+                .authorize_token(&token, "read")
+                .expect("authorize should succeed")
+        );
         assert_eq!(
-            manager.decision_for(1, &[9u8; 32], &Scope::Process(42), "read"),
+            manager
+                .decision_for(1, &[9u8; 32], &Scope::Process(42), "read")
+                .expect("decision should succeed"),
             PolicyDecision::Allow
         );
         assert_eq!(manager.audit_entries().len(), 4);
@@ -227,12 +251,24 @@ mod tests {
             secret: [8u8; 32],
         };
 
-        manager.issue_token(expired.clone());
+        manager
+            .issue_token(expired.clone())
+            .expect("issue should succeed");
 
-        assert!(!manager.authorize_token(&expired, "write"));
-        assert!(!manager.validate(2, &[8u8; 32], &Scope::Thread(7), "write"));
+        assert!(
+            !manager
+                .authorize_token(&expired, "write")
+                .expect("authorize should succeed")
+        );
+        assert!(
+            !manager
+                .validate(2, &[8u8; 32], &Scope::Thread(7), "write")
+                .expect("validate should succeed")
+        );
         assert_eq!(
-            manager.decision_for(2, &[8u8; 32], &Scope::Thread(7), "write"),
+            manager
+                .decision_for(2, &[8u8; 32], &Scope::Thread(7), "write")
+                .expect("decision should succeed"),
             PolicyDecision::Deny
         );
         assert_eq!(manager.audit_entries().len(), 4);
@@ -252,10 +288,18 @@ mod tests {
             [7u8; 32],
         );
 
-        manager.issue_token(token.clone());
-        assert!(manager.authorize_token(&token, "execute"));
+        manager
+            .issue_token(token.clone())
+            .expect("issue should succeed");
+        assert!(
+            manager
+                .authorize_token(&token, "execute")
+                .expect("authorize should succeed")
+        );
         assert_eq!(
-            manager.decision_for(3, &[7u8; 32], &Scope::Process(99), "execute"),
+            manager
+                .decision_for(3, &[7u8; 32], &Scope::Process(99), "execute")
+                .expect("decision should succeed"),
             PolicyDecision::Allow
         );
         let _ = std::fs::remove_file(&log_path);
@@ -274,14 +318,49 @@ mod tests {
             [6u8; 32],
         );
 
-        manager.issue_token(token.clone());
+        manager
+            .issue_token(token.clone())
+            .expect("issue should succeed");
 
-        assert!(!manager.authorize_token(&token, "write"));
-        assert!(!manager.validate(4, &[6u8; 32], &Scope::Global, "write"));
+        assert!(
+            !manager
+                .authorize_token(&token, "write")
+                .expect("authorize should succeed")
+        );
+        assert!(
+            !manager
+                .validate(4, &[6u8; 32], &Scope::Global, "write")
+                .expect("validate should succeed")
+        );
         assert_eq!(
-            manager.decision_for(4, &[6u8; 32], &Scope::Global, "write"),
+            manager
+                .decision_for(4, &[6u8; 32], &Scope::Global, "write")
+                .expect("decision should succeed"),
             PolicyDecision::Deny
         );
         let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn audit_write_failure_is_fail_closed() {
+        let log_path = std::env::temp_dir().join("test_audit_dir");
+        let _ = std::fs::remove_dir_all(&log_path);
+        std::fs::create_dir_all(&log_path).expect("directory should be created");
+
+        let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
+        let token = CapabilityToken::new(
+            5,
+            Scope::Global,
+            vec!["read".to_string()],
+            Duration::from_secs(60),
+            [5u8; 32],
+        );
+
+        assert_eq!(
+            manager.issue_token(token),
+            Err(CapabilityError::AuditWriteFailed)
+        );
+
+        let _ = std::fs::remove_dir_all(&log_path);
     }
 }

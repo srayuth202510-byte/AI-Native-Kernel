@@ -1,5 +1,7 @@
 # Build artifacts
 /target/
+/.tools/
+/.cargo-home/
 
 # Log files
 *.log
@@ -17,4 +19,3 @@
 *.pem
 *.key
 *.cert
-

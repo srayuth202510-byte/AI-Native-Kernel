@@ -1,7 +1,7 @@
 use crate::block::{AgentControlBlock, AgentState};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
 
 /// บริการ Supervisor สำหรับตรวจสอบ เฝ้าระวัง และกู้คืนระบบการทำงานของ Agent (Self-healing)
 /// ทำหน้าที่ติดตามสถานะ และทำการเริ่มต้นการทำงานใหม่ (Restart) เมื่อ Agent ล้มเหลวแบบอัตโนมัติ
@@ -104,11 +104,23 @@ impl SupervisorService {
 
     /// เริ่มต้นลูปตรวจตราเพื่อเฝ้าระวัง Agent ทั้งหมดแบบวนซ้ำ (Monitoring Loop)
     pub async fn start_monitoring_loop(&self) {
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        self.start_monitoring_loop_until(shutdown_rx).await;
+    }
+
+    /// เริ่มต้นลูปตรวจตราจนกว่าจะได้รับสัญญาณหยุด
+    pub async fn start_monitoring_loop_until(&self, mut shutdown_rx: watch::Receiver<bool>) {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
 
         loop {
-            // รอจนกระทั่งครบกำหนดเวลา Tick ถัดไป
-            interval.tick().await;
+            tokio::select! {
+                _ = interval.tick() => {}
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+            }
 
             // คัดลอกภาพถ่ายสถานะ (Snapshot) ของ Agent ทั้งหมดเพื่อเลี่ยงปัญหาการ Lock ค้างนาน
             let snapshot = {
@@ -117,9 +129,15 @@ impl SupervisorService {
             };
 
             // ประเมินผลและติดตามพฤติกรรมของ Agent แต่ละตัว
+            let mut tasks = tokio::task::JoinSet::new();
             for agent in snapshot {
-                let _ = self.monitor_agent(&agent).await;
+                let supervisor = self.clone();
+                tasks.spawn(async move {
+                    let _ = supervisor.monitor_agent(&agent).await;
+                });
             }
+
+            while tasks.join_next().await.is_some() {}
         }
     }
 }

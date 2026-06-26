@@ -148,7 +148,13 @@ impl ContextMemoryManager {
     #[instrument(skip(self), fields(key = %key))]
     pub fn promote(&self, key: &str) -> Result<()> {
         // ถ้าอยู่ใน Hot อยู่แล้ว — no-op
-        if self.hot.read().expect("hot lock poisoned").get(key).is_some() {
+        if self
+            .hot
+            .read()
+            .expect("hot lock poisoned")
+            .get(key)
+            .is_some()
+        {
             debug!(tier = "hot", "ข้อมูลอยู่ใน Hot อยู่แล้ว — no-op");
             return Ok(());
         }
@@ -156,20 +162,14 @@ impl ContextMemoryManager {
         let warm_value = self.warm.write().expect("warm lock poisoned").remove(key);
         if let Some(value) = warm_value {
             debug!(tier = "warm->hot", "ยกระดับข้อมูลจาก Warm ขึ้น Hot");
-            self.hot
-                .write()
-                .expect("hot lock poisoned")
-                .insert(key.to_string(), value);
+            self.put(key.to_string(), value);
             return Ok(());
         }
         // ค้นหาและดึงออกจาก Cold
         let cold_value = self.cold.write().expect("cold lock poisoned").remove(key);
         if let Some(value) = cold_value {
             debug!(tier = "cold->hot", "ยกระดับข้อมูลจาก Cold ขึ้น Hot");
-            self.hot
-                .write()
-                .expect("hot lock poisoned")
-                .insert(key.to_string(), value);
+            self.put(key.to_string(), value);
             return Ok(());
         }
         warn!("promote ล้มเหลว — ไม่พบ key ในทุก tier");
@@ -203,10 +203,22 @@ impl ContextMemoryManager {
     /// คืน `Some("hot")`, `Some("warm")`, `Some("cold")` หรือ `None`
     #[must_use]
     pub fn tier_of(&self, key: &str) -> Option<&'static str> {
-        if self.hot.read().expect("hot lock poisoned").get(key).is_some() {
+        if self
+            .hot
+            .read()
+            .expect("hot lock poisoned")
+            .get(key)
+            .is_some()
+        {
             return Some("hot");
         }
-        if self.warm.read().expect("warm lock poisoned").get(key).is_some() {
+        if self
+            .warm
+            .read()
+            .expect("warm lock poisoned")
+            .get(key)
+            .is_some()
+        {
             return Some("warm");
         }
         if self
@@ -278,7 +290,10 @@ mod tests {
             memory.put(format!("evict-target-{i}"), vec![i as u8]);
         }
         let result = memory.get(&first_key);
-        assert!(result.is_ok(), "ข้อมูลที่ถูก evict ควรยังคงดึงได้จาก warm/cold store");
+        assert!(
+            result.is_ok(),
+            "ข้อมูลที่ถูก evict ควรยังคงดึงได้จาก warm/cold store"
+        );
     }
 
     #[test]
@@ -322,13 +337,31 @@ mod tests {
     }
 
     #[test]
+    fn promote_respects_hot_capacity() {
+        let memory = ContextMemoryManager::with_capacity(2, 1024);
+        memory.put("a", b"alpha".to_vec());
+        memory.put("b", b"beta".to_vec());
+        memory.put("c", b"gamma".to_vec()); // a -> warm
+
+        memory.promote("a").expect("promote Warm→Hot ต้องสำเร็จ");
+
+        assert_eq!(memory.tier_of("a"), Some("hot"));
+        assert_eq!(memory.tier_of("b"), Some("warm"));
+        assert_eq!(memory.tier_of("c"), Some("hot"));
+    }
+
+    #[test]
     fn demote_from_hot_to_warm_succeeds() {
         let memory = ContextMemoryManager::new();
         memory.put("hotkey", b"data".to_vec());
         assert_eq!(memory.tier_of("hotkey"), Some("hot"));
 
         memory.demote("hotkey").expect("demote Hot→Warm ต้องสำเร็จ");
-        assert_eq!(memory.tier_of("hotkey"), Some("warm"), "หลัง demote ต้องอยู่ใน Warm");
+        assert_eq!(
+            memory.tier_of("hotkey"),
+            Some("warm"),
+            "หลัง demote ต้องอยู่ใน Warm"
+        );
         assert_eq!(
             memory.get("hotkey").expect("ยังดึงได้จาก Warm"),
             b"data".to_vec()
@@ -346,7 +379,11 @@ mod tests {
 
         assert_eq!(memory.tier_of("x"), Some("cold"), "x ต้องถูก evict ถึง cold");
         let val = memory.get("x").expect("x ต้องดึงได้จาก cold tier");
-        assert_eq!(val, b"payload".to_vec(), "ข้อมูลต้องไม่สูญหายระหว่าง tier migration");
+        assert_eq!(
+            val,
+            b"payload".to_vec(),
+            "ข้อมูลต้องไม่สูญหายระหว่าง tier migration"
+        );
 
         // promote กลับขึ้น hot
         memory.promote("x").expect("promote from cold ต้องสำเร็จ");

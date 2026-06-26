@@ -6,7 +6,7 @@ use capability_security::{
     policy::{PolicyDecision, PolicyEngine},
     token::{CapabilityToken, Scope},
 };
-use intent_bus::{IntentBus, Intent, IntentType, IntentPriority};
+use intent_bus::{Intent, IntentBus, IntentPriority, IntentType};
 use proptest::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ proptest! {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let bus = IntentBus::new(100);
-            
+
             // ส่ง Payload ที่เป็น Garbage เข้าไปในระบบ
             let intent = Intent::new(
                 uuid::Uuid::new_v4().to_string(),
@@ -31,7 +31,7 @@ proptest! {
                 IntentPriority::Medium,
                 "fuzzer",
             );
-            
+
             // ต้องไม่เกิด Panic (Fail-safe)
             let _ = bus.publish(intent).await;
         });
@@ -65,9 +65,15 @@ async fn chaos_supervisor_recovers_mass_failures() {
     };
 
     // Supervisor ต้องไม่พังระหว่างการกู้ภัย
+    let mut tasks = tokio::task::JoinSet::new();
     for agent in snapshot {
-        let recovered = supervisor.monitor_agent(&agent).await;
-        assert!(recovered, "Agent {} failed to recover", agent.id);
+        let supervisor = supervisor.clone();
+        tasks.spawn(async move { (agent.id, supervisor.monitor_agent(&agent).await) });
+    }
+
+    while let Some(joined) = tasks.join_next().await {
+        let (agent_id, recovered) = joined.expect("chaos recovery task should join");
+        assert!(recovered, "Agent {} failed to recover", agent_id);
     }
 
     // 検証 (Verify): ตรวจสอบว่าระบบสามารถดึงทุก Agent กลับมาทำงาน (Running) ได้ตามหลัก Fault Tolerance
@@ -90,7 +96,7 @@ proptest! {
     #[test]
     fn fuzz_policy_engine_garbage_token(garbage in "\\PC*") {
         let engine = PolicyEngine::default();
-        
+
         // จำลองสถานการณ์: มีคนส่ง capability เป็นตัวอักษรขยะเข้ามา
         let token = CapabilityToken::new(
             123,
@@ -99,9 +105,9 @@ proptest! {
             std::time::Duration::from_secs(60),
             [0u8; 32],
         );
-        
+
         let decision = engine.decision(&token, &Scope::Global, "execute");
-        
+
         // Zero-Trust: ถ้าระบบเจอสิทธิ์แปลกๆ (Garbage) ที่ไม่ตรงกับ Allowlist ต้องตัดเป็น Deny เสมอ
         prop_assert_eq!(decision, PolicyDecision::Deny, "System failed closed bypass!");
     }
