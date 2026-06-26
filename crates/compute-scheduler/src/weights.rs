@@ -1,3 +1,14 @@
+/// โหมดการจัดตารางเวลาของระบบ เพื่อปรับเปลี่ยนพฤติกรรมตามสภาพแวดล้อม
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulerMode {
+    /// โหมดประหยัดพลังงาน (Edge/Laptop) - ให้น้ำหนักกับการใช้พลังงานต่ำสุด
+    Battery,
+    /// โหมดประสิทธิภาพสูงสุด (Server) - ให้น้ำหนักกับความเร็ว (Latency ต่ำสุด)
+    Throughput,
+    /// โหมดประหยัดค่าใช้จ่าย (Cloud) - ให้น้ำหนักกับต้นทุนทางการเงินต่ำสุด
+    Cost,
+}
+
 /// ค่าน้ำหนักปรับตัว (Adaptive Weights) สำหรับการคำนวณคะแนนประสิทธิภาพทรัพยากร
 /// ค่าน้ำหนักเหล่านี้จะถูกอัปเดตแบบเรียลไทม์ตามสถิติการใช้งานที่บันทึกได้จริง
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,6 +32,16 @@ impl AdaptiveWeights {
         }
     }
 
+    /// สร้างค่าน้ำหนักเริ่มต้นที่ตั้งค่ามาสำหรับโหมดการทำงานที่ระบุ
+    #[must_use]
+    pub fn from_mode(mode: SchedulerMode) -> Self {
+        match mode {
+            SchedulerMode::Battery => Self::new(0.1, 0.8, 0.1),
+            SchedulerMode::Throughput => Self::new(0.8, 0.1, 0.1),
+            SchedulerMode::Cost => Self::new(0.1, 0.1, 0.8),
+        }
+    }
+
     /// อัปเดตค่าน้ำหนักปรับตัวปัจจุบันโดยใช้สูตรการคำนวณ Exponential Weighted Moving Average (EWMA)
     /// โดยใช้สัมประสิทธิ์การปรับปรุง (alpha) เท่ากับ 0.1
     pub fn observe(&mut self, sample: crate::ComputeProfile) {
@@ -32,13 +53,8 @@ impl AdaptiveWeights {
 }
 
 impl Default for AdaptiveWeights {
-    /// กำหนดค่าน้ำหนักเริ่มต้นของระบบ โดยเน้นไปที่ความหน่วง (0.6)
-    /// พลังงาน (0.2) และค่าใช้จ่ายของระบบ (0.2)
+    /// กำหนดค่าน้ำหนักเริ่มต้นของระบบ โดยใช้โหมด Throughput เป็นมาตรฐาน (เน้น Latency)
     fn default() -> Self {
-        Self {
-            latency: 0.6,
-            power: 0.2,
-            cost: 0.2,
-        }
+        Self::from_mode(SchedulerMode::Throughput)
     }
 }

@@ -2,6 +2,8 @@
 
 /// โมดูลคำนวณต้นทุน/คะแนนของทรัพยากรประมวลผล
 pub mod cost;
+/// โมดูลจัดการนโยบายการจัดสรรอุปกรณ์ (Placement Policy) ตามภาระงาน
+pub mod placement;
 /// โมดูลจัดการน้ำหนักปรับตัว (Adaptive Weights) ตามสถิติการใช้งานจริง
 pub mod weights;
 
@@ -27,6 +29,8 @@ pub enum ComputeTarget {
     Gpu,
     /// หน่วยประมวลผลโครงข่ายประสาทเทียม (NPU)
     Npu,
+    /// คลาวด์ หรือ Server ภายนอก
+    Cloud,
 }
 
 /// โปรไฟล์ข้อมูลประสิทธิภาพและพลังงานของฮาร์ดแวร์แต่ละประเภท
@@ -54,6 +58,14 @@ impl ComputeScheduler {
     pub fn new() -> Self {
         Self {
             weights: std::sync::Arc::new(RwLock::new(AdaptiveWeights::default())),
+        }
+    }
+
+    /// สร้าง `ComputeScheduler` โดยกำหนดค่าน้ำหนักปรับตัวเริ่มต้น
+    #[must_use]
+    pub fn with_weights(weights: AdaptiveWeights) -> Self {
+        Self {
+            weights: std::sync::Arc::new(RwLock::new(weights)),
         }
     }
 

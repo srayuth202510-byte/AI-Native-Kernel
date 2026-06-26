@@ -169,7 +169,7 @@
     "type": "task",
     "title": "Real device-aware placement policy",
     "desc": "เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.",
-    "status": "backlog",
+    "status": "done",
     "priority": "high",
     "module": "compute-scheduler",
     "assignee": "—",

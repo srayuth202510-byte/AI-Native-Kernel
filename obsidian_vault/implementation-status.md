@@ -45,6 +45,7 @@ This note tracks the current state of the repository as implemented in code, not
 ### compute-scheduler
 
 - **[ANK-015] Prototype compute scheduler baseline**: มี compute-scheduler crate, cost function และ adaptive weights baseline พร้อม sanity tests แล้ว แต่ยังไม่ผูกกับ real CPU/GPU/NPU placement.
+- **[ANK-016] Real device-aware placement policy**: เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.
 
 ### capability-security
 
@@ -68,7 +69,6 @@ This note tracks the current state of the repository as implemented in code, not
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-- **[ANK-016] Real device-aware placement policy** (backlog, high): เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.
 - **[ANK-026] CI: fuzz + chaos test harness** (backlog, med): cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).
 <!-- NOT_IMPLEMENTED_YET_END -->
 
