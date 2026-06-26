@@ -8,3 +8,13 @@
 .idea/
 .vscode/
 .DS_Store
+
+# Secrets and Credentials
+.secret/
+*.secret
+.env
+.env.*
+*.pem
+*.key
+*.cert
+

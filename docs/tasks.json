@@ -312,10 +312,10 @@
     "type": "task",
     "title": "Security: sanitize .secret/ + .gitignore",
     "desc": "ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).",
-    "status": "todo",
+    "status": "done",
     "priority": "critical",
     "module": "infra",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   },
   {
