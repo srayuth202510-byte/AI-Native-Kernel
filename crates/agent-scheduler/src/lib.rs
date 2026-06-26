@@ -461,6 +461,7 @@ mod tests {
             Scope::Global,
             vec!["read".to_string()],
             Duration::from_secs(60),
+            [0u8; 32],
         );
 
         scheduler
@@ -488,6 +489,7 @@ mod tests {
             Scope::Global,
             vec!["write".to_string()],
             Duration::from_secs(60),
+            [0u8; 32],
         );
 
         let result = scheduler.grant_capability(agent_id, token).await;

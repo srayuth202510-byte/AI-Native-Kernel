@@ -1,21 +1,33 @@
 use std::time::{Duration, SystemTime};
+use zeroize::Zeroize;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Zeroize)]
+#[zeroize(drop)]
 pub struct CapabilityToken {
     pub id: u64,
     pub scope: Scope,
+    #[zeroize(skip)]
     pub capabilities: Vec<String>,
+    #[zeroize(skip)]
     pub expires_at: SystemTime,
+    pub secret: [u8; 32],
 }
 
 impl CapabilityToken {
     #[must_use]
-    pub fn new(id: u64, scope: Scope, capabilities: Vec<String>, ttl: Duration) -> Self {
+    pub fn new(
+        id: u64,
+        scope: Scope,
+        capabilities: Vec<String>,
+        ttl: Duration,
+        secret: [u8; 32],
+    ) -> Self {
         Self {
             id,
             scope,
             capabilities,
             expires_at: SystemTime::now() + ttl,
+            secret,
         }
     }
 
@@ -30,7 +42,7 @@ impl CapabilityToken {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroize)]
 pub enum Scope {
     Process(u32),
     Thread(u32),

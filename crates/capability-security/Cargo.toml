@@ -11,3 +11,5 @@ keywords = ["ai", "security", "capability", "audit"]
 [dependencies]
 thiserror = { workspace = true }
 zeroize = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

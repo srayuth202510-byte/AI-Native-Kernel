@@ -26,6 +26,7 @@ This note tracks the current state of the repository as implemented in code, not
 
 - **[ANK-006] AgentControlBlock + AgentState enum**: นิยาม struct และ state machine สำหรับ lifecycle ของ agent มีอยู่แล้วใน prototype scheduler.
 - **[ANK-007] Agent spawn/pause/resume/terminate API**: Async API สำหรับควบคุม lifecycle พื้นฐานมีแล้วและมี unit tests ครอบคลุม แต่ยังไม่ได้ยืนยัน performance budget.
+- **[ANK-008] Supervisor: restart/retry on fault**: Supervisor loop และโครง restart path มีใน prototype แต่ยังต้อง review เรื่อง concurrency และทดสอบ fault injection เพิ่ม.
 - **[ANK-010] Intent-driven scheduler routing**: รองรับ Command intent เช่น spawn-agent, Structured intent พร้อม metadata และ capability grant ผ่าน capability-security แล้ว.
 
 ### intent-bus
@@ -44,6 +45,8 @@ This note tracks the current state of the repository as implemented in code, not
 
 - **[ANK-017] CapabilityToken struct + Scope enum**: นิยาม CapabilityToken และ Scope มีแล้วใน prototype พร้อม validation path และ tests พื้นฐาน.
 - **[ANK-018] Policy Engine (fail-DENY)**: Policy engine default = DENY และมี capability allowlist ใน prototype แล้ว แต่ยังไม่ได้ใช้ constant_time_eq และยังไม่ยืนยัน latency budget.
+- **[ANK-019] Persistent WORM audit logger**: ปัจจุบัน audit trail เป็น in-memory เท่านั้น ต้องย้ายไป append-only persistent store สำหรับ Phase 1 security baseline.
+- **[ANK-020] Security hardening: constant-time token comparison**: แทนที่การเทียบ token แบบปกติด้วย constant_time_eq ตาม security guideline ใน AGENTS.md.
 
 ### infra
 
@@ -57,10 +60,7 @@ This note tracks the current state of the repository as implemented in code, not
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-- **[ANK-008] Supervisor: restart/retry on fault** (doing, med): Supervisor loop และโครง restart path มีใน prototype แต่ยังต้อง review เรื่อง concurrency และทดสอบ fault injection เพิ่ม.
 - **[ANK-005] Aya toolchain + kernel target validation** (todo, high): ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.
-- **[ANK-019] Persistent WORM audit logger** (todo, high): ปัจจุบัน audit trail เป็น in-memory เท่านั้น ต้องย้ายไป append-only persistent store สำหรับ Phase 1 security baseline.
-- **[ANK-020] Security hardening: constant-time token comparison** (todo, high): แทนที่การเทียบ token แบบปกติด้วย constant_time_eq ตาม security guideline ใน AGENTS.md.
 - **[ANK-025] CI: clippy + test + audit pipeline** (todo, high): GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.
 - **[ANK-029] Security: sanitize .secret/ + .gitignore** (todo, critical): ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).
 - **[ANK-003] Real eBPF syscall tracer (Aya)** (backlog, critical): โปรแกรม eBPF ที่ trace syscalls บน x86_64 ผ่าน tracepoint/raw_tracepoint. ส่ง events ออกทาง ring buffer. เป้า overhead < 3% CPU.
