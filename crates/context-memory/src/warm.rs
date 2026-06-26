@@ -1,4 +1,7 @@
-use std::collections::{HashMap, VecDeque};
+#[cfg(not(feature = "rocksdb-warm"))]
+use std::collections::HashMap;
+use std::collections::VecDeque;
+
 
 /// โครงสร้างข้อมูลสำหรับเก็บหน้าบริบทแบบชั่วคราว (Warm Store)
 ///

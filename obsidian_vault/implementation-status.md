@@ -39,6 +39,7 @@ This note tracks the current state of the repository as implemented in code, not
 ### context-memory
 
 - **[ANK-011] Prototype context manager + tier modules**: มี hot/warm/cold modules และ API ระดับ prototype สำหรับเก็บ context แล้ว แต่ยังไม่ใช่ persistent paging จริง.
+- **[ANK-012] Warm tier (NVMe): RocksDB store**: RocksDB WarmStore implement แล้วด้วย feature flag `rocksdb-warm`. Default CI ใช้ in-memory (ไม่ต้อง NVMe). เปิดใช้ด้วย --features context-memory/rocksdb-warm. Snappy compression เปิดแล้ว. Cold→Warm load < 50ms ยังไม่ได้วัด benchmark จริง.
 - **[ANK-013] Tier migration: Hot<->Warm<->Cold**: Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.
 - **[ANK-014] Property test: context round-trip lossless**: Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล
 
@@ -77,7 +78,6 @@ This note tracks the current state of the repository as implemented in code, not
 
 <!-- VALIDATION_STATUS_START -->
 - The repository has meaningful unit tests in several crates.
-- **Blocked: [ANK-012] Warm tier (NVMe): RocksDB store** - RocksDB WarmStore implement แล้วด้วย feature flag `rocksdb-warm`. Default CI ใช้ in-memory (ไม่ต้อง NVMe). เปิดใช้ด้วย --features context-memory/rocksdb-warm. Snappy compression เปิดแล้ว. Cold→Warm load < 50ms ยังไม่ได้วัด benchmark จริง.
 - Before calling this baseline stable, run:
 
 ```bash
