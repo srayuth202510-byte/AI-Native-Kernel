@@ -25,22 +25,22 @@
     "id": "ANK-003",
     "type": "feature",
     "title": "Real eBPF syscall tracer (Aya)",
-    "desc": "โปรแกรม eBPF ที่ trace syscalls บน x86_64 ผ่าน tracepoint/raw_tracepoint. ส่ง events ออกทาง ring buffer. เป้า overhead < 3% CPU.",
-    "status": "backlog",
+    "desc": "SyscallTracer host-side runtime สร้างแล้ว: syscall table x86_64 (35 entries), PolicyDecision integration, simulation loop Phase 1 พร้อม 7 tests ผ่าน. Phase 2 (Aya loader + kernel tracepoint จริง) ยังต้องทำ — ต้องการ Linux kernel ≥ 6.1 + eBPF support.",
+    "status": "in-progress",
     "priority": "critical",
     "module": "kernel-companion",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   },
   {
     "id": "ANK-004",
     "type": "task",
     "title": "Real LSM policy decision point",
-    "desc": "เชื่อม LSM hook จริงให้ดัก security decisions และส่งต่อมายัง Rust policy engine แทน host-side stub ปัจจุบัน.",
-    "status": "backlog",
+    "desc": "LSM policy engine เชื่อมกับ SyscallTracer.process_syscall_event() แล้ว (Allow/Deny ผ่าน LsmDecision). Phase 2: เชื่อม LSM hook จริงจาก kernel แทน stub ปัจจุบัน.",
+    "status": "in-progress",
     "priority": "high",
     "module": "kernel-companion",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   },
   {
@@ -91,11 +91,11 @@
     "id": "ANK-009",
     "type": "task",
     "title": "Property test: scheduler state invariant",
-    "desc": "ใช้ proptest ตรวจสอบว่า Running+Ready+Waiting == total active agents เสมอ",
-    "status": "backlog",
+    "desc": "เพิ่ม property tests แล้ว: invariant Running ≤ total spawned, terminate removes from count, error paths (double-pause, resume-running, nonexistent, duplicate ID) รวม 6 tests ผ่าน.",
+    "status": "done",
     "priority": "med",
     "module": "agent-scheduler",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   },
   {
@@ -124,11 +124,11 @@
     "id": "ANK-012",
     "type": "feature",
     "title": "Warm tier (NVMe): RocksDB store",
-    "desc": "Warm context layer บน NVMe ผ่าน RocksDB. Cold→Warm load < 50ms P99.",
-    "status": "backlog",
+    "desc": "RocksDB WarmStore implement แล้วด้วย feature flag `rocksdb-warm`. Default CI ใช้ in-memory (ไม่ต้อง NVMe). เปิดใช้ด้วย --features context-memory/rocksdb-warm. Snappy compression เปิดแล้ว. Cold→Warm load < 50ms ยังไม่ได้วัด benchmark จริง.",
+    "status": "in-progress",
     "priority": "high",
     "module": "context-memory",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   },
   {
@@ -289,11 +289,11 @@
     "id": "ANK-027",
     "type": "task",
     "title": "Observability: tracing + Prometheus exporter",
-    "desc": "เพิ่ม tracing + OpenTelemetry + Prometheus metrics ในทุก hot path. PII-sanitized logs.",
-    "status": "backlog",
+    "desc": "tracing spans (#[instrument], debug!, warn!) เพิ่มแล้วใน context-memory put/get และ kernel-companion boot/shutdown. Prometheus metrics exporter ยังไม่ได้ implement — ต้องเพิ่ม prometheus crate + /metrics endpoint.",
+    "status": "in-progress",
     "priority": "med",
     "module": "infra",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   },
   {

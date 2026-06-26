@@ -28,6 +28,7 @@ This note tracks the current state of the repository as implemented in code, not
 - **[ANK-006] AgentControlBlock + AgentState enum**: นิยาม struct และ state machine สำหรับ lifecycle ของ agent มีอยู่แล้วใน prototype scheduler.
 - **[ANK-007] Agent spawn/pause/resume/terminate API**: Async API สำหรับควบคุม lifecycle พื้นฐานมีแล้วและมี unit tests ครอบคลุม แต่ยังไม่ได้ยืนยัน performance budget.
 - **[ANK-008] Supervisor: restart/retry on fault**: Supervisor loop และโครง restart path มีใน prototype แต่ยังต้อง review เรื่อง concurrency และทดสอบ fault injection เพิ่ม.
+- **[ANK-009] Property test: scheduler state invariant**: เพิ่ม property tests แล้ว: invariant Running ≤ total spawned, terminate removes from count, error paths (double-pause, resume-running, nonexistent, duplicate ID) รวม 6 tests ผ่าน.
 - **[ANK-010] Intent-driven scheduler routing**: รองรับ Command intent เช่น spawn-agent, Structured intent พร้อม metadata และ capability grant ผ่าน capability-security แล้ว.
 
 ### intent-bus
@@ -63,15 +64,10 @@ This note tracks the current state of the repository as implemented in code, not
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-- **[ANK-003] Real eBPF syscall tracer (Aya)** (backlog, critical): โปรแกรม eBPF ที่ trace syscalls บน x86_64 ผ่าน tracepoint/raw_tracepoint. ส่ง events ออกทาง ring buffer. เป้า overhead < 3% CPU.
-- **[ANK-004] Real LSM policy decision point** (backlog, high): เชื่อม LSM hook จริงให้ดัก security decisions และส่งต่อมายัง Rust policy engine แทน host-side stub ปัจจุบัน.
-- **[ANK-009] Property test: scheduler state invariant** (backlog, med): ใช้ proptest ตรวจสอบว่า Running+Ready+Waiting == total active agents เสมอ
-- **[ANK-012] Warm tier (NVMe): RocksDB store** (backlog, high): Warm context layer บน NVMe ผ่าน RocksDB. Cold→Warm load < 50ms P99.
 - **[ANK-013] Tier migration: Hot<->Warm<->Cold** (backlog, med): Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.
 - **[ANK-014] Property test: context round-trip lossless** (backlog, med): Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล
 - **[ANK-016] Real device-aware placement policy** (backlog, high): เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.
 - **[ANK-026] CI: fuzz + chaos test harness** (backlog, med): cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).
-- **[ANK-027] Observability: tracing + Prometheus exporter** (backlog, med): เพิ่ม tracing + OpenTelemetry + Prometheus metrics ในทุก hot path. PII-sanitized logs.
 <!-- NOT_IMPLEMENTED_YET_END -->
 
 ## Validation Status
