@@ -13,11 +13,15 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+aya = { workspace = true }
+bytes = { workspace = true }
 agent-scheduler = { path = "../agent-scheduler" }
 capability-security = { path = "../capability-security" }
 compute-scheduler = { path = "../compute-scheduler" }
 context-memory = { path = "../context-memory" }
 intent-bus = { path = "../intent-bus" }
+
+
 
 [dev-dependencies]
 proptest = { workspace = true }

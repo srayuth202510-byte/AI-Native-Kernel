@@ -57,11 +57,11 @@ fn bench_promote(c: &mut Criterion) {
 
 fn bench_demote(c: &mut Criterion) {
     let memory = ContextMemoryManager::new();
-    memory.put("demote-me", vec![0x42u8; 512]);
 
     c.bench_function("demote_from_hot_to_warm", |b| {
         b.iter(|| {
-            memory.demote(black_box("demote-me")).unwrap();
+            memory.put("demote-me", vec![0x42u8; 512]);
+            memory.demote("demote-me").unwrap();
             black_box(())
         });
     });

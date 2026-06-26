@@ -1,27 +1,7 @@
-//! # eBPF Syscall Tracer — Host-side Runtime (ANK-003)
-//!
-//! โมดูลนี้ทำหน้าที่เป็น **userspace runtime** สำหรับโปรแกรม eBPF ที่รันอยู่ใน Kernel Space
-//! โดยใช้ Aya framework ในการโหลด, แนบ tracepoint, และอ่าน ring buffer events แบบ async
-//!
-//! ## สถาปัตยกรรม
-//! ```text
-//! Linux Kernel
-//!   └── tracepoint/raw_syscalls/sys_enter  ← eBPF program hook
-//!         │  ring buffer
-//!         ▼
-//! [SyscallTracer daemon]  ← โมดูลนี้ (userspace)
-//!   └── IntentBus  ← ส่ง SyscallEvent เป็น Intent
-//!         ▼
-//! [LsmPolicyEngine]  ← ตัดสินใจ Allow/Deny (ANK-004)
-//! ```
-//!
-//! ## Performance Budget (plan §3)
-//! - eBPF tracer overhead: **< 3% CPU**
-//! - Ring buffer poll interval: **1ms**
-//! - Syscall decision latency: **P99 < 1ms**
-
 use anyhow::Result;
+use bytes::BytesMut;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -31,84 +11,45 @@ use crate::lsm::{LsmDecision, LsmPolicyEngine};
 
 // ---- Types ----
 
-/// ข้อผิดพลาดที่อาจเกิดจาก eBPF Tracer
 #[derive(Debug, Error)]
 pub enum TracerError {
-    /// ล้มเหลวในการโหลด eBPF object ลงสู่ Kernel
-    #[error("ล้มเหลวในการโหลด eBPF program: {0}")]
+    #[error("eBPF program load failed: {0}")]
     LoadFailed(String),
-    /// ล้มเหลวในการแนบ tracepoint hook
-    #[error("ล้มเหลวในการแนบ tracepoint: {0}")]
+    #[error("tracepoint attach failed: {0}")]
     AttachFailed(String),
-    /// ไม่สามารถอ่านข้อมูลจาก ring buffer
-    #[error("ไม่สามารถอ่าน ring buffer: {0}")]
+    #[error("ring buffer error: {0}")]
     RingBufferError(String),
-    /// Tracer ถูกยกเลิกการทำงาน (graceful shutdown)
-    #[error("tracer ถูกยกเลิก")]
+    #[error("tracer cancelled")]
     Cancelled,
 }
 
-/// เหตุการณ์ syscall ที่จับได้จาก eBPF ring buffer
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyscallEvent {
-    /// หมายเลข syscall (เช่น 0=read, 1=write)
     pub syscall_nr: u64,
-    /// ชื่อ syscall (resolve จาก syscall_nr)
     pub syscall_name: String,
-    /// PID ของ process ที่เรียก
     pub pid: u32,
-    /// UID ของ process ที่เรียก
     pub uid: u32,
-    /// timestamp ในหน่วย nanoseconds (จาก bpf_ktime_get_ns)
     pub timestamp_ns: u64,
-    /// ผลการตัดสินใจนโยบาย (Allow/Deny) จาก LSM engine
     pub decision: PolicyDecision,
 }
 
-/// ผลการตัดสินใจของ Policy Engine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyDecision {
-    /// อนุญาตให้เรียก syscall นี้ได้
     Allow,
-    /// ปฏิเสธ — syscall นี้ถูกบล็อกตามนโยบาย Zero-Trust
     Deny,
 }
 
-/// ช่องทางรับ SyscallEvent แบบ async (consumer side)
 pub type SyscallEventReceiver = mpsc::Receiver<SyscallEvent>;
 
 // ---- SyscallTracer ----
 
-/// eBPF Syscall Tracer — host-side daemon ที่โหลดโปรแกรม eBPF และอ่าน events
-///
-/// **Phase 1 (current)**: จำลองด้วย software-only ring buffer  
-/// **Phase 2**: เชื่อมต่อ Aya loader กับ kernel tracepoint จริง
-///
-/// ใช้งาน:
-/// ```rust,no_run
-/// # use std::sync::Arc;
-/// # use kernel_companion::lsm::LsmPolicyEngine;
-/// # use kernel_companion::{SyscallTracer, tokio_util_cancel};
-/// # #[tokio::main] async fn main() {
-/// let (tracer, mut rx) = SyscallTracer::new(Arc::new(LsmPolicyEngine::new()));
-/// let cancel = tokio_util_cancel::CancellationToken::new();
-/// tokio::spawn(async move { let _ = tracer.run(cancel).await; });
-/// while let Some(event) = rx.recv().await {
-///     println!("syscall: {} -> {:?}", event.syscall_name, event.decision);
-/// }
-/// # }
-/// ```
 pub struct SyscallTracer {
-    /// Policy Engine ใช้ตัดสินใจว่า syscall ใดควร Allow/Deny
     policy: Arc<LsmPolicyEngine>,
-    /// ช่องทางส่ง events ออกสู่ consumer (Intent Bus, Audit Logger, ฯลฯ)
     event_tx: mpsc::Sender<SyscallEvent>,
-    /// ตาราง syscall number → ชื่อ syscall (x86_64 ABI)
     syscall_table: HashMap<u64, &'static str>,
 }
 
 impl SyscallTracer {
-    /// สร้าง SyscallTracer พร้อม channel ขนาด 4096 events
     #[must_use]
     pub fn new(policy: Arc<LsmPolicyEngine>) -> (Self, SyscallEventReceiver) {
         let (event_tx, event_rx) = mpsc::channel(4096);
@@ -120,44 +61,124 @@ impl SyscallTracer {
         (tracer, event_rx)
     }
 
-    /// ลูปหลักของ Tracer: โหลด eBPF → แนบ tracepoint → poll ring buffer
-    ///
-    /// # Errors
-    /// คืน error หากโหลด eBPF หรือแนบ tracepoint ล้มเหลว
-    ///
-    /// ออกจากลูปเมื่อ `cancel` token ถูก trigger (graceful shutdown)
     #[instrument(skip(self, cancel))]
-    pub async fn run(self, cancel: tokio_util_cancel::CancellationToken) -> Result<(), TracerError>
-    where
-        Self: Sized,
-    {
-        info!("SyscallTracer เริ่มทำงาน — กำลังโหลด eBPF program");
+    pub async fn run(self, cancel: CancellationToken) -> Result<(), TracerError> {
+        info!("SyscallTracer starting — attempting real eBPF program load");
 
-        // Phase 1: จำลอง ring buffer ด้วย software loop
-        // Phase 2: แทนที่ด้วย Aya loader + RingBuf::try_from_map()
-        self.run_simulation_loop(cancel).await
+        match self.try_run_bpf(cancel.clone()).await {
+            Ok(()) => {
+                info!("SyscallTracer running on real eBPF");
+                Ok(())
+            }
+            Err(e) => {
+                warn!(error = %e, "real eBPF load failed — falling back to simulation mode");
+                self.run_simulation_loop(cancel).await
+            }
+        }
     }
 
-    /// ลูปจำลอง (Phase 1): สร้าง synthetic syscall events สำหรับ integration testing
-    /// ในการใช้งาน production จะถูกแทนที่ด้วย Aya ring buffer poll
+    #[instrument(skip(self, cancel))]
+    async fn try_run_bpf(&self, cancel: CancellationToken) -> Result<(), TracerError> {
+        let bpf_bytes = load_bpf_program_bytes().map_err(|e| {
+            TracerError::LoadFailed(format!("cannot load BPF .o bytes: {e}"))
+        })?;
+
+        let mut bpf = aya::Bpf::load(&bpf_bytes)
+            .map_err(|e| TracerError::LoadFailed(e.to_string()))?;
+
+        let program: &mut aya::programs::TracePoint = bpf
+            .program_mut("sys_enter_tp")
+            .ok_or_else(|| TracerError::LoadFailed("no sys_enter_tp program".into()))?
+            .try_into()
+            .map_err(|e: aya::programs::ProgramError| {
+                TracerError::LoadFailed(format!("program type mismatch: {e}"))
+            })?;
+
+        program
+            .load()
+            .map_err(|e| TracerError::LoadFailed(e.to_string()))?;
+
+        program
+            .attach("raw_syscalls", "sys_enter")
+            .map_err(|e| TracerError::AttachFailed(e.to_string()))?;
+
+        info!("eBPF tracepoint sys_enter attached — polling ring buffer");
+
+        let map = bpf
+            .take_map("syscall_events")
+            .ok_or_else(|| TracerError::RingBufferError("map syscall_events not found".into()))?;
+
+        let mut perf_array: aya::maps::PerfEventArray<_> = map
+            .try_into()
+            .map_err(|e: aya::maps::MapError| {
+                TracerError::RingBufferError(e.to_string())
+            })?;
+
+        let cpus = aya::util::online_cpus()
+            .map_err(|e| TracerError::RingBufferError(e.to_string()))?;
+
+        let mut buffers: Vec<PerfBufferState> = Vec::new();
+        for cpu_id in cpus {
+            let buf = perf_array
+                .open(cpu_id, None)
+                .map_err(|e| TracerError::RingBufferError(e.to_string()))?;
+            buffers.push(PerfBufferState {
+                cpu_id,
+                buf,
+                out_bufs: vec![BytesMut::with_capacity(4096)],
+            });
+        }
+
+        let poll_interval = std::time::Duration::from_millis(1);
+
+        while !cancel.is_cancelled() {
+            for state in buffers.iter_mut() {
+                match state.buf.read_events(&mut state.out_bufs) {
+                    Ok(events) if events.read > 0 => {
+                        for buf in state.out_bufs.iter() {
+                            if let Some(raw) = parse_raw_event(buf) {
+                                let event = self.process_syscall_event(
+                                    raw.syscall_nr, raw.pid, raw.uid,
+                                );
+                                if self.event_tx.try_send(event).is_err() {
+                                    debug!("event channel full — dropping syscall event");
+                                }
+                            }
+                        }
+                        if events.lost > 0 {
+                            debug!(lost = events.lost, "perf events lost");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        debug!(cpu = state.cpu_id, error = %e, "read_events error");
+                    }
+                }
+            }
+            tokio::time::sleep(poll_interval).await;
+        }
+
+        info!("SyscallTracer eBPF loop stopped (cancel)");
+        Ok(())
+    }
+
     #[instrument(skip(self, cancel))]
     async fn run_simulation_loop(
         &self,
-        cancel: tokio_util_cancel::CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<(), TracerError> {
-        info!("SyscallTracer รันในโหมดจำลอง (Phase 1 — ยังไม่ได้เชื่อมต่อ kernel จริง)");
+        info!("SyscallTracer running in simulation mode (Phase 1 — no real kernel tracepoint)");
 
-        // จำลอง syscall events สำหรับ testing (read, write, execve, open)
         let simulated: &[(u64, u32, u32)] = &[
-            (0, 1000, 1000), // read  - PID 1000
-            (1, 1000, 1000), // write - PID 1000
-            (59, 1001, 0),   // execve - PID 1001 (root)
-            (2, 1002, 1000), // open - PID 1002
+            (0, 1000, 1000),
+            (1, 1000, 1000),
+            (59, 1001, 0),
+            (2, 1002, 1000),
         ];
 
-        for &(syscall_nr, pid, uid) in simulated.iter() {
+        for &(syscall_nr, pid, uid) in simulated {
             if cancel.is_cancelled() {
-                info!("SyscallTracer ได้รับสัญญาณ cancel — หยุดทำงาน");
+                info!("SyscallTracer received cancel signal — stopping");
                 return Err(TracerError::Cancelled);
             }
 
@@ -166,36 +187,34 @@ impl SyscallTracer {
                 syscall = %event.syscall_name,
                 pid = event.pid,
                 decision = ?event.decision,
-                "ประมวลผล syscall event"
+                "processed syscall event"
             );
 
             if self.event_tx.send(event).await.is_err() {
-                warn!("ผู้รับ SyscallEvent ปิดไปแล้ว — หยุด tracer");
+                warn!("SyscallEvent receiver closed — stopping tracer");
                 break;
             }
         }
 
-        info!("SyscallTracer หยุดทำงาน (simulation loop เสร็จสิ้น)");
+        info!("SyscallTracer stopped (simulation loop complete)");
         Ok(())
     }
 
-    /// ประมวลผล syscall event และตัดสินใจนโยบาย
     #[instrument(skip(self), fields(syscall_nr, pid, uid))]
-    fn process_syscall_event(&self, syscall_nr: u64, pid: u32, uid: u32) -> SyscallEvent {
+    pub fn process_syscall_event(&self, syscall_nr: u64, pid: u32, uid: u32) -> SyscallEvent {
         let syscall_name = self
             .syscall_table
             .get(&syscall_nr)
             .copied()
             .unwrap_or("unknown");
 
-        // ตรวจสอบนโยบายความปลอดภัยกับ LSM Policy Engine
         let lsm_decision = self.policy.decision_for_syscall(syscall_name);
         let decision = match lsm_decision {
             LsmDecision::Allow => PolicyDecision::Allow,
             LsmDecision::Deny => {
                 warn!(
                     syscall = syscall_name,
-                    pid, uid, "LSM ปฏิเสธ syscall ตามนโยบาย Zero-Trust"
+                    pid, uid, "LSM denied syscall per Zero-Trust policy"
                 );
                 PolicyDecision::Deny
             }
@@ -206,7 +225,6 @@ impl SyscallTracer {
             syscall_name: syscall_name.to_string(),
             pid,
             uid,
-            // ใช้ simulation timestamp ใน Phase 1 (Phase 2 จะใช้ bpf_ktime_get_ns)
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
@@ -216,14 +234,90 @@ impl SyscallTracer {
     }
 }
 
-// ---- ตาราง syscall x86_64 (ชุดสำคัญ) ----
+// ---- Per-buffer state ----
 
-/// สร้างตาราง syscall number → ชื่อ สำหรับ x86_64 Linux ABI
-///
-/// ที่มา: <https://filippo.io/linux-syscall-table/>
+struct PerfBufferState {
+    #[allow(dead_code)]
+    cpu_id: u32,
+    buf: aya::maps::perf::PerfEventArrayBuffer<aya::maps::MapData>,
+    out_bufs: Vec<BytesMut>,
+}
+
+// ---- Raw event struct matching BPF C definition ----
+
+#[repr(C)]
+struct RawSyscallEvent {
+    syscall_nr: u64,
+    pid: u32,
+    uid: u32,
+    timestamp_ns: u64,
+}
+
+fn parse_raw_event(buf: &[u8]) -> Option<RawSyscallEvent> {
+    let size = std::mem::size_of::<RawSyscallEvent>();
+    if buf.len() < size {
+        return None;
+    }
+    let syscall_nr = u64::from_ne_bytes(buf[0..8].try_into().ok()?);
+    let pid = u32::from_ne_bytes(buf[8..12].try_into().ok()?);
+    let uid = u32::from_ne_bytes(buf[12..16].try_into().ok()?);
+    let timestamp_ns = u64::from_ne_bytes(buf[16..24].try_into().ok()?);
+    Some(RawSyscallEvent { syscall_nr, pid, uid, timestamp_ns })
+}
+
+// ---- BPF program loading ----
+
+fn load_bpf_program_bytes() -> Result<Vec<u8>> {
+    let bpf_o_path = if let Ok(out_dir) = std::env::var("BPF_OUT_DIR") {
+        std::path::PathBuf::from(out_dir).join("syscall-tracer.bpf.o")
+    } else if let Ok(cargo_manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        std::path::PathBuf::from(cargo_manifest)
+            .join("target")
+            .join("bpf")
+            .join("syscall-tracer.bpf.o")
+    } else {
+        anyhow::bail!("BPF_OUT_DIR and CARGO_MANIFEST_DIR not set");
+    };
+
+    if !bpf_o_path.exists() {
+        anyhow::bail!("BPF object file not found: {}", bpf_o_path.display());
+    }
+
+    Ok(std::fs::read(&bpf_o_path)?)
+}
+
+// ---- CancellationToken ----
+
+pub mod tokio_util_cancel {
+    #[derive(Clone, Default)]
+    pub struct CancellationToken {
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl CancellationToken {
+        #[must_use]
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn cancel(&self) {
+            self.cancelled
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        #[must_use]
+        pub fn is_cancelled(&self) -> bool {
+            self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+}
+
+use tokio_util_cancel::CancellationToken;
+
+// ---- x86_64 syscall table ----
+
 fn build_syscall_table() -> HashMap<u64, &'static str> {
     let mut table = HashMap::new();
-    // syscalls พื้นฐาน I/O
     table.insert(0, "read");
     table.insert(1, "write");
     table.insert(2, "open");
@@ -237,7 +331,6 @@ fn build_syscall_table() -> HashMap<u64, &'static str> {
     table.insert(10, "mprotect");
     table.insert(11, "munmap");
     table.insert(12, "brk");
-    // syscalls เครือข่าย
     table.insert(41, "socket");
     table.insert(42, "connect");
     table.insert(43, "accept");
@@ -245,7 +338,6 @@ fn build_syscall_table() -> HashMap<u64, &'static str> {
     table.insert(45, "recvfrom");
     table.insert(46, "sendmsg");
     table.insert(47, "recvmsg");
-    // syscalls process/security
     table.insert(56, "clone");
     table.insert(57, "fork");
     table.insert(58, "vfork");
@@ -254,7 +346,6 @@ fn build_syscall_table() -> HashMap<u64, &'static str> {
     table.insert(61, "wait4");
     table.insert(62, "kill");
     table.insert(63, "uname");
-    // syscalls file/permission
     table.insert(80, "chdir");
     table.insert(81, "fchdir");
     table.insert(82, "rename");
@@ -273,38 +364,6 @@ fn build_syscall_table() -> HashMap<u64, &'static str> {
     table
 }
 
-// ---- Stub สำหรับ CancellationToken (ใช้ใน Phase 1 ก่อน tokio-util) ----
-// Phase 2: แทนด้วย tokio_util::sync::CancellationToken จริง
-
-/// stub module สำหรับ CancellationToken ใช้ใน Phase 1
-pub mod tokio_util_cancel {
-    /// CancellationToken จำลองสำหรับ Phase 1 (ยังไม่ได้เชื่อมต่อ tokio-util จริง)
-    #[derive(Clone, Default)]
-    pub struct CancellationToken {
-        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    }
-
-    impl CancellationToken {
-        /// สร้าง token ใหม่
-        #[must_use]
-        pub fn new() -> Self {
-            Self::default()
-        }
-
-        /// ส่งสัญญาณยกเลิก
-        pub fn cancel(&self) {
-            self.cancelled
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-
-        /// ตรวจสอบว่าถูกยกเลิกแล้วหรือไม่
-        #[must_use]
-        pub fn is_cancelled(&self) -> bool {
-            self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-}
-
 // ---- Tests ----
 
 #[cfg(test)]
@@ -317,7 +376,6 @@ mod tests {
 
     #[test]
     fn process_read_syscall_is_allowed() {
-        // ทดสอบว่า syscall read (nr=0) ถูกอนุญาตตามนโยบาย
         let (tracer, _rx) = make_tracer();
         let event = tracer.process_syscall_event(0, 1000, 1000);
         assert_eq!(event.syscall_name, "read");
@@ -326,7 +384,6 @@ mod tests {
 
     #[test]
     fn process_write_syscall_is_allowed() {
-        // ทดสอบว่า syscall write (nr=1) ถูกอนุญาตตามนโยบาย
         let (tracer, _rx) = make_tracer();
         let event = tracer.process_syscall_event(1, 1000, 1000);
         assert_eq!(event.syscall_name, "write");
@@ -335,7 +392,6 @@ mod tests {
 
     #[test]
     fn process_execve_syscall_is_denied() {
-        // ทดสอบว่า syscall execve (nr=59) ถูกปฏิเสธ (ไม่อยู่ใน allowlist)
         let (tracer, _rx) = make_tracer();
         let event = tracer.process_syscall_event(59, 1001, 0);
         assert_eq!(event.syscall_name, "execve");
@@ -344,7 +400,6 @@ mod tests {
 
     #[test]
     fn unknown_syscall_is_denied() {
-        // ทดสอบว่า syscall ที่ไม่รู้จักต้องถูก deny ตามหลัก fail-closed
         let (tracer, _rx) = make_tracer();
         let event = tracer.process_syscall_event(9999, 1000, 1000);
         assert_eq!(event.syscall_name, "unknown");
@@ -353,7 +408,6 @@ mod tests {
 
     #[test]
     fn syscall_event_contains_pid_and_uid() {
-        // ทดสอบว่า event เก็บ pid และ uid ถูกต้อง
         let (tracer, _rx) = make_tracer();
         let event = tracer.process_syscall_event(0, 42, 1337);
         assert_eq!(event.pid, 42);
@@ -362,33 +416,53 @@ mod tests {
 
     #[tokio::test]
     async fn simulation_loop_sends_events_to_channel() {
-        // ทดสอบว่า run_simulation_loop ส่ง events ไปยัง channel ได้จริง
-        let cancel = tokio_util_cancel::CancellationToken::new();
+        let cancel = CancellationToken::new();
         let (tracer, mut rx) = make_tracer();
 
         tokio::spawn(async move {
             let _ = tracer.run(cancel).await;
         });
 
-        // รอรับ event อย่างน้อย 1 event
         let event = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
             .await
-            .expect("ควรได้รับ event ภายใน 500ms")
-            .expect("channel ควรยังเปิดอยู่");
+            .expect("should receive event within 500ms")
+            .expect("channel should be open");
 
-        // event แรกคือ read (nr=0)
         assert_eq!(event.syscall_nr, 0);
         assert_eq!(event.syscall_name, "read");
     }
 
     #[test]
     fn syscall_table_covers_common_syscalls() {
-        // ทดสอบว่าตาราง syscall มีรายการสำคัญครบ
         let table = build_syscall_table();
-        assert!(table.contains_key(&0), "ต้องมี read");
-        assert!(table.contains_key(&1), "ต้องมี write");
-        assert!(table.contains_key(&59), "ต้องมี execve");
-        assert!(table.contains_key(&41), "ต้องมี socket");
-        assert!(table.len() >= 30, "ตารางควรมีอย่างน้อย 30 รายการ");
+        assert!(table.contains_key(&0), "must have read");
+        assert!(table.contains_key(&1), "must have write");
+        assert!(table.contains_key(&59), "must have execve");
+        assert!(table.contains_key(&41), "must have socket");
+        assert!(table.len() >= 30, "table should have at least 30 entries");
+    }
+
+    #[test]
+    fn tracer_falls_back_to_simulation_when_bpf_missing() {
+        let (tracer, mut rx) = make_tracer();
+        let cancel = CancellationToken::new();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            tokio::spawn(async move {
+                let _ = tracer.run(cancel).await;
+            });
+
+            let event = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                rx.recv(),
+            )
+            .await
+            .expect("should receive event within 500ms")
+            .expect("channel should be open");
+
+            assert_eq!(event.syscall_nr, 0);
+            assert_eq!(event.syscall_name, "read");
+        });
     }
 }
