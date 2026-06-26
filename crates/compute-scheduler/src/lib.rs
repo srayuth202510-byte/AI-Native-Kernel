@@ -6,7 +6,8 @@ pub mod cost;
 pub mod placement;
 /// โมดูลจัดการน้ำหนักปรับตัว (Adaptive Weights) ตามสถิติการใช้งานจริง
 pub mod weights;
-
+/// โมดูลเชื่อมต่อเพื่ออ่านข้อมูลฮาร์ดแวร์จริง (CPU/GPU/NPU)
+pub mod hardware;
 use crate::cost::score_target;
 use crate::weights::AdaptiveWeights;
 use std::sync::RwLock;

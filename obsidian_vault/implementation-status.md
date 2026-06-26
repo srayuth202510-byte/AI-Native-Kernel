@@ -21,6 +21,7 @@ This note tracks the current state of the repository as implemented in code, not
 
 - **[ANK-001] Setup Rust workspace + companion crate layout**: Workspace manifest และ crate layout สำหรับ kernel-companion ถูกจัดให้ parse ได้และเชื่อมกับ crate อื่นแล้ว แต่ยังไม่ได้ยืนยันด้วย cargo build จริงใน environment นี้.
 - **[ANK-002] Prototype companion composition root**: kernel-companion สร้าง intent bus, memory, security, compute และ agent scheduler แล้ว boot/shutdown ได้ในระดับ prototype host-side.
+- **[ANK-003] Real eBPF syscall tracer (Aya)**: Phase 2 (Aya loader + kernel tracepoint จริง) รองรับการคอมไพล์ผ่าน build.rs และ BPF C ถูกคอมไพล์สำเร็จแล้ว Aya loader สามารถ load เข้า Kernel ได้ผ่าน sys_enter_tp.
 - **[ANK-004] Phase 2 kick-off: eBPF/LSM module**: Aya + LSM BPF integration เริ่มร่างโครงสร้างใน kernel-companion แล้ว (LSM attachment, policy default DENY, tracepoints). ขาดแค่ BPF maps และ eBPF program ที่ compile เป็น bytecode จริง.
 - **[ANK-005] Aya toolchain + kernel target validation**: ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.
 
