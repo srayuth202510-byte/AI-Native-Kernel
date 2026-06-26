@@ -1,13 +1,12 @@
-package = "compute-scheduler"
+[package]
+name = "compute-scheduler"
+version = "0.1.0"
 edition = "2024"
-rust-version = "1.72"
+rust-version = "1.85"
 description = "AI Compute Scheduler - CPU/GPU/NPU allocation"
 license = "MIT"
 repository = "https://github.com/srayuth202510-byte/AI-Native-Kernel"
 keywords = ["ai", "scheduler", "compute", "gpu"]
 
 [dependencies]
-tokio = { version = "1.0", features = ["full"] }
-tracing = "0.1"
-thiserror = "1.0"
-anyhow = "1.0"
+thiserror = { workspace = true }

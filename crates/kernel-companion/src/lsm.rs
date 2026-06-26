@@ -1,24 +1,70 @@
-#![no_std]
-#![warn(
-    missing_docs,
-    missing_copy_implementations,
-    missing_debug_implementations,
-    trivial_casts,
-    trivial_numeric_casts,
-    unused_lint_unexpected,
-    unused_qualifications,
-    unused_extern_crates,
-    clippy::all,
-    clippy::pedantic
-)]
-#[macro_use]
-extern crate aya_bpf;
+use anyhow::Result;
+use std::sync::Arc;
+use thiserror::Error;
 
-/// EBPF program that attaches to LSM hooks for capability enforcement
-#[aya_bpf::program(name = "ai_native_kernel")]
-pub mod ai_native_kernel {
-    #[linkage = "lsm"]
-    pub fn ai_lsm_hook() -> i32 {
-        ai_native_kernel_ebpf.lsm_hook()
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum LsmError {
+    #[error("policy decision denied")]
+    Denied,
+    #[error("attachment failed")]
+    AttachmentFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LsmDecision {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone)]
+pub struct LsmPolicyEngine {
+    default_decision: LsmDecision,
+}
+
+impl LsmPolicyEngine {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            default_decision: LsmDecision::Deny,
+        }
     }
+
+    #[must_use]
+    pub fn decision_for_syscall(&self, syscall: &str) -> LsmDecision {
+        match syscall {
+            "read" | "write" | "recvmsg" => LsmDecision::Allow,
+            _ => self.default_decision,
+        }
+    }
+}
+
+impl Default for LsmPolicyEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+pub struct LsmAttachment {
+    attached: bool,
+}
+
+impl LsmAttachment {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { attached: true }
+    }
+
+    pub fn detach(&mut self) {
+        self.attached = false;
+    }
+
+    #[must_use]
+    pub fn is_attached(&self) -> bool {
+        self.attached
+    }
+}
+
+pub fn attach_lsm_hooks(_engine: Arc<LsmPolicyEngine>) -> Result<LsmAttachment> {
+    Ok(LsmAttachment::new())
 }

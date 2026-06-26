@@ -2,6 +2,18 @@
 
 This document describes the security-first design of the AI-Native Kernel, following zero-trust principles and security best practices.
 
+## Current Prototype Note
+
+The repository now contains a working prototype security crate in `crates/capability-security/src/`.
+
+Current implementation facts:
+
+- token validation is in-memory
+- policy is fail-closed
+- policy decisions are constrained by an allowlist
+- audit entries are currently in-memory records, not a persistent WORM backend yet
+- `authorize_token`, `validate`, and `decision_for` all emit audit records
+
 ## Zero-Trust Security Model
 
 The AI-Native Kernel implements a strict zero-trust security model where:
@@ -99,6 +111,8 @@ impl SecurityPolicy {
 }
 ```
 
+In the current prototype, the equivalent behavior is implemented by `PolicyEngine` and defaults to allowing only a small allowlist of capabilities such as `read` and `execute`.
+
 ### 3. WORM Audit Logger
 
 #### Audit Log Format
@@ -132,7 +146,7 @@ pub enum Decision {
 - **Immutable**: All entries are read-only after creation
 - **Tamper-Evident**: Any modification is detectable
 
-#### Implementation with RocksDB
+#### Long-Term WORM Direction
 
 ```rust
 pub struct WormAuditLogger {
@@ -170,6 +184,8 @@ impl WormAuditLogger {
     }
 }
 ```
+
+The current repository does not implement this RocksDB-backed audit logger yet. The active prototype uses an in-memory `AuditLogger` to validate policy flow and test behavior first.
 
 ## Security-First Implementation Rules
 

@@ -4,6 +4,17 @@
 
 The AI-Native Kernel is a hybrid companion to the Linux kernel that provides AI-specific capabilities through eBPF and LSM hooks. This Obsidian vault documents each component's architecture, implementation, and integration patterns.
 
+## Current Repository Status
+
+The repository is currently in a prototype refactor stage.
+
+- The workspace layout for `agent-scheduler`, `intent-bus`, `context-memory`, `compute-scheduler`, `capability-security`, and `kernel-companion` now exists in code.
+- The current codebase implements an in-memory prototype of the runtime graph:
+  `kernel-companion -> intent-bus -> agent-scheduler -> context-memory / capability-security / compute-scheduler`.
+- `capability-security` now follows a fail-closed policy model with an allowlist-backed policy engine and audit entries for `issued`, `allowed`, and `denied` decisions.
+- `kernel-companion/src/ebpf/` is still a stub and is not yet wired into a production userspace loader path.
+- The repository still needs a real `cargo check` / `cargo test` pass in an environment where `cargo` and `rustc` are installed.
+
 ## Architecture Overview
 
 ```
@@ -32,31 +43,31 @@ Hardware (CPU / GPU / NPU / NVMe)
 - [Components Overview](components/README.md)
 - [Getting Started](getting_started.md)
 - [Security Architecture](security/README.md)
+- [Implementation Status](implementation-status.md)
 - [Async Patterns](async-patterns.md)
 - [Error Handling](error-handling.md)
-- [Testing](testing/README.md)
 
 ## Components
 
 ### kernel-companion
 
-The eBPF/LSM layer that intercepts and controls syscalls.
+The current composition root for the prototype runtime.
 
 - **Files**: `crates/kernel-companion/src/`
-- **Key Features**: Context paging, policy enforcement, audit logging
-- **Integration**: Works directly with Linux kernel hooks
+- **Key Features**: Builds the runtime graph, starts intent routing, starts supervisor loop, owns LSM attachment state
+- **Integration**: Composes `agent-scheduler`, `intent-bus`, `context-memory`, `compute-scheduler`, and `capability-security`
 
-**See**: `kernel-companion/` directory
+**Current Limitation**: eBPF integration is still represented by a stub attachment flow.
 
 ### agent-scheduler
 
 Manages AI agent lifecycle, priorities, and isolation.
 
 - **Files**: `crates/agent-scheduler/src/`
-- **Key Features**: AgentControlBlock, priority queues, auto-restart
-- **Integration**: Connected to Intent Bus for communication
+- **Key Features**: Agent lifecycle, context routing, capability grants, supervisor-backed restart monitoring
+- **Integration**: Consumes `IntentBus`, `ContextMemoryManager`, and `CapabilitySecurityManager`
 
-**See**: `agent-scheduler/` directory
+**Current Limitation**: The scheduler is still an in-memory prototype and does not yet drive actual task execution.
 
 ### intent-bus
 
@@ -73,10 +84,10 @@ Event-driven communication for user/AI intents.
 Hot/Warm/Cold memory paging manager.
 
 - **Files**: `crates/context-memory/src/`
-- **Key Features**: RAM (hot) → NVMe (warm) → VRAM (cold)
+- **Key Features**: In-memory hot/warm/cold stores with simple eviction
 - **Integration**: Used by Agent Scheduler for context storage
 
-**See**: `context-memory/` directory
+**Current Limitation**: Warm/cold tiers are currently in-memory, not RocksDB/NVMe-backed.
 
 ### compute-scheduler
 
@@ -93,10 +104,10 @@ CPU/GPU/NPU allocation and optimization.
 Zero-trust capability tokens and policy engine.
 
 - **Files**: `crates/capability-security/src/`
-- **Key Features**: Token validation, LSM policies, audit trails
+- **Key Features**: Token validation, fail-closed allowlist policy, audit trails
 - **Integration**: Security layer for all components
 
-**See**: `capability-security/` directory
+**Current Limitation**: Token storage and audit logging are still in-memory.
 
 ## Development Workflow
 
@@ -228,6 +239,8 @@ rtk cargo clippy -- -D warnings    # Zero warnings
 rtk cargo fmt --all -- --check     # Format check
 rtk cargo test                     # All tests
 ```
+
+If `cargo` is not available in the shell, install the Rust toolchain first. The current repository cannot be validated without a working toolchain.
 
 ## Development Checklist
 

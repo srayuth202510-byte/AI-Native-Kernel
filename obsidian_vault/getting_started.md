@@ -2,12 +2,18 @@
 
 This guide will help you set up and start working with the AI-Native Kernel project.
 
+## Current State First
+
+Before treating this repository as runnable, check the current implementation status in `obsidian_vault/implementation-status.md`.
+
+The codebase currently provides a prototype runtime graph and unit-testable crate boundaries, but some design targets in the long-form plan are not implemented yet.
+
 ## Prerequisites
 
 ### System Requirements
 
 - **OS**: Linux (Ubuntu 20.04+ recommended)
-- **Rust**: 1.72.0+ (Rust 2024 Edition)
+- **Rust**: stable toolchain with Edition 2024 support
 - **Kernel**: 5.4+ (for eBPF support)
 - **Build Tools**: cargo, rustc, make
 
@@ -17,15 +23,9 @@ This guide will help you set up and start working with the AI-Native Kernel proj
 # Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Install Intel Graphics Drivers (for NPU support)
+# Optional hardware tools for future GPU/NPU work
 sudo apt-get update
 sudo apt-get install intel-gpu-tools
-
-# Install NVIDIA Drivers (for GPU support)
-sudo ubuntu-drone nvidia-driver install
-
-# Install ROCm (for AMD GPU/NPU support)
-sudo apt-get install amdgpu-dkms
 ```
 
 ## Project Setup
@@ -37,7 +37,6 @@ cd /path/to
 git clone https://github.com/srayuth202510-byte/AI-Native-Kernel.git
 
 cd AI-Native-Kernel
-cp .env.example .env
 ```
 
 ### 2. Initialize Cargo Workspace
@@ -47,49 +46,27 @@ All components are managed as a single workspace. Run the following to initializ
 ```bash
 # Check if Rust toolchain is installed
 cargo --version
+rustc --version
 
-# Initialize workspace if needed
-cargo generate-lockfile
+# Generate workspace lockfile if needed
+cargo generate-lockfile || true
 
-# Check for common issues
-cargo vet
+# Verify workspace metadata
+cargo metadata --no-deps
 ```
 
 ### 3. Environment Configuration
 
-The project uses environment variables for configuration. Create a `.env` file:
+The current prototype does not require a full `.env` file to run unit tests. Start with the toolchain first, then add runtime settings only if you extend the daemon.
 
 ```bash
-# Core Configuration
-cARGO_INCREMENTAL=1
-CARGO_TARGET_RELEASE_OPTIMIZATION=true
-
-# Security
-AI_KERNEL_SECURITY_MODE=strict
-AI_KERNEL_AUDIT_ENABLED=true
-
-# Compute Hardware
-AI_KERNEL_GPU_ENABLED=true
-AI_KERNEL_NPU_ENABLED=true
-
-# Memory Configuration
-AI_KERNEL_HOT_MEMORY_MB=1024
-AI_KERNEL_WARM_MEMORY_GB=100
-AI_KERNEL_COLD_STORAGE_TB=10
-
-# Logging
-RUST_LOG=info
-AI_KERNEL_LOG_FORMAT=json
-
-# Performance
-AI_KERNEL_WORKER_THREADS=4
-AI_KERNEL_ASYNC_BUFFER_SIZE=1000
+export RUST_LOG=info
 ```
 
 ### 4. Build the Project
 
 ```bash
-# Quick format and type check
+# Quick type check
 rtk cargo check
 
 # Build for development
@@ -102,43 +79,21 @@ rtk cargo build --release
 rtk cargo build --workspace
 ```
 
-## Running the Companion Daemon
+## Running the Prototype Companion
 
-The kernel companion daemon is the main entry point for eBPF/LSM integration.
+The current `kernel-companion` binary runs the prototype runtime graph and simulated LSM attachment flow.
 
 ### Start the Companion
 
 ```bash
-# From the project root
-cargo run --bin companion-daemon
-
-# Or run as a background service
-systemd-run --user --section="[Service]" \
-    --pty --working-directory=/path/to/AI-Native-Kernel \
-    --setenv=RUST_LOG=info \
-    --setenv=AI_KERNEL_SECURITY_MODE=strict \
-    --setenv=AI_KERNEL_AUDIT_ENABLED=true \
-    --user=$USER \
-    --group=$USER \
-    --no-block \
-    --same-user \
-    --ambient-capabilities=all \
-    --exec /path/to/AI-Native-Kernel/target/release/companion-daemon \
-    -- --listen 0.0.0.0:8080
+cargo run -p kernel-companion
 ```
 
-### Verify Running
+### Current Limitation
 
-```bash
-# Check if companion is running
-ps aux | grep companion-daemon
-
-# Check logs
-journalctl -u companion-daemon -f --no-pager
-
-# Health check
-curl -X GET http://localhost:8080/health
-```
+- There is no production health endpoint yet.
+- The current daemon waits for `Ctrl+C` and shuts down cleanly.
+- The eBPF path is still a stub.
 
 ## Testing the System
 
@@ -147,17 +102,9 @@ curl -X GET http://localhost:8080/health
 Run unit tests for individual components:
 
 ```bash
-# Agent Scheduler tests
-cd crates/agent-scheduler
-rtk cargo test
-
-# Intent Bus tests
-cd crates/intent-bus
-rtk cargo test
-
-# Individual test modules
-cd crates/context-memory
-rtk cargo test --test integration_tests
+rtk cargo test -p agent-scheduler
+rtk cargo test -p intent-bus
+rtk cargo test -p capability-security
 ```
 
 ### Integration Tests
@@ -165,99 +112,20 @@ rtk cargo test --test integration_tests
 Run full integration tests:
 
 ```bash
-# From project root
-cd /path/to/AI-Native-Kernel
-cargo test --test integration_tests
-
-# Fuzz tests (requires cargo-fuzz)
-cargo fuzz run all
-
-# Performance benchmarks
-cargo bench
-```
-
-### Local Development Testing
-
-Create a simple test scenario:
-
-```rust
-use tokio::sync::{broadcast, mpsc};
-use std::time::Duration;
-
-#[tokio::test]
-async fn test_basic_workflow() {
-    // Initialize components
-    let intent_bus = IntentBus::new(100);
-    let memory = ContextMemoryManager::new();
-    let scheduler = AgentScheduler::new(intent_bus, memory);
-    
-    // Create an agent
-    let agent = AgentControlBlock::new(1);
-    agent.state = AgentState::Creating;
-    
-    // Spawn the agent
-    assert!(scheduler.spawn_agent(agent).await.is_ok());
-    
-    // Verify it's running
-    let agent = scheduler.get_agent(1).await.unwrap();
-    assert_eq!(agent.state, AgentState::Creating);
-    
-    // Send an intent
-    let intent = Intent::new(
-        "test_intent".to_string(),
-        IntentType::Command,
-        "test_payload".to_string(),
-    );
-    intent_bus.publish(intent).await;
-    
-    // Verify intent was processed
-    let mut subscriber = intent_bus.subscribe().await;
-    let received = subscriber.receive().await.unwrap();
-    assert_eq!(received.id, "test_intent");
-}
+rtk cargo test --workspace
 ```
 
 ## Working with Components
 
 ### kernel-companion
 
-The eBPF/LSM layer is the lowest-level component. It intercepts syscalls and enforces policies.
+Start by reading:
 
-#### eBPF Programs
+- `crates/kernel-companion/src/lib.rs`
+- `crates/kernel-companion/src/lsm.rs`
+- `crates/kernel-companion/src/main.rs`
 
-The eBPF programs are in `crates/kernel-companion/src/ebpf/`:
-
-```bash
-# View eBPF code
-cat crates/kernel-companion/src/ebpf/mod.rs
-
-# Compile eBPF programs
-cd crates/kernel-companion
-cargo build --release --target x86_64-unknown-linux-musl
-```
-
-#### LSM Hooks
-
-The LSM (Linux Security Modules) hooks are in `crates/kernel-companion/src/lsm/`:
-
-```rust
-// Example LSM hook implementation
-#[lsm]
-fn ai_lsm_security_hook(hook: &str, ctx: &mut LsmContext) -> Result<(), LsmError> {
-    // Check capability tokens
-    let token = validate_token_from_context(ctx)?;
-    
-    // Enforce policies
-    if !policy_engine.check_permission(token, hook) {
-        return Err(LsmError::PermissionDenied);
-    }
-    
-    // Log the decision
-    audit_logger.log_decision(token.id, hook, Decision::Allow);
-    
-    Ok(())
-}
-```
+Those files describe the current prototype composition flow more accurately than the long-term design examples.
 
 ### agent-scheduler
 

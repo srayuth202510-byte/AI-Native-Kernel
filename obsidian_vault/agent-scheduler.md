@@ -2,6 +2,16 @@
 
 The Agent Scheduler is the core component of AI-Native Kernel that manages AI agent lifecycle, priorities, and isolation. This component handles the creation, execution, and lifecycle management of AI agents in a secure, efficient, and scalable manner.
 
+## Current Implementation Note
+
+This document originally described the target design. The current implementation in `crates/agent-scheduler/src/` is narrower and should be treated as the source of truth for the prototype.
+
+- `context_ptr` has been replaced by `context_key: Option<String>`
+- the scheduler is composed with `IntentBus`, `ContextMemoryManager`, and `CapabilitySecurityManager`
+- structured intents can route payloads into context memory
+- capability grants are validated through the security manager before being attached to an agent
+- the current scheduler stores agent state in-memory and does not yet execute real agent workloads
+
 ## Core Components
 
 ### 1. Agent Control Block (AgentControlBlock)
@@ -12,7 +22,7 @@ pub struct AgentControlBlock {
     pub id: u64,
     pub state: AgentState,
     pub priority: Priority,
-    pub context_ptr: usize, // Pointer to context memory
+    pub context_key: Option<String>,
     pub capabilities: Vec<CapabilityToken>,
     pub restart_attempts: u32,
     pub last_restart: std::time::Instant,
@@ -25,7 +35,7 @@ pub struct AgentControlBlock {
 - **id**: Unique identifier for the agent
 - **state**: Current operational state of the agent
 - **priority**: Priority level for scheduling decisions
-- **context_ptr**: Pointer to agent's context memory (hot/warm/cold)
+- **context_key**: Logical key used to resolve agent context in the context memory manager
 - **capabilities**: Security tokens defining agent's permissions
 - **restart_attempts**: Counter for fault recovery attempts
 - **last_restart**: Timestamp for restart tracking
@@ -189,8 +199,7 @@ pub struct AgentScheduler {
     capability_security: Arc<CapabilitySecurityManager>,
     supervisor_service: Arc<SupervisorService>,
     next_agent_id: Arc<RwLock<u64>>,
-    pub monitoring_tx: broadcast::Sender<AgentEvent>,
-    pub monitoring_rx: Arc<RwLock<broadcast::Receiver<AgentEvent>>>,
+    monitoring_tx: broadcast::Sender<AgentEvent>,
 }
 
 impl AgentScheduler {
@@ -200,7 +209,7 @@ impl AgentScheduler {
         capability_security: Arc<CapabilitySecurityManager>,
         supervisor_service: Arc<SupervisorService>,
     ) -> Self {
-        let (monitoring_tx, monitoring_rx) = broadcast::channel(1000);
+        let (monitoring_tx, _) = broadcast::channel(1024);
         Self {
             agents: Arc::new(RwLock::new(HashMap::new())),
             intent_bus,
@@ -209,11 +218,10 @@ impl AgentScheduler {
             supervisor_service,
             next_agent_id: Arc::new(RwLock::new(1)),
             monitoring_tx,
-            monitoring_rx: Arc::new(RwLock::new(monitoring_rx)),
         }
     }
     
-    pub async fn spawn_agent(&self, agent: AgentControlBlock) -> Result<(), SchedulerError> {
+    pub async fn spawn_agent(&self, agent: AgentControlBlock) -> Result<u64, SchedulerError> {
         let mut agents = self.agents.write().await;
         
         if agents.contains_key(&agent.id) {
@@ -236,12 +244,31 @@ impl AgentScheduler {
             metadata: HashMap::new(),
         };
         
-        self.intent_bus.publish(intent).await;
+        self.intent_bus.publish(intent).await?;
         
-        Ok(())
+        Ok(agent.id)
     }
 }
 ```
+
+### 6. Current Prototype Behavior
+
+The current scheduler can:
+
+- allocate agent IDs
+- spawn, pause, resume, terminate, and mark agents as failed
+- route `Command` intents such as `spawn-agent`
+- route `Structured` intents with metadata:
+  - `agent_id`
+  - `context_key`
+- persist intent payloads into `ContextMemoryManager`
+- grant validated capability tokens to agents
+
+The current scheduler does not yet:
+
+- drive real agent execution
+- schedule compute workloads directly
+- persist scheduler state beyond process lifetime
 
 ## Event System (AgentEvent)
 

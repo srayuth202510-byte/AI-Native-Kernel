@@ -1,0 +1,19 @@
+[package]
+name = "kernel-companion"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "AI-Native Kernel companion daemon"
+license = "MIT"
+repository = "https://github.com/srayuth202510-byte/AI-Native-Kernel"
+keywords = ["ai", "kernel", "ebpf", "lsm"]
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+agent-scheduler = { path = "../agent-scheduler" }
+capability-security = { path = "../capability-security" }
+compute-scheduler = { path = "../compute-scheduler" }
+context-memory = { path = "../context-memory" }
+intent-bus = { path = "../intent-bus" }

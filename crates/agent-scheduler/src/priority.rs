@@ -1,9 +1,6 @@
-#![allow(unused_imports)]
-
 use std::collections::BinaryHeap;
-use priority::Priority;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
     Eco,
     Batch,
@@ -11,50 +8,24 @@ pub enum Priority {
     RealTime,
 }
 
-impl Ord for Priority {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match (self, other) {
-            (Priority::RealTime, Priority::RealTime) => std::cmp::Ordering::Equal,
-            (Priority::RealTime, _) => std::cmp::Ordering::Greater,
-            (_, Priority::RealTime) => std::cmp::Ordering::Less,
-            (Priority::Interactive, Priority::Interactive) => std::cmp::Ordering::Equal,
-            (Priority::Interactive, _) => std::cmp::Ordering::Greater,
-            (_, Priority::Interactive) => std::cmp::Ordering::Less,
-            (Priority::Eco, Priority::Eco) => std::cmp::Ordering::Equal,
-            (Priority::Batch, Priority::Batch) => std::cmp::Ordering::Equal,
-            (Priority::Eco, Priority::Batch) => std::cmp::Ordering::Greater,
-            (Priority::Batch, Priority::Eco) => std::cmp::Ordering::Less,
-            _ => std::cmp::Ordering::Equal,
-        }
-    }
-}
-
-impl PartialOrd for Priority {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-pub struct PriorityQueue {
-    heap: BinaryHeap<PriorityAgent>,
-}
-
-#[derive(Debug, Clone)]
-struct PriorityAgent {
-    id: u64,
-    priority: Priority,
-    agent_data: Box<dyn std::any::Any>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriorityAgent {
+    pub id: u64,
+    pub priority: Priority,
 }
 
 impl PriorityAgent {
-    fn new(id: u64, priority: Priority, agent_data: Box<dyn std::any::Any>) -> Self {
-        Self { id, priority, agent_data }
+    #[must_use]
+    pub fn new(id: u64, priority: Priority) -> Self {
+        Self { id, priority }
     }
 }
 
 impl Ord for PriorityAgent {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.priority.cmp(&other.priority)
+        self.priority
+            .cmp(&other.priority)
+            .then_with(|| self.id.cmp(&other.id))
     }
 }
 
@@ -64,31 +35,32 @@ impl PartialOrd for PriorityAgent {
     }
 }
 
-impl Eq for PriorityAgent {}
-
-impl PartialEq for PriorityAgent {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
+pub struct PriorityQueue {
+    heap: BinaryHeap<PriorityAgent>,
 }
 
 impl PriorityQueue {
+    #[must_use]
     pub fn new() -> Self {
-        Self { heap: BinaryHeap::new() }
+        Self {
+            heap: BinaryHeap::new(),
+        }
     }
-    
+
     pub fn push(&mut self, agent: PriorityAgent) {
         self.heap.push(agent);
     }
-    
+
     pub fn pop(&mut self) -> Option<PriorityAgent> {
         self.heap.pop()
     }
-    
+
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }
-    
+
+    #[must_use]
     pub fn len(&self) -> usize {
         self.heap.len()
     }

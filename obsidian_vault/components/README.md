@@ -2,6 +2,15 @@
 
 This directory contains documentation for each component of the AI-Native Kernel.
 
+## Current Implementation Caveat
+
+Some examples in this directory describe the target architecture rather than the exact code that exists today. For the current prototype state, cross-check:
+
+- `obsidian_vault/implementation-status.md`
+- `crates/kernel-companion/src/lib.rs`
+- `crates/agent-scheduler/src/lib.rs`
+- `crates/capability-security/src/lib.rs`
+
 ## Component Dependencies
 
 Each component uses Tokio async runtime and follows zero-trust security principles:
@@ -54,9 +63,9 @@ let data = read_guard.value.clone();
 
 ### Capability Token Flow
 
-1. **Token Creation**: `CapabilitySecurityManager::create_token()`
-2. **Validation**: `CapabilitySecurityManager::validate_token()`
-3. **Audit**: All decisions logged to WORM audit logger
+1. **Token Creation**: `CapabilityToken::new(...)`
+2. **Validation**: `CapabilitySecurityManager::validate(...)`
+3. **Audit**: Decisions recorded by `CapabilitySecurityManager` through `AuditLogger`
 
 ### Error Handling
 
@@ -238,6 +247,6 @@ This vault will be updated as the project evolves.
 
 ---
 
-**Maintainer**: AI-Native Kernel Team  
-**Last Updated**: $(date)  
-**Version**: 2.0.0
+**Maintainer**: AI-Native Kernel Team
+**Last Updated**: 2026-06-26
+**Version**: prototype-refactor

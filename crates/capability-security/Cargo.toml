@@ -1,13 +1,13 @@
 [package]
-name = "intent-bus"
+name = "capability-security"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "AI Intent Bus - event-driven communication layer"
+description = "AI Capability Security - token, policy, and audit"
 license = "MIT"
 repository = "https://github.com/srayuth202510-byte/AI-Native-Kernel"
-keywords = ["ai", "intent", "bus", "event-driven"]
+keywords = ["ai", "security", "capability", "audit"]
 
 [dependencies]
-tokio = { workspace = true }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
