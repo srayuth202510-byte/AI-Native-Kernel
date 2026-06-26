@@ -1,0 +1,21 @@
+[package]
+name = "immune-system"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "AI-Native Kernel Immune System — White Blood Cell Agents"
+license = "MIT"
+repository = "https://github.com/srayuth202510-byte/AI-Native-Kernel"
+keywords = ["ai", "immune", "wbc", "anomaly"]
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+intent-bus = { path = "../intent-bus" }
+context-memory = { path = "../context-memory" }
+capability-security = { path = "../capability-security" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

@@ -7,6 +7,7 @@ members = [
     "crates/compute-scheduler",
     "crates/capability-security",
     "crates/intent-bus",
+    "crates/immune-system",
 ]
 
 [workspace.dependencies]
@@ -22,7 +23,7 @@ rocksdb = { version = "0.23", features = ["snappy"] }
 flume = "0.11"
 dashmap = "5.5"
 parking_lot = "0.12"
-prometheus = "0.13"
+prometheus = "0.14"
 opentelemetry = "0.21"
 opentelemetry-sdk = "0.21"
 serde = { version = "1.0", features = ["derive"] }

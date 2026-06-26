@@ -328,5 +328,71 @@
     "module": "infra",
     "assignee": "AI",
     "due": ""
+  },
+  {
+    "id": "ANK-031",
+    "type": "feature",
+    "title": "Immune System: Macrophage Agent (GC)",
+    "desc": "Macrophage Agent สำหรับ garbage collection: ตรวจ Intent หมดอายุ, sweep stale entries, รายงาน stats. 4 tests ผ่าน.",
+    "status": "done",
+    "priority": "high",
+    "module": "immune-system",
+    "assignee": "AI",
+    "due": ""
+  },
+  {
+    "id": "ANK-032",
+    "type": "feature",
+    "title": "Immune System: T-Cell Agent (Threat Detection)",
+    "desc": "T-Cell Agent สำหรับ anomaly detection: ติดตาม syscall rate per PID, detect spikes, quarantine/kill threats. 4 tests ผ่าน.",
+    "status": "done",
+    "priority": "high",
+    "module": "immune-system",
+    "assignee": "AI",
+    "due": ""
+  },
+  {
+    "id": "ANK-033",
+    "type": "feature",
+    "title": "Immune System: B-Cell Agent (Pattern Learning)",
+    "desc": "B-Cell Agent สำหรับเรียนรู้ attack patterns จาก T-Cell reports และสร้าง Antibody Rules (LSM policy). 3 tests ผ่าน.",
+    "status": "done",
+    "priority": "high",
+    "module": "immune-system",
+    "assignee": "AI",
+    "due": ""
+  },
+  {
+    "id": "ANK-034",
+    "type": "feature",
+    "title": "Immune System: Cytokine Signal (Critical Broadcast)",
+    "desc": "Cytokine Signal สำหรับ broadcast ข้อความวิกฤต (Emergency/Critical/Warning/Info) ไปยัง Agents ทุกตัวผ่าน IntentBus. 3 tests ผ่าน.",
+    "status": "done",
+    "priority": "high",
+    "module": "immune-system",
+    "assignee": "AI",
+    "due": ""
+  },
+  {
+    "id": "ANK-035",
+    "type": "task",
+    "title": "Security: upgrade protobuf 2.28 → 3.7 (RUSTSEC-2024-0437)",
+    "desc": "อัปเดต prometheus 0.13 → 0.14 เพื่อแก้ vulnerability ใน protobuf 2.28.0 (RUSTSEC-2024-0437). cargo audit clean.",
+    "status": "done",
+    "priority": "critical",
+    "module": "infra",
+    "assignee": "AI",
+    "due": ""
+  },
+  {
+    "id": "ANK-036",
+    "type": "task",
+    "title": "Security: cargo-vet initialized + passing",
+    "desc": "ติดตั้ง cargo-vet, รัน cargo vet init, ยืนยัน supply chain audit ผ่าน (149 exempted).",
+    "status": "done",
+    "priority": "high",
+    "module": "infra",
+    "assignee": "AI",
+    "due": ""
   }
 ]

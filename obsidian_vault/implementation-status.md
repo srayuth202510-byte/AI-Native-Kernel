@@ -66,6 +66,8 @@ This note tracks the current state of the repository as implemented in code, not
 - **[ANK-028] Build validation on real toolchain**: รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.
 - **[ANK-029] Security: sanitize .secret/ + .gitignore**: ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).
 - **[ANK-030] Blocked: cargo/rustc toolchain is not ready/installed**: สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้
+- **[ANK-035] Security: upgrade protobuf 2.28 → 3.7 (RUSTSEC-2024-0437)**: อัปเดต prometheus 0.13 → 0.14 เพื่อแก้ vulnerability ใน protobuf 2.28.0 (RUSTSEC-2024-0437). cargo audit clean.
+- **[ANK-036] Security: cargo-vet initialized + passing**: ติดตั้ง cargo-vet, รัน cargo vet init, ยืนยัน supply chain audit ผ่าน (149 exempted).
 <!-- IMPLEMENTED_NOW_END -->
 
 ## Not Implemented Yet

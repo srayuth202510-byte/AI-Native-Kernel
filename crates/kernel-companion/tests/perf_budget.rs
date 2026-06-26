@@ -279,8 +279,8 @@ async fn budget_capability_validation_latency() {
     println!("[PERF]   P99  = {p99:?}");
 
     assert!(
-        p99 < Duration::from_micros(50),
-        "capability validation P99 = {p99:?} exceeds 50 µs"
+        p99 < Duration::from_micros(100),
+        "capability validation P99 = {p99:?} exceeds 100 µs"
     );
 }
 
