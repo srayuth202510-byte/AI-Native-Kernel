@@ -128,4 +128,124 @@ mod tests {
             ComputeTarget::Gpu
         );
     }
+
+    #[test]
+    fn choose_best_returns_error_when_no_candidates() {
+        // ทดสอบว่าคืน error เมื่อไม่มีตัวเลือกฮาร์ดแวร์ใดเลย (NoTargetAvailable)
+        let scheduler = ComputeScheduler::new();
+        let result = scheduler.choose_best(&[]);
+        assert_eq!(result, Err(ComputeError::NoTargetAvailable));
+    }
+
+    #[test]
+    fn choose_best_single_candidate_always_wins() {
+        // ทดสอบว่าหากมีตัวเลือกเดียว ต้องเลือกตัวนั้นเสมอ ไม่ว่าคะแนนจะเป็นเท่าใด
+        let scheduler = ComputeScheduler::new();
+        let candidates = [(
+            ComputeTarget::Npu,
+            ComputeProfile {
+                latency_ms: 999.0,
+                power_watts: 999.0,
+                cost_units: 999.0,
+            },
+        )];
+        assert_eq!(
+            scheduler
+                .choose_best(&candidates)
+                .expect("should pick single candidate"),
+            ComputeTarget::Npu
+        );
+    }
+
+    #[test]
+    fn score_is_non_negative_for_positive_profiles() {
+        // ทดสอบ property: คะแนนจะต้องไม่ติดลบสำหรับโปรไฟล์ที่มีค่าบวกทุกตัว
+        let scheduler = ComputeScheduler::new();
+        let profiles = [
+            ComputeProfile {
+                latency_ms: 0.0,
+                power_watts: 0.0,
+                cost_units: 0.0,
+            },
+            ComputeProfile {
+                latency_ms: 1.0,
+                power_watts: 50.0,
+                cost_units: 100.0,
+            },
+            ComputeProfile {
+                latency_ms: 500.0,
+                power_watts: 300.0,
+                cost_units: 1.0,
+            },
+        ];
+        for profile in profiles {
+            assert!(
+                scheduler.score(profile) >= 0.0,
+                "คะแนนต้องไม่ติดลบสำหรับโปรไฟล์ที่มีค่าบวก: {:?}",
+                profile
+            );
+        }
+    }
+
+    #[test]
+    fn update_weights_converges_toward_sample() {
+        // ทดสอบว่า EWMA ค่อยๆ ดึงค่าน้ำหนักเข้าหา sample ตามสัมประสิทธิ์ alpha=0.1
+        let scheduler = ComputeScheduler::new();
+        let sample = ComputeProfile {
+            latency_ms: 100.0,
+            power_watts: 100.0,
+            cost_units: 100.0,
+        };
+
+        // บันทึก score ก่อนอัปเดต
+        let score_before = scheduler.score(sample);
+        // อัปเดตน้ำหนักหลายรอบให้มีการเปลี่ยนแปลงมากพอ
+        for _ in 0..20 {
+            scheduler.update_weights(sample);
+        }
+        let score_after = scheduler.score(sample);
+
+        // หลัง update หลายรอบ คะแนนควรเปลี่ยนแปลง (EWMA มีผล)
+        assert_ne!(
+            (score_before * 1000.0) as i64,
+            (score_after * 1000.0) as i64,
+            "คะแนนต้องเปลี่ยนหลัง update weights"
+        );
+    }
+
+    #[test]
+    fn three_way_comparison_picks_npu_as_cheapest() {
+        // ทดสอบการเปรียบเทียบ 3 ทาง: CPU/GPU/NPU โดย NPU มีต้นทุนต่ำสุด
+        let scheduler = ComputeScheduler::new();
+        let candidates = [
+            (
+                ComputeTarget::Cpu,
+                ComputeProfile {
+                    latency_ms: 50.0,
+                    power_watts: 80.0,
+                    cost_units: 20.0,
+                },
+            ),
+            (
+                ComputeTarget::Gpu,
+                ComputeProfile {
+                    latency_ms: 5.0,
+                    power_watts: 150.0,
+                    cost_units: 50.0,
+                },
+            ),
+            (
+                ComputeTarget::Npu,
+                ComputeProfile {
+                    latency_ms: 2.0,
+                    power_watts: 10.0,
+                    cost_units: 5.0,
+                },
+            ),
+        ];
+        assert_eq!(
+            scheduler.choose_best(&candidates).expect("should pick NPU"),
+            ComputeTarget::Npu
+        );
+    }
 }

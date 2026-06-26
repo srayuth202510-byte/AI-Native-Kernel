@@ -8,7 +8,7 @@ async fn main() -> anyhow::Result<()> {
 
     // สร้างอินสแตนซ์ของ companion daemon
     let companion = KernelCompanion::new();
-    
+
     // สตาร์ทและรันบริการหลัก
     companion.run().await
 }

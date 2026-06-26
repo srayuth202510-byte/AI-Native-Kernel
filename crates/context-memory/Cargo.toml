@@ -8,5 +8,11 @@ license = "MIT"
 repository = "https://github.com/srayuth202510-byte/AI-Native-Kernel"
 keywords = ["ai", "memory", "paging", "context"]
 
+[features]
+# เปิดใช้งาน RocksDB backend จริงสำหรับ Warm Store (ต้องการ NVMe/disk จริง)
+rocksdb-warm = ["dep:rocksdb"]
+
 [dependencies]
 thiserror = { workspace = true }
+tracing = { workspace = true }
+rocksdb = { workspace = true, optional = true }

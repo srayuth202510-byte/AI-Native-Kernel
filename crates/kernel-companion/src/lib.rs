@@ -10,9 +10,12 @@ use compute_scheduler::ComputeScheduler;
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
+use tracing::{info, instrument, warn};
 
+pub mod ebpf;
 pub mod lsm;
 
+pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
 pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
 
 /// โครงสร้างหลักของ KernelCompanion ที่ทำหน้าที่ประสานงานระหว่างส่วนประกอบต่าง ๆ ของระบบ
@@ -80,10 +83,14 @@ impl KernelCompanion {
     /// # Errors
     ///
     /// ส่งคืนข้อผิดพลาดหากไม่สามารถติดตั้ง LSM Hooks สำเร็จ
+    #[instrument(skip(self))]
     pub async fn boot(&mut self) -> anyhow::Result<()> {
+        info!("KernelCompanion กำลัง boot");
+
         // แนบ LSM Hook เข้ากับระบบ Kernel หากยังไม่ได้ดำเนินการ
         if self.attachment.is_none() {
             self.attachment = Some(attach_lsm_hooks(Arc::clone(&self.lsm_engine))?);
+            info!("LSM Hooks แนบสำเร็จ");
         }
 
         // เริ่มต้นใช้งานโมดูลอื่น ๆ
@@ -123,6 +130,7 @@ impl KernelCompanion {
             ))
             .await;
 
+        info!("KernelCompanion boot เสร็จสมบูรณ์");
         Ok(())
     }
 
@@ -143,11 +151,14 @@ impl KernelCompanion {
     }
 
     /// หยุดการทำงานของ Daemon และถอนการติดตั้ง LSM Hooks ออกจาก Linux Kernel
+    #[instrument(skip(self))]
     pub async fn shutdown(&mut self) {
+        warn!("KernelCompanion กำลัง shutdown — ถอน LSM hooks");
         if let Some(attachment) = self.attachment.as_mut() {
             attachment.detach();
         }
         self.attachment = None;
+        info!("KernelCompanion shutdown เสร็จสมบูรณ์");
     }
 
     /// จำแนกประเภทความสำคัญของคิวงานประมวลผล (Scheduler Queue Class) จากประเภทของ Intent

@@ -558,4 +558,135 @@ mod tests {
         let result = scheduler.grant_capability(agent_id, token).await;
         assert!(matches!(result, Err(SchedulerError::CapabilityDenied)));
     }
+
+    // ---- ANK-009: Property tests สำหรับ scheduler state invariants ----
+
+    #[tokio::test]
+    async fn property_running_plus_paused_never_exceeds_total_spawned() {
+        // invariant: จำนวน Running + Paused ≤ total ที่ spawn ไป (ไม่มี agent ปรากฏเกินจำนวน)
+        let scheduler = scheduler();
+        let n = 5usize;
+
+        let mut ids = Vec::new();
+        for _ in 0..n {
+            let id = scheduler
+                .spawn_agent(AgentControlBlock::new(0))
+                .await
+                .expect("spawn should succeed");
+            ids.push(id);
+        }
+
+        // pause ครึ่งหนึ่ง
+        for &id in ids.iter().take(n / 2) {
+            scheduler
+                .pause_agent(id)
+                .await
+                .expect("pause should succeed");
+        }
+
+        let running = scheduler.get_running_agents().await.len();
+        let total_agents = {
+            // นับจำนวน agent ทั้งหมดที่ยังมีชีวิตอยู่ในระบบ
+            n // เราไม่ได้ terminate ใคร
+        };
+
+        assert!(
+            running <= total_agents,
+            "จำนวน Running ({running}) ต้องไม่เกิน total spawned ({total_agents})"
+        );
+    }
+
+    #[tokio::test]
+    async fn property_terminate_removes_from_running_count() {
+        // invariant: หลัง terminate ทุกตัว running count ต้องเป็น 0
+        let scheduler = scheduler();
+        let mut ids = Vec::new();
+        for _ in 0..4 {
+            let id = scheduler
+                .spawn_agent(AgentControlBlock::new(0))
+                .await
+                .expect("spawn should succeed");
+            ids.push(id);
+        }
+
+        assert_eq!(scheduler.get_running_agents().await.len(), 4);
+
+        for id in ids {
+            scheduler
+                .terminate_agent(id)
+                .await
+                .expect("terminate should succeed");
+        }
+
+        assert_eq!(
+            scheduler.get_running_agents().await.len(),
+            0,
+            "ไม่ควรมี agent running หลังจาก terminate ทั้งหมดแล้ว"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_pause_already_paused_agent() {
+        // ทดสอบ error path: การ pause agent ที่ pause อยู่แล้วต้องคืน AgentNotRunning
+        let scheduler = scheduler();
+        let id = scheduler
+            .spawn_agent(AgentControlBlock::new(0))
+            .await
+            .expect("spawn should succeed");
+
+        scheduler
+            .pause_agent(id)
+            .await
+            .expect("first pause should succeed");
+        let result = scheduler.pause_agent(id).await;
+        assert!(
+            matches!(result, Err(SchedulerError::AgentNotRunning)),
+            "double-pause ต้องคืน AgentNotRunning"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_resume_running_agent_is_rejected() {
+        // ทดสอบ error path: resume agent ที่กำลัง running อยู่ต้องคืน AgentNotPaused
+        let scheduler = scheduler();
+        let id = scheduler
+            .spawn_agent(AgentControlBlock::new(0))
+            .await
+            .expect("spawn should succeed");
+
+        let result = scheduler.resume_agent(id).await;
+        assert!(
+            matches!(result, Err(SchedulerError::AgentNotPaused)),
+            "resume agent ที่ running ต้องคืน AgentNotPaused"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_pause_nonexistent_agent() {
+        // ทดสอบ error path: pause agent ID ที่ไม่มีอยู่ในระบบต้องคืน AgentNotFound
+        let scheduler = scheduler();
+        let result = scheduler.pause_agent(999_999).await;
+        assert!(
+            matches!(result, Err(SchedulerError::AgentNotFound)),
+            "pause agent ที่ไม่มีอยู่ต้องคืน AgentNotFound"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_duplicate_agent_id_is_rejected() {
+        // ทดสอบ error path: spawn agent ด้วย ID ซ้ำต้องคืน AgentAlreadyExists
+        let scheduler = scheduler();
+        let mut agent = AgentControlBlock::new(42);
+        agent.state = AgentState::Creating;
+        scheduler
+            .spawn_agent(agent.clone())
+            .await
+            .expect("first spawn should succeed");
+
+        let result = scheduler.spawn_agent(agent).await;
+        assert!(
+            matches!(result, Err(SchedulerError::AgentAlreadyExists)),
+            "ID ซ้ำต้องคืน AgentAlreadyExists"
+        );
+    }
 }

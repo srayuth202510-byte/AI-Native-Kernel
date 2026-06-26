@@ -12,6 +12,7 @@ keywords = ["ai", "kernel", "ebpf", "lsm"]
 anyhow = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 agent-scheduler = { path = "../agent-scheduler" }
 capability-security = { path = "../capability-security" }
 compute-scheduler = { path = "../compute-scheduler" }

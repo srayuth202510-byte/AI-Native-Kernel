@@ -12,6 +12,7 @@ use crate::hot::HotStore;
 use crate::warm::WarmStore;
 use std::sync::Arc;
 use thiserror::Error;
+use tracing::{debug, instrument, warn};
 
 /// ข้อผิดพลาดที่เกี่ยวข้องกับระบบจัดการหน่วยความจำบริบท
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -55,8 +56,10 @@ impl ContextMemoryManager {
     /// บันทึกข้อมูลบริบทลงในระบบเก็บข้อมูล โดยเริ่มจาก Hot Store ก่อน
     /// หากข้อมูลใน Hot Store เกินขนาดความจุ จะย้ายข้อมูลเก่าสุดไปยัง Warm Store
     /// และหากข้อมูลใน Warm Store เกินขนาดความจุ ก็จะย้ายข้อมูลเก่าสุดไปยัง Cold Store
-    pub fn put(&self, key: impl Into<String>, value: Vec<u8>) {
+    #[instrument(skip(self, value), fields(key = %key.as_ref(), value_len = value.len()))]
+    pub fn put(&self, key: impl Into<String> + AsRef<str>, value: Vec<u8>) {
         let key = key.into();
+        debug!(tier = "hot", "บันทึกข้อมูลบริบทลง Hot Store");
         let mut hot = self.hot.write().expect("hot memory lock poisoned");
         hot.insert(key, value);
 
@@ -66,6 +69,7 @@ impl ContextMemoryManager {
             drop(hot); // ปลดล็อก hot write lock ก่อนเขียนลง warm store เพื่อป้องกัน deadlock
 
             if let Some((evicted_key, evicted_value)) = evicted {
+                warn!(tier = "warm", key = %evicted_key, "Hot Store เต็ม — ย้ายข้อมูลเก่าลง Warm Store");
                 let mut warm = self.warm.write().expect("warm memory lock poisoned");
                 warm.insert(evicted_key.clone(), evicted_value);
 
@@ -75,6 +79,7 @@ impl ContextMemoryManager {
                     drop(warm); // ปลดล็อก warm write lock ก่อนเขียนลง cold store เพื่อป้องกัน deadlock
 
                     if let Some((spilled_key, spilled_value)) = spilled {
+                        warn!(tier = "cold", key = %spilled_key, "Warm Store เต็ม — ย้ายข้อมูลเก่าลง Cold Store");
                         self.cold
                             .write()
                             .expect("cold memory lock poisoned")
@@ -91,9 +96,11 @@ impl ContextMemoryManager {
     /// # Errors
     ///
     /// ส่งคืนข้อผิดพลาด `ContextError::NotFound` หากไม่พบข้อมูลในระดับใดเลย
+    #[instrument(skip(self), fields(key = %key))]
     pub fn get(&self, key: &str) -> Result<Vec<u8>> {
         // ค้นหาใน Hot Store (RAM)
         if let Some(value) = self.hot.read().expect("hot memory lock poisoned").get(key) {
+            debug!(tier = "hot", "พบข้อมูลใน Hot Store");
             return Ok(value);
         }
 
@@ -104,6 +111,7 @@ impl ContextMemoryManager {
             .expect("warm memory lock poisoned")
             .get(key)
         {
+            debug!(tier = "warm", "พบข้อมูลใน Warm Store");
             return Ok(value);
         }
 
@@ -114,9 +122,11 @@ impl ContextMemoryManager {
             .expect("cold memory lock poisoned")
             .get(key)
         {
+            debug!(tier = "cold", "พบข้อมูลใน Cold Store");
             return Ok(value);
         }
 
+        warn!("ไม่พบข้อมูลบริบทในทุก tier");
         Err(ContextError::NotFound)
     }
 }
@@ -138,5 +148,67 @@ mod tests {
 
         let value = memory.get("ctx-1").expect("context should exist");
         assert_eq!(value, b"hello".to_vec());
+    }
+
+    #[test]
+    fn get_returns_not_found_for_missing_key() {
+        // ทดสอบว่าการดึงข้อมูลด้วย key ที่ไม่เคยบันทึกต้องคืน ContextError::NotFound
+        let memory = ContextMemoryManager::new();
+        let result = memory.get("does-not-exist");
+        assert_eq!(result, Err(ContextError::NotFound));
+    }
+
+    #[test]
+    fn overwrite_updates_value_in_hot_store() {
+        // ทดสอบว่าการ put ครั้งที่สองด้วย key เดิมจะเขียนทับค่าเดิม (upsert semantics)
+        let memory = ContextMemoryManager::new();
+        memory.put("ctx-2", b"original".to_vec());
+        memory.put("ctx-2", b"updated".to_vec());
+
+        let value = memory.get("ctx-2").expect("context should exist");
+        assert_eq!(value, b"updated".to_vec());
+    }
+
+    #[test]
+    fn multiple_keys_are_independent() {
+        // ทดสอบว่า key หลายตัวไม่วนกัน แต่ละ key เก็บค่าเป็นอิสระ
+        let memory = ContextMemoryManager::new();
+        memory.put("key-a", b"alpha".to_vec());
+        memory.put("key-b", b"beta".to_vec());
+        memory.put("key-c", b"gamma".to_vec());
+
+        assert_eq!(memory.get("key-a").expect("key-a"), b"alpha".to_vec());
+        assert_eq!(memory.get("key-b").expect("key-b"), b"beta".to_vec());
+        assert_eq!(memory.get("key-c").expect("key-c"), b"gamma".to_vec());
+    }
+
+    #[test]
+    fn eviction_to_warm_when_hot_capacity_exceeded() {
+        // ทดสอบว่าเมื่อเกิน hot_capacity (256) ข้อมูลเก่าจะถูกย้ายไป warm
+        // และยังคงดึงข้อมูลได้ผ่าน get()
+        let memory = ContextMemoryManager::new();
+
+        // เพิ่มข้อมูลเกินความจุความจุ hot store (257 รายการ)
+        let first_key = "evict-target-0".to_string();
+        for i in 0..257usize {
+            memory.put(format!("evict-target-{i}"), vec![i as u8]);
+        }
+
+        // key แรกที่ถูก evict ควรยังคงดึงได้ผ่าน warm/cold store
+        let result = memory.get(&first_key);
+        assert!(
+            result.is_ok(),
+            "ข้อมูลที่ถูก evict ควรยังคงดึงได้จาก warm/cold store"
+        );
+    }
+
+    #[test]
+    fn get_empty_byte_slice_is_valid() {
+        // ทดสอบว่าการเก็บไบต์เปล่า (empty vec) ยังเป็นม่าใช้และดึงคืนได้ถูกต้อง
+        let memory = ContextMemoryManager::new();
+        memory.put("empty-ctx", vec![]);
+
+        let value = memory.get("empty-ctx").expect("empty context should exist");
+        assert_eq!(value, Vec::<u8>::new());
     }
 }
