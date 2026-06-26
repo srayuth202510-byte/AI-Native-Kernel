@@ -76,6 +76,7 @@ This note tracks the current state of the repository as implemented in code, not
 
 <!-- VALIDATION_STATUS_START -->
 - The repository has meaningful unit tests in several crates.
+- **Blocked: [ANK-012] Warm tier (NVMe): RocksDB store** - RocksDB WarmStore implement แล้วด้วย feature flag `rocksdb-warm`. Default CI ใช้ in-memory (ไม่ต้อง NVMe). เปิดใช้ด้วย --features context-memory/rocksdb-warm. Snappy compression เปิดแล้ว. Cold→Warm load < 50ms ยังไม่ได้วัด benchmark จริง.
 - Before calling this baseline stable, run:
 
 ```bash

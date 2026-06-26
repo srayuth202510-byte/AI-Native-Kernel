@@ -16,3 +16,12 @@ rocksdb-warm = ["dep:rocksdb"]
 thiserror = { workspace = true }
 tracing = { workspace = true }
 rocksdb = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+[[bench]]
+name = "rocksdb_bench"
+harness = false
+required-features = ["rocksdb-warm"]

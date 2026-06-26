@@ -125,7 +125,7 @@
     "type": "feature",
     "title": "Warm tier (NVMe): RocksDB store",
     "desc": "RocksDB WarmStore implement แล้วด้วย feature flag `rocksdb-warm`. Default CI ใช้ in-memory (ไม่ต้อง NVMe). เปิดใช้ด้วย --features context-memory/rocksdb-warm. Snappy compression เปิดแล้ว. Cold→Warm load < 50ms ยังไม่ได้วัด benchmark จริง.",
-    "status": "in-progress",
+    "status": "blocked",
     "priority": "high",
     "module": "context-memory",
     "assignee": "AI",
