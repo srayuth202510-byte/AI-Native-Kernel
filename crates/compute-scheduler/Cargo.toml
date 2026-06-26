@@ -11,3 +11,10 @@ keywords = ["ai", "scheduler", "compute", "gpu"]
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "compute_bench"
+harness = false

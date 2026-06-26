@@ -25,3 +25,7 @@ tokio = { workspace = true, features = ["full"] }
 name = "rocksdb_bench"
 harness = false
 required-features = ["rocksdb-warm"]
+
+[[bench]]
+name = "memory_bench"
+harness = false

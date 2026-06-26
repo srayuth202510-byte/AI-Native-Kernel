@@ -22,3 +22,8 @@ intent-bus = { path = "../intent-bus" }
 [dev-dependencies]
 proptest = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "companion_bench"
+harness = false

@@ -11,3 +11,10 @@ keywords = ["ai", "intent", "bus", "event-driven"]
 [dependencies]
 tokio = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "intent_bus_bench"
+harness = false
