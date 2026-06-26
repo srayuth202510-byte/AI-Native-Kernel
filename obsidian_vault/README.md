@@ -46,6 +46,7 @@ Hardware (CPU / GPU / NPU / NVMe)
 - [Implementation Status](implementation-status.md)
 - [Async Patterns](async-patterns.md)
 - [Error Handling](error-handling.md)
+- [Functions, Relationships, and Errors](functions-and-errors.md)
 
 ## Components
 

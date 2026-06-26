@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "implementation-status.md",
+                "file": "functions-and-errors.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "implementation-status"
+              "title": "functions-and-errors"
             }
           }
         ]
@@ -185,6 +185,7 @@
   },
   "active": "10251fa046cd3df4",
   "lastOpenFiles": [
+    "implementation-status.md",
     "agent-scheduler.md",
     "async-patterns.md",
     "README.md",
