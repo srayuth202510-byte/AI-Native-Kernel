@@ -60,6 +60,7 @@ This note tracks the current state of the repository as implemented in code, not
 - **[ANK-023] Unit test baseline for core crates**: เพิ่ม tests ขั้นต้นให้ scheduler, intent bus, capability security, context memory, compute scheduler และ kernel companion แล้ว.
 - **[ANK-024] Documentation + implementation status note**: อัปเดต obsidian docs และเพิ่ม implementation-status note ให้สะท้อนสถานะจริงของ prototype.
 - **[ANK-025] CI: clippy + test + audit pipeline**: GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.
+- **[ANK-026] CI: fuzz + chaos test harness**: cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).
 - **[ANK-027] Observability: tracing + Prometheus exporter**: tracing spans (#[instrument], debug!, warn!) เพิ่มแล้วใน context-memory put/get และ kernel-companion boot/shutdown. Prometheus metrics exporter ยังไม่ได้ implement — ต้องเพิ่ม prometheus crate + /metrics endpoint.
 - **[ANK-028] Build validation on real toolchain**: รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.
 - **[ANK-029] Security: sanitize .secret/ + .gitignore**: ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).
@@ -69,7 +70,7 @@ This note tracks the current state of the repository as implemented in code, not
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-- **[ANK-026] CI: fuzz + chaos test harness** (backlog, med): cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).
+
 <!-- NOT_IMPLEMENTED_YET_END -->
 
 ## Validation Status

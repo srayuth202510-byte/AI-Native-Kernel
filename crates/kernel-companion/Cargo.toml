@@ -18,3 +18,7 @@ capability-security = { path = "../capability-security" }
 compute-scheduler = { path = "../compute-scheduler" }
 context-memory = { path = "../context-memory" }
 intent-bus = { path = "../intent-bus" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

@@ -1,0 +1,4 @@
+[env]
+    CC = "clang"
+    CXX = "clang++"
+
