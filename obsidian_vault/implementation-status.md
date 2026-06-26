@@ -16,73 +16,68 @@ This note tracks the current state of the repository as implemented in code, not
 
 ## Implemented Now
 
+<!-- IMPLEMENTED_NOW_START -->
 ### kernel-companion
 
-- Builds the in-process runtime graph.
-- Owns LSM attachment state through `LsmAttachment`.
-- Starts:
-  - intent routing loop
-  - supervisor monitoring loop
-- Publishes a boot event to the intent bus.
+- **[ANK-001] Setup Rust workspace + companion crate layout**: Workspace manifest และ crate layout สำหรับ kernel-companion ถูกจัดให้ parse ได้และเชื่อมกับ crate อื่นแล้ว แต่ยังไม่ได้ยืนยันด้วย cargo build จริงใน environment นี้.
+- **[ANK-002] Prototype companion composition root**: kernel-companion สร้าง intent bus, memory, security, compute และ agent scheduler แล้ว boot/shutdown ได้ในระดับ prototype host-side.
 
 ### agent-scheduler
 
-- Stores `AgentControlBlock` records in-memory.
-- Supports:
-  - spawn
-  - pause
-  - resume
-  - terminate
-  - fail
-  - structured intent routing into context memory
-  - capability grant flow
-- Emits `AgentEvent` notifications via `broadcast`.
+- **[ANK-006] AgentControlBlock + AgentState enum**: นิยาม struct และ state machine สำหรับ lifecycle ของ agent มีอยู่แล้วใน prototype scheduler.
+- **[ANK-007] Agent spawn/pause/resume/terminate API**: Async API สำหรับควบคุม lifecycle พื้นฐานมีแล้วและมี unit tests ครอบคลุม แต่ยังไม่ได้ยืนยัน performance budget.
+- **[ANK-010] Intent-driven scheduler routing**: รองรับ Command intent เช่น spawn-agent, Structured intent พร้อม metadata และ capability grant ผ่าน capability-security แล้ว.
 
 ### intent-bus
 
-- Broadcast-based intent distribution.
-- Supports filters and subscribers.
-- Exposes an async processing loop through a future-returning trait method.
+- **[ANK-021] Intent Bus (tokio broadcast)**: tokio::sync::broadcast channel สำหรับ Intent events มีแล้ว พร้อม subscriber filtering และ unit tests.
 
 ### context-memory
 
-- Hot, warm, and cold stores are implemented as in-memory maps.
-- Eviction moves data from hot -> warm -> cold.
-- No persistent backend is active yet.
+- **[ANK-011] Prototype context manager + tier modules**: มี hot/warm/cold modules และ API ระดับ prototype สำหรับเก็บ context แล้ว แต่ยังไม่ใช่ persistent paging จริง.
 
 ### compute-scheduler
 
-- Exposes a simple weighted cost model.
-- Chooses the lowest-scoring compute target from a candidate list.
-- Weights are updated with a simple adaptive smoothing step.
+- **[ANK-015] Prototype compute scheduler baseline**: มี compute-scheduler crate, cost function และ adaptive weights baseline พร้อม sanity tests แล้ว แต่ยังไม่ผูกกับ real CPU/GPU/NPU placement.
 
 ### capability-security
 
-- Capability tokens exist with:
-  - `id`
-  - `scope`
-  - `capabilities`
-  - `expires_at`
-- Policy engine is fail-closed.
-- Policy decisions are constrained by an allowlist.
-- Audit entries are recorded for:
-  - `issued`
-  - `allowed`
-  - `denied`
+- **[ANK-017] CapabilityToken struct + Scope enum**: นิยาม CapabilityToken และ Scope มีแล้วใน prototype พร้อม validation path และ tests พื้นฐาน.
+- **[ANK-018] Policy Engine (fail-DENY)**: Policy engine default = DENY และมี capability allowlist ใน prototype แล้ว แต่ยังไม่ได้ใช้ constant_time_eq และยังไม่ยืนยัน latency budget.
+
+### infra
+
+- **[ANK-022] Cargo workspace skeleton (7 crates)**: Workspace manifests และ crate wiring ถูกแก้ให้ coherent แล้วในระดับ source tree.
+- **[ANK-023] Unit test baseline for core crates**: เพิ่ม tests ขั้นต้นให้ scheduler, intent bus, capability security, context memory, compute scheduler และ kernel companion แล้ว.
+- **[ANK-024] Documentation + implementation status note**: อัปเดต obsidian docs และเพิ่ม implementation-status note ให้สะท้อนสถานะจริงของ prototype.
+<!-- IMPLEMENTED_NOW_END -->
 
 ## Not Implemented Yet
 
-- Real eBPF userspace loader and production attachment flow
-- Persistent warm/cold context storage via RocksDB or NVMe
-- Real WORM audit backend
-- Real syscall mediation path from kernel hook -> policy engine
-- Integration test suite across crates in `tests/`
-- Benchmark and fuzz harnesses
+<!-- NOT_IMPLEMENTED_YET_START -->
+- **[ANK-008] Supervisor: restart/retry on fault** (doing, med): Supervisor loop และโครง restart path มีใน prototype แต่ยังต้อง review เรื่อง concurrency และทดสอบ fault injection เพิ่ม.
+- **[ANK-005] Aya toolchain + kernel target validation** (todo, high): ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.
+- **[ANK-019] Persistent WORM audit logger** (todo, high): ปัจจุบัน audit trail เป็น in-memory เท่านั้น ต้องย้ายไป append-only persistent store สำหรับ Phase 1 security baseline.
+- **[ANK-020] Security hardening: constant-time token comparison** (todo, high): แทนที่การเทียบ token แบบปกติด้วย constant_time_eq ตาม security guideline ใน AGENTS.md.
+- **[ANK-025] CI: clippy + test + audit pipeline** (todo, high): GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.
+- **[ANK-028] Build validation on real toolchain** (todo, critical): รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.
+- **[ANK-029] Security: sanitize .secret/ + .gitignore** (todo, critical): ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).
+- **[ANK-003] Real eBPF syscall tracer (Aya)** (backlog, critical): โปรแกรม eBPF ที่ trace syscalls บน x86_64 ผ่าน tracepoint/raw_tracepoint. ส่ง events ออกทาง ring buffer. เป้า overhead < 3% CPU.
+- **[ANK-004] Real LSM policy decision point** (backlog, high): เชื่อม LSM hook จริงให้ดัก security decisions และส่งต่อมายัง Rust policy engine แทน host-side stub ปัจจุบัน.
+- **[ANK-009] Property test: scheduler state invariant** (backlog, med): ใช้ proptest ตรวจสอบว่า Running+Ready+Waiting == total active agents เสมอ
+- **[ANK-012] Warm tier (NVMe): RocksDB store** (backlog, high): Warm context layer บน NVMe ผ่าน RocksDB. Cold→Warm load < 50ms P99.
+- **[ANK-013] Tier migration: Hot<->Warm<->Cold** (backlog, med): Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.
+- **[ANK-014] Property test: context round-trip lossless** (backlog, med): Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล
+- **[ANK-016] Real device-aware placement policy** (backlog, high): เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.
+- **[ANK-026] CI: fuzz + chaos test harness** (backlog, med): cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).
+- **[ANK-027] Observability: tracing + Prometheus exporter** (backlog, med): เพิ่ม tracing + OpenTelemetry + Prometheus metrics ในทุก hot path. PII-sanitized logs.
+<!-- NOT_IMPLEMENTED_YET_END -->
 
 ## Validation Status
 
+<!-- VALIDATION_STATUS_START -->
 - The repository has meaningful unit tests in several crates.
-- Full validation is still blocked by the current shell environment if `cargo` / `rustc` are missing.
+- **Blocked: [ANK-030] Blocked: cargo/rustc toolchain is not ready/installed** - สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้
 - Before calling this baseline stable, run:
 
 ```bash
@@ -90,6 +85,7 @@ rtk cargo fmt --all -- --check
 rtk cargo clippy --workspace -- -D warnings
 rtk cargo test --workspace
 ```
+<!-- VALIDATION_STATUS_END -->
 
 ## Recommended Next Step
 
@@ -98,3 +94,4 @@ Raise the bar from "refactored prototype" to "validated prototype":
 1. run the workspace checks in a Rust-enabled environment
 2. fix remaining compile or clippy issues
 3. add cross-crate integration tests for `kernel-companion -> intent-bus -> agent-scheduler`
+

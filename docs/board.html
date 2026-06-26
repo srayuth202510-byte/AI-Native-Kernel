@@ -170,6 +170,7 @@
     .status-backlog { background: #edf2f7; color: #4a5568; }
     .status-todo { background: #feebc8; color: #7b341e; }
     .status-doing { background: #bee3f8; color: #2a436f; }
+    .status-blocked { background: #fed7d7; color: #9b2c2c; }
     .status-review { background: #e9d8fd; color: #553c9a; }
     .status-done { background: #c6f6d5; color: #22543d; }
 
@@ -269,6 +270,7 @@
     <span class="legend-item"><span class="dot" style="background:#718096"></span> Backlog</span>
     <span class="legend-item"><span class="dot" style="background:#dd6b20"></span> To Do</span>
     <span class="legend-item"><span class="dot" style="background:#3182ce"></span> In Progress</span>
+    <span class="legend-item"><span class="dot" style="background:#e53e3e"></span> Blocked / Risk</span>
     <span class="legend-item"><span class="dot" style="background:#805ad5"></span> Review</span>
     <span class="legend-item"><span class="dot" style="background:#38a169"></span> Done</span>
     <span style="margin-left:auto; font-size:11px;">ลากการ์ดข้ามคอลัมน์เพื่อเปลี่ยนสถานะ · คลิกการ์ดเพื่อแก้ไข</span>
@@ -362,6 +364,7 @@
                         <option value="backlog">Backlog</option>
                         <option value="todo">To Do</option>
                         <option value="doing">In Progress</option>
+                        <option value="blocked">Blocked / Risk</option>
                         <option value="review">Review</option>
                         <option value="done">Done</option>
                     </select>
@@ -410,6 +413,7 @@ const COLUMNS = [
     { id: "backlog", name: "Backlog",       color: "#718096" },
     { id: "todo",    name: "To Do",         color: "#dd6b20" },
     { id: "doing",   name: "In Progress",   color: "#3182ce" },
+    { id: "blocked", name: "Blocked / Risk", color: "#e53e3e" },
     { id: "review",  name: "Review",        color: "#805ad5" },
     { id: "done",    name: "Done",          color: "#38a169" },
 ];
@@ -425,110 +429,342 @@ const MODULE_LABELS = {
 const TYPE_ICON = { task: "🛠️", feature: "✨", bug: "🐛" };
 
 // Seed data reflects the current prototype baseline plus remaining Phase 1 work.
+// SEED_START
 const SEED = [
-    // --- kernel-companion (eBPF/LSM) ---
-    { id: "ANK-001", type: "task", title: "Setup Rust workspace + companion crate layout",
-      desc: "Workspace manifest และ crate layout สำหรับ kernel-companion ถูกจัดให้ parse ได้และเชื่อมกับ crate อื่นแล้ว แต่ยังไม่ได้ยืนยันด้วย cargo build จริงใน environment นี้.",
-      status: "done", priority: "high", module: "kernel-companion", assignee: "AI", due: "" },
-    { id: "ANK-002", type: "feature", title: "Prototype companion composition root",
-      desc: "kernel-companion สร้าง intent bus, memory, security, compute และ agent scheduler แล้ว boot/shutdown ได้ในระดับ prototype host-side.",
-      status: "done", priority: "critical", module: "kernel-companion", assignee: "AI", due: "" },
-    { id: "ANK-003", type: "feature", title: "Real eBPF syscall tracer (Aya)",
-      desc: "โปรแกรม eBPF ที่ trace syscalls บน x86_64 ผ่าน tracepoint/raw_tracepoint. ส่ง events ออกทาง ring buffer. เป้า overhead < 3% CPU.",
-      status: "backlog", priority: "critical", module: "kernel-companion", assignee: "—", due: "" },
-    { id: "ANK-004", type: "task", title: "Real LSM policy decision point",
-      desc: "เชื่อม LSM hook จริงให้ดัก security decisions และส่งต่อมายัง Rust policy engine แทน host-side stub ปัจจุบัน.",
-      status: "backlog", priority: "high", module: "kernel-companion", assignee: "—", due: "" },
-    { id: "ANK-005", type: "task", title: "Aya toolchain + kernel target validation",
-      desc: "ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.",
-      status: "todo", priority: "high", module: "kernel-companion", assignee: "—", due: "" },
-
-    // --- agent-scheduler ---
-    { id: "ANK-006", type: "feature", title: "AgentControlBlock + AgentState enum",
-      desc: "นิยาม struct และ state machine สำหรับ lifecycle ของ agent มีอยู่แล้วใน prototype scheduler.",
-      status: "done", priority: "high", module: "agent-scheduler", assignee: "AI", due: "" },
-    { id: "ANK-007", type: "feature", title: "Agent spawn/pause/resume/terminate API",
-      desc: "Async API สำหรับควบคุม lifecycle พื้นฐานมีแล้วและมี unit tests ครอบคลุม แต่ยังไม่ได้ยืนยัน performance budget.",
-      status: "done", priority: "high", module: "agent-scheduler", assignee: "AI", due: "" },
-    { id: "ANK-008", type: "feature", title: "Supervisor: restart/retry on fault",
-      desc: "Supervisor loop และโครง restart path มีใน prototype แต่ยังต้อง review เรื่อง concurrency และทดสอบ fault injection เพิ่ม.",
-      status: "doing", priority: "med", module: "agent-scheduler", assignee: "AI", due: "" },
-    { id: "ANK-009", type: "task", title: "Property test: scheduler state invariant",
-      desc: "ใช้ proptest ตรวจสอบว่า Running+Ready+Waiting == total active agents เสมอ",
-      status: "backlog", priority: "med", module: "agent-scheduler", assignee: "—", due: "" },
-    { id: "ANK-010", type: "feature", title: "Intent-driven scheduler routing",
-      desc: "รองรับ Command intent เช่น spawn-agent, Structured intent พร้อม metadata และ capability grant ผ่าน capability-security แล้ว.",
-      status: "done", priority: "high", module: "agent-scheduler", assignee: "AI", due: "" },
-
-    // --- context-memory ---
-    { id: "ANK-011", type: "feature", title: "Prototype context manager + tier modules",
-      desc: "มี hot/warm/cold modules และ API ระดับ prototype สำหรับเก็บ context แล้ว แต่ยังไม่ใช่ persistent paging จริง.",
-      status: "done", priority: "high", module: "context-memory", assignee: "AI", due: "" },
-    { id: "ANK-012", type: "feature", title: "Warm tier (NVMe): RocksDB store",
-      desc: "Warm context layer บน NVMe ผ่าน RocksDB. Cold→Warm load < 50ms P99.",
-      status: "backlog", priority: "high", module: "context-memory", assignee: "—", due: "" },
-    { id: "ANK-013", type: "feature", title: "Tier migration: Hot<->Warm<->Cold",
-      desc: "Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.",
-      status: "backlog", priority: "med", module: "context-memory", assignee: "—", due: "" },
-    { id: "ANK-014", type: "task", title: "Property test: context round-trip lossless",
-      desc: "Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล",
-      status: "backlog", priority: "med", module: "context-memory", assignee: "—", due: "" },
-
-    // --- compute-scheduler ---
-    { id: "ANK-015", type: "feature", title: "Prototype compute scheduler baseline",
-      desc: "มี compute-scheduler crate, cost function และ adaptive weights baseline พร้อม sanity tests แล้ว แต่ยังไม่ผูกกับ real CPU/GPU/NPU placement.",
-      status: "done", priority: "med", module: "compute-scheduler", assignee: "AI", due: "" },
-    { id: "ANK-016", type: "task", title: "Real device-aware placement policy",
-      desc: "เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.",
-      status: "backlog", priority: "high", module: "compute-scheduler", assignee: "—", due: "" },
-
-    // --- capability-security ---
-    { id: "ANK-017", type: "feature", title: "CapabilityToken struct + Scope enum",
-      desc: "นิยาม CapabilityToken และ Scope มีแล้วใน prototype พร้อม validation path และ tests พื้นฐาน.",
-      status: "done", priority: "high", module: "capability-security", assignee: "AI", due: "" },
-    { id: "ANK-018", type: "feature", title: "Policy Engine (fail-DENY)",
-      desc: "Policy engine default = DENY และมี capability allowlist ใน prototype แล้ว แต่ยังไม่ได้ใช้ constant_time_eq และยังไม่ยืนยัน latency budget.",
-      status: "done", priority: "critical", module: "capability-security", assignee: "AI", due: "" },
-    { id: "ANK-019", type: "feature", title: "Persistent WORM audit logger",
-      desc: "ปัจจุบัน audit trail เป็น in-memory เท่านั้น ต้องย้ายไป append-only persistent store สำหรับ Phase 1 security baseline.",
-      status: "todo", priority: "high", module: "capability-security", assignee: "—", due: "" },
-    { id: "ANK-020", type: "task", title: "Security hardening: constant-time token comparison",
-      desc: "แทนที่การเทียบ token แบบปกติด้วย constant_time_eq ตาม security guideline ใน AGENTS.md.",
-      status: "todo", priority: "high", module: "capability-security", assignee: "—", due: "" },
-
-    // --- intent-bus ---
-    { id: "ANK-021", type: "feature", title: "Intent Bus (tokio broadcast)",
-      desc: "tokio::sync::broadcast channel สำหรับ Intent events มีแล้ว พร้อม subscriber filtering และ unit tests.",
-      status: "done", priority: "med", module: "intent-bus", assignee: "AI", due: "" },
-
-    // --- infra ---
-    { id: "ANK-022", type: "task", title: "Cargo workspace skeleton (7 crates)",
-      desc: "Workspace manifests และ crate wiring ถูกแก้ให้ coherent แล้วในระดับ source tree.",
-      status: "done", priority: "critical", module: "infra", assignee: "AI", due: "" },
-    { id: "ANK-023", type: "task", title: "Unit test baseline for core crates",
-      desc: "เพิ่ม tests ขั้นต้นให้ scheduler, intent bus, capability security, context memory, compute scheduler และ kernel companion แล้ว.",
-      status: "done", priority: "high", module: "infra", assignee: "AI", due: "" },
-    { id: "ANK-024", type: "task", title: "Documentation + implementation status note",
-      desc: "อัปเดต obsidian docs และเพิ่ม implementation-status note ให้สะท้อนสถานะจริงของ prototype.",
-      status: "done", priority: "med", module: "infra", assignee: "AI", due: "" },
-    { id: "ANK-025", type: "task", title: "CI: clippy + test + audit pipeline",
-      desc: "GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.",
-      status: "todo", priority: "high", module: "infra", assignee: "—", due: "" },
-    { id: "ANK-026", type: "task", title: "CI: fuzz + chaos test harness",
-      desc: "cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).",
-      status: "backlog", priority: "med", module: "infra", assignee: "—", due: "" },
-    { id: "ANK-027", type: "task", title: "Observability: tracing + Prometheus exporter",
-      desc: "เพิ่ม tracing + OpenTelemetry + Prometheus metrics ในทุก hot path. PII-sanitized logs.",
-      status: "backlog", priority: "med", module: "infra", assignee: "—", due: "" },
-    { id: "ANK-028", type: "task", title: "Build validation on real toolchain",
-      desc: "รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.",
-      status: "todo", priority: "critical", module: "infra", assignee: "—", due: "" },
-    { id: "ANK-029", type: "task", title: "Security: sanitize .secret/ + .gitignore",
-      desc: "ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).",
-      status: "todo", priority: "critical", module: "infra", assignee: "—", due: "" },
+    {
+        "id": "ANK-001",
+        "type": "task",
+        "title": "Setup Rust workspace + companion crate layout",
+        "desc": "Workspace manifest และ crate layout สำหรับ kernel-companion ถูกจัดให้ parse ได้และเชื่อมกับ crate อื่นแล้ว แต่ยังไม่ได้ยืนยันด้วย cargo build จริงใน environment นี้.",
+        "status": "done",
+        "priority": "high",
+        "module": "kernel-companion",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-002",
+        "type": "feature",
+        "title": "Prototype companion composition root",
+        "desc": "kernel-companion สร้าง intent bus, memory, security, compute และ agent scheduler แล้ว boot/shutdown ได้ในระดับ prototype host-side.",
+        "status": "done",
+        "priority": "critical",
+        "module": "kernel-companion",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-003",
+        "type": "feature",
+        "title": "Real eBPF syscall tracer (Aya)",
+        "desc": "โปรแกรม eBPF ที่ trace syscalls บน x86_64 ผ่าน tracepoint/raw_tracepoint. ส่ง events ออกทาง ring buffer. เป้า overhead < 3% CPU.",
+        "status": "backlog",
+        "priority": "critical",
+        "module": "kernel-companion",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-004",
+        "type": "task",
+        "title": "Real LSM policy decision point",
+        "desc": "เชื่อม LSM hook จริงให้ดัก security decisions และส่งต่อมายัง Rust policy engine แทน host-side stub ปัจจุบัน.",
+        "status": "backlog",
+        "priority": "high",
+        "module": "kernel-companion",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-005",
+        "type": "task",
+        "title": "Aya toolchain + kernel target validation",
+        "desc": "ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.",
+        "status": "todo",
+        "priority": "high",
+        "module": "kernel-companion",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-006",
+        "type": "feature",
+        "title": "AgentControlBlock + AgentState enum",
+        "desc": "นิยาม struct และ state machine สำหรับ lifecycle ของ agent มีอยู่แล้วใน prototype scheduler.",
+        "status": "done",
+        "priority": "high",
+        "module": "agent-scheduler",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-007",
+        "type": "feature",
+        "title": "Agent spawn/pause/resume/terminate API",
+        "desc": "Async API สำหรับควบคุม lifecycle พื้นฐานมีแล้วและมี unit tests ครอบคลุม แต่ยังไม่ได้ยืนยัน performance budget.",
+        "status": "done",
+        "priority": "high",
+        "module": "agent-scheduler",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-008",
+        "type": "feature",
+        "title": "Supervisor: restart/retry on fault",
+        "desc": "Supervisor loop และโครง restart path มีใน prototype แต่ยังต้อง review เรื่อง concurrency และทดสอบ fault injection เพิ่ม.",
+        "status": "doing",
+        "priority": "med",
+        "module": "agent-scheduler",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-009",
+        "type": "task",
+        "title": "Property test: scheduler state invariant",
+        "desc": "ใช้ proptest ตรวจสอบว่า Running+Ready+Waiting == total active agents เสมอ",
+        "status": "backlog",
+        "priority": "med",
+        "module": "agent-scheduler",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-010",
+        "type": "feature",
+        "title": "Intent-driven scheduler routing",
+        "desc": "รองรับ Command intent เช่น spawn-agent, Structured intent พร้อม metadata และ capability grant ผ่าน capability-security แล้ว.",
+        "status": "done",
+        "priority": "high",
+        "module": "agent-scheduler",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-011",
+        "type": "feature",
+        "title": "Prototype context manager + tier modules",
+        "desc": "มี hot/warm/cold modules และ API ระดับ prototype สำหรับเก็บ context แล้ว แต่ยังไม่ใช่ persistent paging จริง.",
+        "status": "done",
+        "priority": "high",
+        "module": "context-memory",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-012",
+        "type": "feature",
+        "title": "Warm tier (NVMe): RocksDB store",
+        "desc": "Warm context layer บน NVMe ผ่าน RocksDB. Cold→Warm load < 50ms P99.",
+        "status": "backlog",
+        "priority": "high",
+        "module": "context-memory",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-013",
+        "type": "feature",
+        "title": "Tier migration: Hot<->Warm<->Cold",
+        "desc": "Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.",
+        "status": "backlog",
+        "priority": "med",
+        "module": "context-memory",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-014",
+        "type": "task",
+        "title": "Property test: context round-trip lossless",
+        "desc": "Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล",
+        "status": "backlog",
+        "priority": "med",
+        "module": "context-memory",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-015",
+        "type": "feature",
+        "title": "Prototype compute scheduler baseline",
+        "desc": "มี compute-scheduler crate, cost function และ adaptive weights baseline พร้อม sanity tests แล้ว แต่ยังไม่ผูกกับ real CPU/GPU/NPU placement.",
+        "status": "done",
+        "priority": "med",
+        "module": "compute-scheduler",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-016",
+        "type": "task",
+        "title": "Real device-aware placement policy",
+        "desc": "เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.",
+        "status": "backlog",
+        "priority": "high",
+        "module": "compute-scheduler",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-017",
+        "type": "feature",
+        "title": "CapabilityToken struct + Scope enum",
+        "desc": "นิยาม CapabilityToken และ Scope มีแล้วใน prototype พร้อม validation path และ tests พื้นฐาน.",
+        "status": "done",
+        "priority": "high",
+        "module": "capability-security",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-018",
+        "type": "feature",
+        "title": "Policy Engine (fail-DENY)",
+        "desc": "Policy engine default = DENY และมี capability allowlist ใน prototype แล้ว แต่ยังไม่ได้ใช้ constant_time_eq และยังไม่ยืนยัน latency budget.",
+        "status": "done",
+        "priority": "critical",
+        "module": "capability-security",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-019",
+        "type": "feature",
+        "title": "Persistent WORM audit logger",
+        "desc": "ปัจจุบัน audit trail เป็น in-memory เท่านั้น ต้องย้ายไป append-only persistent store สำหรับ Phase 1 security baseline.",
+        "status": "todo",
+        "priority": "high",
+        "module": "capability-security",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-020",
+        "type": "task",
+        "title": "Security hardening: constant-time token comparison",
+        "desc": "แทนที่การเทียบ token แบบปกติด้วย constant_time_eq ตาม security guideline ใน AGENTS.md.",
+        "status": "todo",
+        "priority": "high",
+        "module": "capability-security",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-021",
+        "type": "feature",
+        "title": "Intent Bus (tokio broadcast)",
+        "desc": "tokio::sync::broadcast channel สำหรับ Intent events มีแล้ว พร้อม subscriber filtering และ unit tests.",
+        "status": "done",
+        "priority": "med",
+        "module": "intent-bus",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-022",
+        "type": "task",
+        "title": "Cargo workspace skeleton (7 crates)",
+        "desc": "Workspace manifests และ crate wiring ถูกแก้ให้ coherent แล้วในระดับ source tree.",
+        "status": "done",
+        "priority": "critical",
+        "module": "infra",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-023",
+        "type": "task",
+        "title": "Unit test baseline for core crates",
+        "desc": "เพิ่ม tests ขั้นต้นให้ scheduler, intent bus, capability security, context memory, compute scheduler และ kernel companion แล้ว.",
+        "status": "done",
+        "priority": "high",
+        "module": "infra",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-024",
+        "type": "task",
+        "title": "Documentation + implementation status note",
+        "desc": "อัปเดต obsidian docs และเพิ่ม implementation-status note ให้สะท้อนสถานะจริงของ prototype.",
+        "status": "done",
+        "priority": "med",
+        "module": "infra",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-025",
+        "type": "task",
+        "title": "CI: clippy + test + audit pipeline",
+        "desc": "GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.",
+        "status": "todo",
+        "priority": "high",
+        "module": "infra",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-026",
+        "type": "task",
+        "title": "CI: fuzz + chaos test harness",
+        "desc": "cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).",
+        "status": "backlog",
+        "priority": "med",
+        "module": "infra",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-027",
+        "type": "task",
+        "title": "Observability: tracing + Prometheus exporter",
+        "desc": "เพิ่ม tracing + OpenTelemetry + Prometheus metrics ในทุก hot path. PII-sanitized logs.",
+        "status": "backlog",
+        "priority": "med",
+        "module": "infra",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-028",
+        "type": "task",
+        "title": "Build validation on real toolchain",
+        "desc": "รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.",
+        "status": "todo",
+        "priority": "critical",
+        "module": "infra",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-029",
+        "type": "task",
+        "title": "Security: sanitize .secret/ + .gitignore",
+        "desc": "ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).",
+        "status": "todo",
+        "priority": "critical",
+        "module": "infra",
+        "assignee": "—",
+        "due": ""
+    },
+    {
+        "id": "ANK-030",
+        "type": "bug",
+        "title": "Blocked: cargo/rustc toolchain is not ready/installed",
+        "desc": "สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้",
+        "status": "blocked",
+        "priority": "critical",
+        "module": "infra",
+        "assignee": "—",
+        "due": ""
+    }
 ];
+// SEED_END
 
-let state = { tasks: [], nextSeq: 30, view: "kanban", filters: { module: "all" } };
+let state = { tasks: [], nextSeq: 31, view: "kanban", filters: { module: "all" } };
 
 function load() {
     try {
@@ -667,6 +903,7 @@ function renderIssues() {
             backlog: ["status-backlog", "Backlog"],
             todo: ["status-todo", "To Do"],
             doing: ["status-doing", "In Progress"],
+            blocked: ["status-blocked", "Blocked / Risk"],
             review: ["status-review", "Review"],
             done: ["status-done", "Done"],
         };
