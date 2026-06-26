@@ -458,6 +458,15 @@ flowchart LR
         <p><strong>Timeout Policy (ทุก external call):</strong> Syscall decision: <strong>1 ms</strong> &middot; Tool sandbox: <strong>30 s</strong> &middot; Context load NVMe: <strong>2 s</strong> &middot; GPU inference: <strong>60 s</strong></p>
     </div>
 
+    <h3>4.1 สถาปัตยกรรมภูมิคุ้มกัน (Immune System Architecture)</h3>
+    <p>ระบบ AI-Native Kernel ถูกออกแบบให้มีกลไกป้องกันตัวเองแบบสิ่งมีชีวิต โดยใช้ AI Agents ทำหน้าที่เป็นเม็ดเลือดขาว (White Blood Cell Agents):</p>
+    <ul>
+        <li><strong>Macrophage Agents:</strong> เดินลาดตระเวน (Patrol) เพื่อทำ Garbage Collection โดยการตรวจจับและทำลาย Context ที่หมดอายุ หรือ Token ขยะใน <code>IntentBus</code></li>
+        <li><strong>T-Cell Agents (หน่วยพิฆาต):</strong> เฝ้าระวังพฤติกรรมน่าสงสัยระดับ Syscall ผ่าน eBPF หากพบโปรเซสหรือ Agent ที่ทำตัวเป็นภัยคุกคาม จะสั่งระงับและหยุดการทำงาน (Kill) ทันที</li>
+        <li><strong>B-Cell Agents (หน่วยสร้างเกราะป้องกัน):</strong> เรียนรู้รูปแบบการโจมตีใหม่ๆ และสร้างกฎ LSM Policy (Antibody) แบบไดนามิก เพื่ออัปเดต Policy Engine อัตโนมัติ ป้องกันการโจมตีแบบเดิม</li>
+        <li><strong>Cytokine Signals:</strong> เมื่อพบภัยคุกคามร้ายแรง Agent สามารถกระจายสัญญาณเตือน (Critical <code>IntentEvent</code>) ผ่าน Bus เพื่อส่งให้ Swarm ของ Agent มารุมจัดการปัญหาที่จุดเดียว</li>
+    </ul>
+
     <!-- ============================================================ -->
     <!-- 5. FAULT TOLERANCE                                           -->
     <!-- ============================================================ -->
