@@ -48,10 +48,10 @@
     "type": "task",
     "title": "Aya toolchain + kernel target validation",
     "desc": "ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.",
-    "status": "todo",
+    "status": "done",
     "priority": "high",
     "module": "kernel-companion",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   },
   {
@@ -268,10 +268,10 @@
     "type": "task",
     "title": "CI: clippy + test + audit pipeline",
     "desc": "GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.",
-    "status": "todo",
+    "status": "done",
     "priority": "high",
     "module": "infra",
-    "assignee": "—",
+    "assignee": "AI",
     "due": ""
   },
   {

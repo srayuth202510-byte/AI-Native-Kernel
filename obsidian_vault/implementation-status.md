@@ -21,6 +21,7 @@ This note tracks the current state of the repository as implemented in code, not
 
 - **[ANK-001] Setup Rust workspace + companion crate layout**: Workspace manifest และ crate layout สำหรับ kernel-companion ถูกจัดให้ parse ได้และเชื่อมกับ crate อื่นแล้ว แต่ยังไม่ได้ยืนยันด้วย cargo build จริงใน environment นี้.
 - **[ANK-002] Prototype companion composition root**: kernel-companion สร้าง intent bus, memory, security, compute และ agent scheduler แล้ว boot/shutdown ได้ในระดับ prototype host-side.
+- **[ANK-005] Aya toolchain + kernel target validation**: ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.
 
 ### agent-scheduler
 
@@ -53,6 +54,7 @@ This note tracks the current state of the repository as implemented in code, not
 - **[ANK-022] Cargo workspace skeleton (7 crates)**: Workspace manifests และ crate wiring ถูกแก้ให้ coherent แล้วในระดับ source tree.
 - **[ANK-023] Unit test baseline for core crates**: เพิ่ม tests ขั้นต้นให้ scheduler, intent bus, capability security, context memory, compute scheduler และ kernel companion แล้ว.
 - **[ANK-024] Documentation + implementation status note**: อัปเดต obsidian docs และเพิ่ม implementation-status note ให้สะท้อนสถานะจริงของ prototype.
+- **[ANK-025] CI: clippy + test + audit pipeline**: GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.
 - **[ANK-028] Build validation on real toolchain**: รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.
 - **[ANK-029] Security: sanitize .secret/ + .gitignore**: ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).
 - **[ANK-030] Blocked: cargo/rustc toolchain is not ready/installed**: สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้
@@ -61,8 +63,6 @@ This note tracks the current state of the repository as implemented in code, not
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-- **[ANK-005] Aya toolchain + kernel target validation** (todo, high): ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.
-- **[ANK-025] CI: clippy + test + audit pipeline** (todo, high): GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.
 - **[ANK-003] Real eBPF syscall tracer (Aya)** (backlog, critical): โปรแกรม eBPF ที่ trace syscalls บน x86_64 ผ่าน tracepoint/raw_tracepoint. ส่ง events ออกทาง ring buffer. เป้า overhead < 3% CPU.
 - **[ANK-004] Real LSM policy decision point** (backlog, high): เชื่อม LSM hook จริงให้ดัก security decisions และส่งต่อมายัง Rust policy engine แทน host-side stub ปัจจุบัน.
 - **[ANK-009] Property test: scheduler state invariant** (backlog, med): ใช้ proptest ตรวจสอบว่า Running+Ready+Waiting == total active agents เสมอ
