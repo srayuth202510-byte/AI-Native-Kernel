@@ -58,6 +58,12 @@ impl AuditEntry {
     pub fn denied(token_id: u64) -> Self {
         Self::new("denied", token_id)
     }
+
+    /// สร้างข้อมูลบันทึกประวัติสำหรับการ "เพิกถอนโทเค็น" (Revoked)
+    #[must_use]
+    pub fn revoked(token_id: u64) -> Self {
+        Self::new("revoked", token_id)
+    }
 }
 
 /// ตัวบันทึกข้อมูลการตรวจสอบการทำงานและความปลอดภัยลงในระบบจัดเก็บไฟล์ถาวร (Audit Logger)

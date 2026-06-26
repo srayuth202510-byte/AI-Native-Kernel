@@ -10,7 +10,7 @@ pub use metrics::{SecurityMetrics, render_metrics};
 use crate::audit::{AuditEntry, AuditLogger};
 use crate::policy::{PolicyDecision, PolicyEngine};
 pub use crate::token::{CapabilityToken, Scope};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 use thiserror::Error;
 
@@ -34,14 +34,19 @@ pub enum CapabilityError {
     /// เกิดข้อผิดพลาดเนื่องจากโทเค็นหมดอายุ
     #[error("token expiration error")]
     ExpirationError,
+    /// โทเค็นถูกเพิกถอนแล้ว
+    #[error("token has been revoked")]
+    TokenRevoked,
 }
 
 /// ตัวจัดการความปลอดภัยอิงความสามารถ (Capability-based Security Manager)
-/// ทำหน้าที่ควบคุมสิทธิ์ ออกโทเค็น ตรวจสอบสิทธิ์ และบันทึกประวัติความปลอดภัย
+/// ทำหน้าที่ควบคุมสิทธิ์ ออกโทเค็น ตรวจสอบสิทธิ์ เพิกถอนโทเค็น และบันทึกประวัติความปลอดภัย
 #[derive(Debug)]
 pub struct CapabilitySecurityManager {
     /// ตารางเก็บโทเค็นความสามารถทั้งหมด มีการใช้ `RwLock` เพื่อให้สามารถใช้งานข้ามเธรดได้อย่างปลอดภัย
     tokens: RwLock<HashMap<u64, CapabilityToken>>,
+    /// รายการรหัสโทเค็นที่ถูกเพิกถอนแล้ว (Revoked Token IDs)
+    revoked: RwLock<HashSet<u64>>,
     /// กลไกการประเมินนโยบายเพื่อตัดสินใจอนุญาตหรือปฏิเสธสิทธิ์
     policy_engine: PolicyEngine,
     /// ตัวบันทึกประวัติการตรวจสอบการทำงานและความปลอดภัย (Audit Logger)
@@ -65,6 +70,7 @@ impl CapabilitySecurityManager {
     pub fn new() -> Self {
         Self {
             tokens: RwLock::new(HashMap::new()),
+            revoked: RwLock::new(HashSet::new()),
             policy_engine: PolicyEngine::default(),
             audit_logger: AuditLogger::default(),
         }
@@ -75,6 +81,7 @@ impl CapabilitySecurityManager {
     pub fn new_with_log_path(log_path: std::path::PathBuf) -> Self {
         Self {
             tokens: RwLock::new(HashMap::new()),
+            revoked: RwLock::new(HashSet::new()),
             policy_engine: PolicyEngine::default(),
             audit_logger: AuditLogger::new(log_path),
         }
@@ -92,10 +99,42 @@ impl CapabilitySecurityManager {
         Ok(())
     }
 
+    /// เพิกถอนโทเค็นความสามารถ (Capability Token) ตามรหัสโทเค็น
+    /// โทเค็นที่ถูกเพิกถอนแล้วจะไม่สามารถใช้งานได้อีกต่อไป แม้จะยังไม่หมดอายุ
+    pub fn revoke_token(&self, token_id: u64) -> Result<()> {
+        self.revoked
+            .write()
+            .expect("revoked set lock poisoned")
+            .insert(token_id);
+        self.audit_logger
+            .record(AuditEntry::revoked(token_id))
+            .map_err(|_| CapabilityError::AuditWriteFailed)?;
+        Ok(())
+    }
+
+    /// ตรวจสอบว่าโทเค็นถูกเพิกถอนแล้วหรือไม่
+    #[must_use]
+    pub fn is_revoked(&self, token_id: u64) -> bool {
+        self.revoked
+            .read()
+            .expect("revoked set lock poisoned")
+            .contains(&token_id)
+    }
+
+    /// จำนวนโทเค็นที่ถูกเพิกถอนทั้งหมด
+    #[must_use]
+    pub fn revoked_count(&self) -> usize {
+        self.revoked
+            .read()
+            .expect("revoked set lock poisoned")
+            .len()
+    }
+
     /// ตรวจสอบสิทธิ์ของโทเค็นโดยอ้างอิงกับ Capability ที่ร้องขอ
     /// พร้อมทำบันทึกประวัติการอนุญาต (Allow) หรือปฏิเสธ (Deny) ลงไฟล์ประวัติการตรวจสอบ
     pub fn authorize_token(&self, token: &CapabilityToken, capability: &str) -> Result<bool> {
         let allowed = token.is_valid()
+            && !self.is_revoked(token.id)
             && self
                 .policy_engine
                 .authorize(token, &token.scope, capability);
@@ -123,6 +162,14 @@ impl CapabilitySecurityManager {
         let Some(token) = tokens.get(&token_id) else {
             return Ok(false);
         };
+
+        // ตรวจสอบว่าโทเค็นถูกเพิกถอนแล้วหรือไม่
+        if self.is_revoked(token_id) {
+            self.audit_logger
+                .record(AuditEntry::denied(token_id))
+                .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            return Ok(false);
+        }
 
         // ตรวจสอบความถูกต้องของรหัสลับ (Secret Key) แบบคงเวลาเพื่อป้องกัน Timing Attacks
         if !constant_time_eq(&token.secret, secret) {
@@ -160,6 +207,14 @@ impl CapabilitySecurityManager {
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
             return Ok(PolicyDecision::Deny);
         };
+
+        // ตรวจสอบว่าโทเค็นถูกเพิกถอนแล้วหรือไม่
+        if self.is_revoked(token_id) {
+            self.audit_logger
+                .record(AuditEntry::denied(token_id))
+                .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            return Ok(PolicyDecision::Deny);
+        }
 
         // เปรียบเทียบรหัสลับด้วยวิธีคงเวลาเพื่อป้องกัน Timing Attacks ในการถอดรหัสลับ/เปรียบเทียบโทเค็น
         if !constant_time_eq(&token.secret, secret) {
@@ -362,5 +417,85 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&log_path);
+    }
+
+    #[test]
+    fn revoke_token_denies_subsequent_access() {
+        let log_path = std::env::temp_dir().join("test_audit_revoke_1.log");
+        let _ = std::fs::remove_file(&log_path);
+        let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
+        let token = CapabilityToken::new(
+            10,
+            Scope::Process(1),
+            vec!["read".to_string()],
+            Duration::from_secs(60),
+            [10u8; 32],
+        );
+
+        manager.issue_token(token.clone()).expect("issue should succeed");
+
+        // ตรวจสอบว่าโทเค็นใช้งานได้ก่อนเพิกถอน
+        assert!(manager.authorize_token(&token, "read").expect("authorize should succeed"));
+        assert!(manager.validate(10, &[10u8; 32], &Scope::Process(1), "read").expect("validate should succeed"));
+        assert_eq!(
+            manager.decision_for(10, &[10u8; 32], &Scope::Process(1), "read").expect("decision should succeed"),
+            PolicyDecision::Allow
+        );
+
+        // เพิกถอนโทเค็น
+        manager.revoke_token(10).expect("revoke should succeed");
+        assert!(manager.is_revoked(10));
+        assert_eq!(manager.revoked_count(), 1);
+
+        // ตรวจสอบว่าโทเค็นใช้งานไม่ได้หลังเพิกถอน
+        assert!(!manager.authorize_token(&token, "read").expect("authorize should succeed"));
+        assert!(!manager.validate(10, &[10u8; 32], &Scope::Process(1), "read").expect("validate should succeed"));
+        assert_eq!(
+            manager.decision_for(10, &[10u8; 32], &Scope::Process(1), "read").expect("decision should succeed"),
+            PolicyDecision::Deny
+        );
+
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn revoke_nonexistent_token_succeeds() {
+        let log_path = std::env::temp_dir().join("test_audit_revoke_2.log");
+        let _ = std::fs::remove_file(&log_path);
+        let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
+
+        // เพิกถอนโทเค็นที่ไม่มีอยู่ — ต้องไม่ error
+        manager.revoke_token(999).expect("revoke should succeed");
+        assert!(manager.is_revoked(999));
+
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn revoked_token_logs_denied_in_audit() {
+        let log_path = std::env::temp_dir().join("test_audit_revoke_3.log");
+        let _ = std::fs::remove_file(&log_path);
+        let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
+        let token = CapabilityToken::new(
+            11,
+            Scope::Global,
+            vec!["read".to_string()],
+            Duration::from_secs(60),
+            [11u8; 32],
+        );
+
+        manager.issue_token(token.clone()).expect("issue should succeed");
+        manager.revoke_token(11).expect("revoke should succeed");
+
+        // authorize หลังเพิกถอน — ต้องได้ denied audit entry
+        let _ = manager.authorize_token(&token, "read");
+        let entries = manager.audit_entries();
+        let denied_entries: Vec<_> = entries.iter().filter(|e| e.action == "denied" && e.token_id == 11).collect();
+        assert!(!denied_entries.is_empty(), "revoked token authorization should log denied");
+        // ต้องมี revoked entry
+        let revoked_entries: Vec<_> = entries.iter().filter(|e| e.action == "revoked" && e.token_id == 11).collect();
+        assert_eq!(revoked_entries.len(), 1, "should have exactly one revoked entry");
+
+        let _ = std::fs::remove_file(&log_path);
     }
 }
