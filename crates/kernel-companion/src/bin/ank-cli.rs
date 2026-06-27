@@ -16,13 +16,18 @@ async fn main() -> Result<()> {
     let cmd = &args[1];
     let payload = if args.len() > 2 { &args[2] } else { "{}" };
 
-    let intent = Intent::new(
+    let mut intent = Intent::new(
         uuid::Uuid::new_v4().to_string(),
         IntentType::Command,
-        payload,
+        cmd,
         IntentPriority::High,
         "ank-cli",
     );
+    if args.len() > 2 {
+        intent
+            .metadata
+            .insert("payload".to_string(), payload.to_string());
+    }
 
     let socket_path = "/tmp/ank-companion.sock";
     let mut stream = UnixStream::connect(socket_path)
