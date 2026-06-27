@@ -3,6 +3,7 @@
 //! โมดูลหลักสำหรับ Kernel Companion
 //! ทำหน้าที่เป็นตัวกลางในการเชื่อมต่อระหว่างระบบปฏิบัติการ Linux (ผ่าน LSM/eBPF) และระบบจัดการ AI Agents
 
+use crate::config::Config;
 use agent_scheduler::AgentScheduler;
 use capability_security::CapabilitySecurityManager;
 use compute_scheduler::ComputeProfile;
@@ -14,6 +15,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{info, instrument, warn};
 
+pub mod config;
 pub mod ebpf;
 pub mod lsm;
 pub mod uds;
@@ -35,6 +37,8 @@ pub struct KernelCompanion {
     compute_scheduler: Arc<ComputeScheduler>,
     /// ตัวจัดตารางการทำงานของ Agent (Agent Scheduler) ควบคุมวงจรชีวิตของ Agent
     agent_scheduler: Arc<AgentScheduler>,
+    /// การตั้งค่าที่ใช้ขณะรัน (kept for reference)
+    config: Config,
     /// สถานะการเชื่อมต่อกับ LSM Hook ในระบบ Linux Kernel
     attachment: Option<LsmAttachment>,
     /// ช่องสัญญาณใช้แจ้งให้ background tasks หยุดทำงาน
@@ -47,11 +51,23 @@ pub struct KernelCompanion {
 
 impl KernelCompanion {
     /// สร้างอินสแตนซ์ของ KernelCompanion ใหม่ พร้อมเริ่มต้นการเชื่อมต่อส่วนประกอบต่าง ๆ
+    /// ใช้ค่าจาก `config/default.toml` หรือค่ามาตรฐานหากไม่มีไฟล์กำหนดค่า
     #[must_use]
     pub fn new() -> Self {
-        let intent_bus = Arc::new(IntentBus::new(1024));
-        let context_memory = Arc::new(ContextMemoryManager::new());
-        let capability_security = Arc::new(CapabilitySecurityManager::new());
+        Self::with_config(&Config::default())
+    }
+
+    /// สร้างอินสแตนซ์ของ KernelCompanion ด้วยการตั้งค่าที่กำหนด (Config struct)
+    #[must_use]
+    pub fn with_config(config: &Config) -> Self {
+        let intent_bus = Arc::new(IntentBus::new(config.kernel_companion.intent_bus_capacity));
+        let context_memory = Arc::new(ContextMemoryManager::with_capacity(
+            config.context_memory.hot_capacity,
+            config.context_memory.warm_capacity,
+        ));
+        let capability_security = Arc::new(CapabilitySecurityManager::new_with_log_path(
+            std::path::PathBuf::from(&config.capability_security.audit_log_path),
+        ));
         let agent_scheduler = Arc::new(AgentScheduler::new(
             Arc::clone(&intent_bus),
             Arc::clone(&context_memory),
@@ -59,6 +75,7 @@ impl KernelCompanion {
         ));
 
         Self {
+            config: config.clone(),
             lsm_engine: Arc::new(LsmPolicyEngine::new()),
             intent_bus,
             context_memory,
@@ -152,7 +169,7 @@ impl KernelCompanion {
             let cancel = tokio_util_cancel::CancellationToken::new();
             let _ = uds::start_uds_server(
                 Arc::clone(&self.intent_bus),
-                "/tmp/ank-companion.sock",
+                &self.config.kernel_companion.uds_socket_path,
                 cancel,
             )
             .await;

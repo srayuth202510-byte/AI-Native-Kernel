@@ -6,10 +6,14 @@ fn main() {
     let bpf_out_dir = Path::new(&out_dir).join("bpf");
     std::fs::create_dir_all(&bpf_out_dir).ok();
 
-    let bpf_c_src = Path::new("src/ebpf/syscall-tracer.bpf.c");
-    let bpf_o_dst = bpf_out_dir.join("syscall-tracer.bpf.o");
+    let bpf_sources: &[&str] = &[
+        "src/ebpf/syscall-tracer.bpf.c",
+        "src/ebpf/lsm-security.bpf.c",
+    ];
 
-    println!("cargo:rerun-if-changed={}", bpf_c_src.display());
+    for src in bpf_sources {
+        println!("cargo:rerun-if-changed={}", src);
+    }
 
     let kernel_release = std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .ok()
@@ -26,7 +30,7 @@ fn main() {
     let can_compile = Path::new("/sys/kernel/btf/vmlinux").exists()
         && Path::new(&bpf_inc).join("bpf/bpf_helpers.h").exists()
         && Command::new("clang").arg("--version").output().is_ok()
-        && bpf_c_src.exists();
+        && bpf_sources.iter().all(|s| Path::new(s).exists());
 
     if can_compile {
         if !vmlinux_h.exists() {
@@ -55,34 +59,42 @@ fn main() {
             }
         }
 
-        let clang_status = Command::new("clang")
-            .args([
-                "-O2",
-                "-target",
-                "bpf",
-                "-g",
-                "-I",
-                vmlinux_h.parent().unwrap().to_str().unwrap(),
-                "-I",
-                &bpf_inc,
-                "-c",
-            ])
-            .arg(bpf_c_src)
-            .arg("-o")
-            .arg(&bpf_o_dst)
-            .status()
-            .expect("clang should be available");
+        let mut all_succeeded = true;
+        for src in bpf_sources {
+            let stem = Path::new(src).file_stem().unwrap().to_str().unwrap();
+            let bpf_o_dst = bpf_out_dir.join(format!("{}.bpf.o", stem));
 
-        if !clang_status.success() {
-            println!(
-                "cargo:warning=clang failed to compile BPF program — falling back to simulation"
-            );
-            print_bpf_disabled_instructions();
-            return;
+            let clang_status = Command::new("clang")
+                .args([
+                    "-O2",
+                    "-target",
+                    "bpf",
+                    "-g",
+                    "-I",
+                    vmlinux_h.parent().unwrap().to_str().unwrap(),
+                    "-I",
+                    &bpf_inc,
+                    "-c",
+                ])
+                .arg(src)
+                .arg("-o")
+                .arg(&bpf_o_dst)
+                .status()
+                .expect("clang should be available");
+
+            if !clang_status.success() {
+                println!(
+                    "cargo:warning=clang failed to compile {src} — falling back to simulation"
+                );
+                all_succeeded = false;
+            } else {
+                println!("cargo:warning=eBPF {stem} compiled successfully ✓");
+            }
         }
 
-        println!("cargo:rustc-env=BPF_OUT_DIR={}", bpf_out_dir.display());
-        println!("cargo:warning=eBPF syscall-tracer compiled successfully ✓");
+        if all_succeeded {
+            println!("cargo:rustc-env=BPF_OUT_DIR={}", bpf_out_dir.display());
+        }
     } else {
         println!("cargo:warning=eBPF compilation prerequisites not met — using simulation mode");
         print_bpf_disabled_instructions();

@@ -265,16 +265,31 @@ fn parse_raw_event(buf: &[u8]) -> Option<RawSyscallEvent> {
 
 // ---- BPF program loading ----
 
-fn load_bpf_program_bytes() -> Result<Vec<u8>> {
+/// Load a compiled BPF .o file by stem name (e.g., "syscall-tracer" or "lsm-security").
+/// Looks in BPF_OUT_DIR first, then CARGO_MANIFEST_DIR/target/bpf/, then common paths.
+pub fn load_bpf_o(stem: &str) -> Result<Vec<u8>> {
+    let filename = format!("{}.bpf.o", stem);
     let bpf_o_path = if let Ok(out_dir) = std::env::var("BPF_OUT_DIR") {
-        std::path::PathBuf::from(out_dir).join("syscall-tracer.bpf.o")
+        std::path::PathBuf::from(out_dir).join(&filename)
     } else if let Ok(cargo_manifest) = std::env::var("CARGO_MANIFEST_DIR") {
         std::path::PathBuf::from(cargo_manifest)
             .join("target")
             .join("bpf")
-            .join("syscall-tracer.bpf.o")
+            .join(&filename)
     } else {
-        anyhow::bail!("BPF_OUT_DIR and CARGO_MANIFEST_DIR not set");
+        // Check relative to the current binary
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let rel = exe_dir.join(&filename);
+        if rel.exists() {
+            return Ok(std::fs::read(&rel)?);
+        }
+        anyhow::bail!(
+            "BPF_OUT_DIR and CARGO_MANIFEST_DIR not set, and {} not found near binary",
+            filename
+        );
     };
 
     if !bpf_o_path.exists() {
@@ -282,6 +297,11 @@ fn load_bpf_program_bytes() -> Result<Vec<u8>> {
     }
 
     Ok(std::fs::read(&bpf_o_path)?)
+}
+
+// Backward compatibility for internal use
+fn load_bpf_program_bytes() -> Result<Vec<u8>> {
+    load_bpf_o("syscall-tracer")
 }
 
 // ---- CancellationToken ----
@@ -314,7 +334,7 @@ use tokio_util_cancel::CancellationToken;
 
 // ---- x86_64 syscall table ----
 
-fn build_syscall_table() -> HashMap<u64, &'static str> {
+pub fn build_syscall_table() -> HashMap<u64, &'static str> {
     let mut table = HashMap::new();
     table.insert(0, "read");
     table.insert(1, "write");

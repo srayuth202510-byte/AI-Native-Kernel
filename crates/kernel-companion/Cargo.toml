@@ -17,14 +17,13 @@ aya = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }
 agent-scheduler = { path = "../agent-scheduler" }
 capability-security = { path = "../capability-security" }
 compute-scheduler = { path = "../compute-scheduler" }
 context-memory = { path = "../context-memory" }
 intent-bus = { path = "../intent-bus" }
-
-
-
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]

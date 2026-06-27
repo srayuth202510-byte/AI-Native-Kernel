@@ -1,7 +1,8 @@
+use crate::ebpf::load_bpf_o;
 use anyhow::Result;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 /// ข้อผิดพลาดของการควบคุม LSM (Linux Security Module)
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -65,21 +66,42 @@ impl Default for LsmPolicyEngine {
 }
 
 /// โครงสร้างข้อมูลสำหรับอ้างอิงสถานะการเชื่อมต่อ LSM Hook
+///
+/// ในโหมดจริง (real eBPF): เก็บ `aya::Bpf` เพื่อให้โปรแกรม LSM ทำงานใน kernel
+/// ในโหมดจำลอง: แค่ flag `attached` สำหรับทดสอบการทำงานของ lifecycle
 #[derive(Debug)]
 pub struct LsmAttachment {
+    /// BPF object ที่เก็บรักษาโปรแกรม LSM ใน kernel (None = โหมดจำลอง)
+    bpf: Option<aya::Bpf>,
     /// บ่งชี้ว่ายังคงแนบอยู่กับ Kernel หรือไม่
     attached: bool,
 }
 
 impl LsmAttachment {
-    /// สร้างอินสแตนซ์ของ LsmAttachment เพื่อจำลองการแนบสำเร็จ
+    /// สร้าง LsmAttachment ในโหมดจำลอง (simulation mode)
+    /// ใช้เมื่อ real eBPF LSM ไม่สามารถโหลดได้
     #[must_use]
     pub fn new() -> Self {
-        Self { attached: true }
+        Self {
+            bpf: None,
+            attached: true,
+        }
     }
 
-    /// ปลดการแนบ LSM Hook
+    /// สร้าง LsmAttachment จาก aya::Bpf จริง
+    /// โปรแกรม LSM จะทำงานใน kernel จนกว่าจะเรียก detach()
+    #[must_use]
+    pub fn new_with_bpf(bpf: aya::Bpf) -> Self {
+        Self {
+            bpf: Some(bpf),
+            attached: true,
+        }
+    }
+
+    /// ปลดการแนบ LSM Hook และยกเลิกโหลดโปรแกรม eBPF
     pub fn detach(&mut self) {
+        // Dropping the Bpf object detaches all programs and unloads them
+        self.bpf = None;
         self.attached = false;
     }
 
@@ -87,6 +109,12 @@ impl LsmAttachment {
     #[must_use]
     pub fn is_attached(&self) -> bool {
         self.attached
+    }
+
+    /// ตรวจสอบว่าใช้ real eBPF หรือโหมดจำลอง
+    #[must_use]
+    pub fn is_real(&self) -> bool {
+        self.bpf.is_some()
     }
 }
 
@@ -96,13 +124,108 @@ impl Default for LsmAttachment {
     }
 }
 
-/// ฟังก์ชันช่วยในการแนบ LSM Hook เข้ากับ Linux Kernel
+/// พยายามโหลดและแนบโปรแกรม LSM eBPF จริงผ่าน Aya
+///
+/// โปรแกรมที่แนบ:
+/// - `lsm/security_file_open` — ตรวจสอบ PID ที่ allowed_pids map (kernel ≥5.7)
+/// - `lsm/security_bprm_check` — ตรวจสอบ PID ก่อน execve (kernel ≥5.5)
 ///
 /// # Errors
 ///
-/// ส่งคืนข้อผิดพลาดหากตัวกรองความปลอดภัยแนบไม่สำเร็จ
-pub fn attach_lsm_hooks(_engine: Arc<LsmPolicyEngine>) -> Result<LsmAttachment> {
-    Ok(LsmAttachment::new())
+/// ส่งคืนข้อผิดพลาดหาก BPF .o file ไม่มี หรือ Aya โหลด/แนบไม่สำเร็จ
+fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
+    let bpf_bytes = load_bpf_o("lsm-security")?;
+    let mut bpf = aya::Bpf::load(&bpf_bytes)?;
+
+    // Aya 0.12: LSM programs require kernel BTF (/sys/kernel/btf/vmlinux)
+    // to resolve types between the BPF program and kernel LSM hooks.
+    let btf = aya::Btf::from_sys_fs()
+        .map_err(|e| anyhow::anyhow!("Cannot load kernel BTF from /sys/kernel/btf/vmlinux: {e}"))?;
+
+    // ── security_file_open LSM hook ──
+    // ตรวจสอบทุกครั้งที่มีการเปิดไฟล์ โดยเช็ค PID จาก allowed_pids map
+    {
+        let prog: &mut aya::programs::Lsm = bpf
+            .program_mut("lsm_file_open")
+            .ok_or_else(|| anyhow::anyhow!("lsm_file_open program not found"))?
+            .try_into()?;
+        // In Aya 0.12, load(lsm_hook_name, btf) attaches the hook name to the program
+        prog.load("security_file_open", &btf)?;
+        // attach() with no arguments — the hook name was already specified in load()
+        let link = prog.attach()?;
+        // Leak the link so it stays alive for the daemon's lifetime.
+        // The kernel keeps a reference via the file descriptor.
+        Box::leak(Box::new(link));
+        info!("LSM eBPF: security_file_open attached");
+    }
+
+    // ── security_bprm_check LSM hook ──
+    // ตรวจสอบก่อน execute ใหม่ ห้าม fork/exec โดยไม่ได้รับอนุญาต
+    {
+        let prog: &mut aya::programs::Lsm = bpf
+            .program_mut("lsm_bprm_check")
+            .ok_or_else(|| anyhow::anyhow!("lsm_bprm_check program not found"))?
+            .try_into()?;
+        prog.load("security_bprm_check", &btf)?;
+        let link = prog.attach()?;
+        Box::leak(Box::new(link));
+        info!("LSM eBPF: security_bprm_check attached");
+    }
+
+    // ── populate allowed_pids eBPF map ──
+    // เพิ่ม PID ของ companion daemon เองให้อยู่ใน allowlist เสมอ
+    if let Some(map_ref) = bpf.map_mut("allowed_pids") {
+        use aya::maps::HashMap;
+        if let Ok(mut pid_map) = HashMap::<_, u32, u32>::try_from(map_ref) {
+            let own_pid = std::process::id();
+            let _ = pid_map.insert(own_pid, 1, 0);
+            info!("LSM eBPF: PID {own_pid} added to allowed_pids map");
+        } else {
+            warn!("LSM eBPF: could not create HashMap from allowed_pids map");
+        }
+    }
+
+    // ── populate allowed_syscalls eBPF map ──
+    // เติม syscall numbers ที่ LsmPolicyEngine อนุญาต
+    if let Some(map_ref) = bpf.map_mut("allowed_syscalls") {
+        use aya::maps::HashMap;
+        if let Ok(mut sc_map) = HashMap::<_, u64, u32>::try_from(map_ref) {
+            for (nr, name) in crate::ebpf::build_syscall_table() {
+                if engine.decision_for_syscall(name) == LsmDecision::Allow {
+                    let _ = sc_map.insert(nr, 1, 0);
+                    debug!("LSM eBPF: syscall {name}({nr}) added to allowlist");
+                }
+            }
+        } else {
+            warn!("LSM eBPF: could not create HashMap from allowed_syscalls map");
+        }
+    }
+
+    info!("LSM eBPF: all programs attached and maps populated");
+    Ok(LsmAttachment::new_with_bpf(bpf))
+}
+
+/// ฟังก์ชันหลักสำหรับแนบ LSM Hook เข้ากับ Linux Kernel
+///
+/// พยายามแนบ real LSM eBPF hooks ก่อน หากล้มเหลวจะ fallback เป็นโหมดจำลอง
+/// ในโหมดจำลอง `LsmPolicyEngine` ยังคงทำงานใน userspace สำหรับการตัดสินใจ
+///
+/// # Errors
+///
+/// ส่งคืนข้อผิดพลาดหากทั้ง real mode และ simulation mode ล้มเหลว
+#[instrument(skip(engine))]
+pub fn attach_lsm_hooks(engine: Arc<LsmPolicyEngine>) -> Result<LsmAttachment> {
+    match try_attach_real_lsm(&engine) {
+        Ok(attachment) => {
+            info!("LSM hooks: real eBPF mode — kernel-level enforcement active");
+            Ok(attachment)
+        }
+        Err(e) => {
+            warn!(error = %e, "LSM hooks: real eBPF attachment failed — falling back to simulation mode");
+            info!("LSM hooks: simulation mode — policy engine running in userspace");
+            Ok(LsmAttachment::new())
+        }
+    }
 }
 
 #[cfg(test)]
