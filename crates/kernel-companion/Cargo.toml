@@ -27,6 +27,8 @@ intent-bus = { path = "../intent-bus" }
 immune-system = { path = "../immune-system" }
 uuid = { workspace = true, features = ["v4"] }
 prometheus = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

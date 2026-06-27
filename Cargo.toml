@@ -56,3 +56,5 @@ uuid-macro = "1.0"
 rustversion = "1.0"
 clap = { version = "4.5", features = ["derive", "env"] }
 toml = "0.8"
+ratatui = "0.28"
+crossterm = "0.28"

@@ -10,7 +10,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-fn full_pipeline() -> (Arc<IntentBus>, AgentScheduler, Arc<CapabilitySecurityManager>, Arc<ContextMemoryManager>) {
+fn full_pipeline() -> (
+    Arc<IntentBus>,
+    AgentScheduler,
+    Arc<CapabilitySecurityManager>,
+    Arc<ContextMemoryManager>,
+) {
     let intent_bus = Arc::new(IntentBus::new(1024));
     let context_memory = Arc::new(ContextMemoryManager::new());
     let capability_security = Arc::new(CapabilitySecurityManager::new());
@@ -52,7 +57,10 @@ async fn int_immune_system_closed_loop() {
     let threat_intent = Intent::new(
         "threat-setuid-execve",
         IntentType::Event,
-        format!("threat: pid={} sequence=setuid->execve score={:.1}", pid, 8.0),
+        format!(
+            "threat: pid={} sequence=setuid->execve score={:.1}",
+            pid, 8.0
+        ),
         IntentPriority::High,
         "tcell-agent",
     );
@@ -152,11 +160,19 @@ async fn int_compute_with_context_influence() {
     let candidates = [
         (
             ComputeTarget::Cpu,
-            ComputeProfile { latency_ms: 100.0, power_watts: 200.0, cost_units: 50.0 },
+            ComputeProfile {
+                latency_ms: 100.0,
+                power_watts: 200.0,
+                cost_units: 50.0,
+            },
         ),
         (
             ComputeTarget::Gpu,
-            ComputeProfile { latency_ms: 1.0, power_watts: 150.0, cost_units: 20.0 },
+            ComputeProfile {
+                latency_ms: 1.0,
+                power_watts: 150.0,
+                cost_units: 20.0,
+            },
         ),
     ];
 
@@ -183,15 +199,27 @@ async fn int_macrophage_gc_pipeline() {
     let macrophage = MacrophageAgent::new(
         Arc::clone(&intent_bus),
         Arc::clone(&ctx_mgr),
-        10,   // max_intent_age_ms
-        0,    // context_ttl_secs — expires immediately
+        10, // max_intent_age_ms
+        0,  // context_ttl_secs — expires immediately
     );
 
     // Test is_stale directly
-    let fresh = Intent::new("fresh", IntentType::Event, "data", IntentPriority::Low, "test");
+    let fresh = Intent::new(
+        "fresh",
+        IntentType::Event,
+        "data",
+        IntentPriority::Low,
+        "test",
+    );
     assert!(!MacrophageAgent::is_stale(&fresh, 1000));
 
-    let mut stale = Intent::new("stale", IntentType::Event, "old", IntentPriority::Low, "test");
+    let mut stale = Intent::new(
+        "stale",
+        IntentType::Event,
+        "old",
+        IntentPriority::Low,
+        "test",
+    );
     // Manually set old timestamp
     stale.timestamp = std::time::SystemTime::now() - Duration::from_secs(60);
     assert!(MacrophageAgent::is_stale(&stale, 1000));
@@ -203,7 +231,13 @@ async fn int_macrophage_gc_pipeline() {
 
     // Publish and sweep in a single subscriber lifecycle
     let mut sub = intent_bus.subscribe();
-    let intent = Intent::new("live-1", IntentType::Event, "live-data", IntentPriority::Low, "test");
+    let intent = Intent::new(
+        "live-1",
+        IntentType::Event,
+        "live-data",
+        IntentPriority::Low,
+        "test",
+    );
     intent_bus.publish(intent).await.unwrap();
 
     // Consume the intent through our subscriber (it's not stale)
@@ -307,19 +341,40 @@ async fn int_full_end_to_end_pipeline() {
         IntentPriority::High,
         "system",
     );
-    ctx_intent.metadata.insert("agent_id".to_string(), agent_id.to_string());
-    ctx_intent.metadata.insert("context_key".to_string(), "workload-type".to_string());
+    ctx_intent
+        .metadata
+        .insert("agent_id".to_string(), agent_id.to_string());
+    ctx_intent
+        .metadata
+        .insert("context_key".to_string(), "workload-type".to_string());
     scheduler.route_intent(ctx_intent).await.unwrap();
 
     let agent = scheduler.get_agent(agent_id).await.unwrap();
     assert_eq!(agent.context_key.as_deref(), Some("workload-type"));
-    assert_eq!(ctx_mgr.get("workload-type").unwrap(), b"gpu-inference".to_vec());
+    assert_eq!(
+        ctx_mgr.get("workload-type").unwrap(),
+        b"gpu-inference".to_vec()
+    );
 
     // Phase 4: Compute scheduler can use context-informed placement
     let compute = ComputeScheduler::new();
     let candidates = [
-        (ComputeTarget::Cpu, ComputeProfile { latency_ms: 100.0, power_watts: 200.0, cost_units: 50.0 }),
-        (ComputeTarget::Gpu, ComputeProfile { latency_ms: 1.0, power_watts: 150.0, cost_units: 20.0 }),
+        (
+            ComputeTarget::Cpu,
+            ComputeProfile {
+                latency_ms: 100.0,
+                power_watts: 200.0,
+                cost_units: 50.0,
+            },
+        ),
+        (
+            ComputeTarget::Gpu,
+            ComputeProfile {
+                latency_ms: 1.0,
+                power_watts: 150.0,
+                cost_units: 20.0,
+            },
+        ),
     ];
     // Default weights favor latency (0.8), so GPU with 1ms wins
     let best = compute.choose_best(&candidates).unwrap();
@@ -362,7 +417,11 @@ async fn int_supervisor_mass_recovery_across_crates() {
     }
 
     let all_running = scheduler.get_running_agents().await;
-    assert_eq!(all_running.len(), 10, "all 10 agents should be running after recovery");
+    assert_eq!(
+        all_running.len(),
+        10,
+        "all 10 agents should be running after recovery"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -376,10 +435,34 @@ async fn int_intent_bus_subscriber_filtering() {
     let mut sub_high = bus.subscribe();
 
     let intents = [
-        Intent::new("i1", IntentType::Command, "spawn", IntentPriority::High, "src1"),
-        Intent::new("i2", IntentType::Event, "status", IntentPriority::Low, "src2"),
-        Intent::new("i3", IntentType::Structured, "update", IntentPriority::High, "src3"),
-        Intent::new("i4", IntentType::NaturalLanguage, "hello", IntentPriority::Medium, "src4"),
+        Intent::new(
+            "i1",
+            IntentType::Command,
+            "spawn",
+            IntentPriority::High,
+            "src1",
+        ),
+        Intent::new(
+            "i2",
+            IntentType::Event,
+            "status",
+            IntentPriority::Low,
+            "src2",
+        ),
+        Intent::new(
+            "i3",
+            IntentType::Structured,
+            "update",
+            IntentPriority::High,
+            "src3",
+        ),
+        Intent::new(
+            "i4",
+            IntentType::NaturalLanguage,
+            "hello",
+            IntentPriority::Medium,
+            "src4",
+        ),
     ];
 
     for intent in &intents {
@@ -525,7 +608,9 @@ async fn int_context_tier_migration_with_agent() {
     // All 5 entries should exist (some in warm/cold)
     for i in 0..5 {
         let key = format!("ctx-{}", i);
-        let val = ctx_mgr_small.get(&key).expect(&format!("{} should exist", key));
+        let val = ctx_mgr_small
+            .get(&key)
+            .expect(&format!("{} should exist", key));
         assert_eq!(val, format!("value-{}", i).into_bytes());
     }
 

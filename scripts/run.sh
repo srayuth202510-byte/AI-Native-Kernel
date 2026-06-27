@@ -23,6 +23,11 @@ run_cli() {
     rtk cargo run --release --bin ank-cli -- "$@"
 }
 
+run_tui() {
+    echo "==> Starting ANK TUI Dashboard..."
+    rtk cargo run --release --bin ank-tui -- "$@"
+}
+
 case "$MODE" in
     companion)
         build
@@ -34,14 +39,20 @@ case "$MODE" in
         shift 2>/dev/null || true
         run_cli "$@"
         ;;
+    tui)
+        build
+        shift 2>/dev/null || true
+        run_tui "$@"
+        ;;
     build)
         build
         ;;
     *)
-        echo "Usage: $0 [companion|cli|build] [args...]"
+        echo "Usage: $0 [companion|cli|tui|build] [args...]"
         echo ""
         echo "  companion  (default) Build & run the companion daemon"
         echo "  cli        Build & run the ANK CLI"
+        echo "  tui        Build & run the TUI dashboard"
         echo "  build      Build only"
         exit 1
         ;;
