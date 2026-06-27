@@ -1,6 +1,16 @@
 use std::path::Path;
 use std::process::Command;
 
+fn resolve_tool(candidates: &[&str]) -> Option<String> {
+    for candidate in candidates {
+        if Command::new(candidate).arg("--version").output().is_ok() {
+            return Some((*candidate).to_string());
+        }
+    }
+
+    None
+}
+
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let bpf_out_dir = Path::new(&out_dir).join("bpf");
@@ -26,15 +36,21 @@ fn main() {
     );
 
     let vmlinux_h = bpf_out_dir.join("vmlinux.h");
+    let clang = resolve_tool(&["clang", "clang-18", "clang-17"]);
+    let bpftool = resolve_tool(&["bpftool"]);
 
     let can_compile = Path::new("/sys/kernel/btf/vmlinux").exists()
         && Path::new(&bpf_inc).join("bpf/bpf_helpers.h").exists()
-        && Command::new("clang").arg("--version").output().is_ok()
+        && clang.is_some()
+        && bpftool.is_some()
         && bpf_sources.iter().all(|s| Path::new(s).exists());
 
     if can_compile {
+        let clang = clang.expect("clang should be resolved");
+        let bpftool = bpftool.expect("bpftool should be resolved");
+
         if !vmlinux_h.exists() {
-            let vmlinux_output = Command::new("bpftool")
+            let vmlinux_output = Command::new(&bpftool)
                 .args([
                     "btf",
                     "dump",
@@ -64,7 +80,7 @@ fn main() {
             let stem = Path::new(src).file_stem().unwrap().to_str().unwrap();
             let bpf_o_dst = bpf_out_dir.join(format!("{}.bpf.o", stem));
 
-            let clang_status = Command::new("clang")
+            let clang_status = Command::new(&clang)
                 .args([
                     "-O2",
                     "-target",
@@ -97,6 +113,12 @@ fn main() {
         }
     } else {
         println!("cargo:warning=eBPF compilation prerequisites not met — using simulation mode");
+        if clang.is_none() {
+            println!("cargo:warning=clang/clang-18/clang-17 not found in PATH");
+        }
+        if bpftool.is_none() {
+            println!("cargo:warning=bpftool not found in PATH");
+        }
         print_bpf_disabled_instructions();
     }
 }
