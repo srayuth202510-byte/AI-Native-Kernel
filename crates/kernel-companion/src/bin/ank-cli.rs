@@ -7,6 +7,7 @@ use tokio::net::UnixStream;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
+    // หากไม่มีการระบุอาร์กิวเมนต์ที่จำเป็น ให้พิมพ์คำแนะนำการใช้งาน CLI
     if args.len() < 2 {
         println!("AI-Native Kernel CLI (ank-cli)");
         println!("Usage:");
@@ -20,6 +21,7 @@ async fn main() -> Result<()> {
     let cmd = &args[1];
     let payload = if args.len() > 2 { &args[2] } else { "{}" };
 
+    // สร้างโครงสร้าง Intent สำหรับส่งเข้าไปยัง IntentBus
     let mut intent = Intent::new(
         uuid::Uuid::new_v4().to_string(),
         IntentType::Command,
@@ -28,6 +30,7 @@ async fn main() -> Result<()> {
         "ank-cli",
     );
 
+    // แมตช์คำสั่งควบคุมต่างๆ เพื่อแพ็คข้อมูลลงใน Intent อย่างเหมาะสม
     match cmd.as_str() {
         "spawn-agent" => {
             if args.len() > 2 {
@@ -42,6 +45,7 @@ async fn main() -> Result<()> {
                 println!("Usage: ank-cli set-threshold <rate_threshold> <deny_threshold>");
                 return Ok(());
             }
+            // เก็บค่า Threshold ที่จะตั้งค่าส่งต่อไปยัง TCellAgent ผ่าน metadata
             intent
                 .metadata
                 .insert("rate".to_string(), args[2].to_string());
@@ -50,7 +54,7 @@ async fn main() -> Result<()> {
                 .insert("deny".to_string(), args[3].to_string());
         }
         _ => {
-            // Default behavior: just pass command name as payload
+            // คำสั่งอื่นๆ นอกเหนือจากนี้ ให้ส่งเป็น payload ทั่วไป
             if args.len() > 2 {
                 intent
                     .metadata
@@ -60,17 +64,18 @@ async fn main() -> Result<()> {
     }
 
     let socket_path = "/tmp/ank-companion.sock";
+    // เชื่อมต่อเข้ากับ Unix Domain Socket Server ของ Kernel Companion
     let mut stream = UnixStream::connect(socket_path)
         .await
         .with_context(|| format!("Failed to connect to UDS at {}", socket_path))?;
 
-    // Send intent
+    // แปลง Intent เป็น JSON และส่งไปทางซ็อกเก็ต
     let json = serde_json::to_string(&intent)?;
     stream.write_all(json.as_bytes()).await?;
     stream.write_all(b"\n").await?;
     stream.flush().await?;
 
-    // Check if it's a query command that expects a response
+    // หากเป็นคำสั่งสืบค้นข้อมูลหรือคำสั่งตั้งค่า ให้รอรับผลการตอบกลับจาก Companion
     if cmd == "status" || cmd == "list-quarantine" || cmd == "set-threshold" {
         let (reader, _) = stream.split();
         let mut buf_reader = BufReader::new(reader);
@@ -78,10 +83,10 @@ async fn main() -> Result<()> {
 
         if buf_reader.read_line(&mut response_line).await? > 0 {
             if let Ok(json_resp) = serde_json::from_str::<serde_json::Value>(&response_line) {
-                // Print in a beautiful formatted way
+                // พิมพ์ผลลัพธ์ที่ได้จากการตอบกลับของ UDS Server เป็นภาษาไทยและฟอร์แมตสวยงาม
                 if cmd == "status" {
                     println!("=========================================");
-                    println!("          AI-Native Kernel Status");
+                    println!("          สถานะระบบ AI-Native Kernel");
                     println!("=========================================");
                     println!(
                         "Companion Daemon : {}",
@@ -118,24 +123,24 @@ async fn main() -> Result<()> {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    println!("Quarantined Process IDs: {:?}", pids);
+                    println!("รายชื่อ PID ที่ถูกกักกัน (Quarantined Process): {:?}", pids);
                 } else if cmd == "set-threshold" {
                     let success = json_resp["success"].as_bool().unwrap_or(false);
                     let msg = json_resp["message"].as_str().unwrap_or("");
                     if success {
-                        println!("Success: {}", msg);
+                        println!("สำเร็จ: {}", msg);
                     } else {
-                        println!("Error: {}", msg);
+                        println!("เกิดข้อผิดพลาด: {}", msg);
                     }
                 }
             } else {
-                println!("Response: {}", response_line.trim());
+                println!("ผลการตอบกลับ: {}", response_line.trim());
             }
         } else {
-            println!("No response received from companion daemon.");
+            println!("ไม่ได้รับการตอบกลับจากระบบ Daemon");
         }
     } else {
-        println!("Intent sent successfully: {}", cmd);
+        println!("ส่ง Intent สำเร็จ: {}", cmd);
     }
 
     Ok(())

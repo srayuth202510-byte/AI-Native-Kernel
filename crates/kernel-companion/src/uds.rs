@@ -10,6 +10,7 @@ use tokio::net::UnixListener;
 use tracing::{debug, error, info};
 
 /// เริ่มต้น Unix Domain Socket Server สำหรับรับ Intent จากภายนอก
+/// และรองรับการตอบกลับข้อมูลสืบค้นหรือคำสั่งควบคุมความปลอดภัยของ CLI แบบสองทาง (Bidirectional)
 pub async fn start_uds_server(
     intent_bus: Arc<IntentBus>,
     tcell: Option<Arc<TCellAgent>>,
@@ -61,6 +62,7 @@ pub async fn start_uds_server(
                                                 // ตรวจจับคำสั่งดึงข้อมูล หรือควบคุมความปลอดภัยของ CLI
                                                 if intent.intent_type == IntentType::Command {
                                                     let cmd = intent.payload.as_str();
+                                                    // กรณีคำสั่งดึงสถานะโดยรวม
                                                     if cmd == "status" {
                                                         let mut running_agents = 0;
                                                         let mut quarantined_pids = Vec::new();
@@ -86,6 +88,7 @@ pub async fn start_uds_server(
                                                         let _ = writer.write_all(resp_json.as_bytes()).await;
                                                         let _ = writer.flush().await;
                                                         continue;
+                                                    // กรณีดึงรายการ PID ที่กำลังโดนกักกัน
                                                     } else if cmd == "list-quarantine" {
                                                         let mut pids = Vec::new();
                                                         if let Some(ref tc) = tcell {
@@ -98,6 +101,7 @@ pub async fn start_uds_server(
                                                         let _ = writer.write_all(resp_json.as_bytes()).await;
                                                         let _ = writer.flush().await;
                                                         continue;
+                                                    // กรณีตั้งค่า Threshold ความปลอดภัยของ T-Cell
                                                     } else if cmd == "set-threshold" {
                                                         let rate = intent.metadata.get("rate").and_then(|r| r.parse::<u64>().ok());
                                                         let deny = intent.metadata.get("deny").and_then(|d| d.parse::<u32>().ok());
@@ -121,6 +125,7 @@ pub async fn start_uds_server(
                                                     }
                                                 }
 
+                                                // สำหรับคำสั่งธรรมดาทั่วไป ให้ส่งเข้าสู่บัส Intent เพื่อโปรเซสตามปกติ
                                                 if let Err(e) = bus.publish(intent).await {
                                                     error!("Failed to publish UDS intent: {}", e);
                                                 }
