@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
+use compute_scheduler::ComputeScheduler;
+use compute_scheduler::placement::PlacementPolicy;
+use compute_scheduler::placement::WorkloadClass;
 use intent_bus::{Intent, IntentPriority, IntentType};
 use std::env;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use compute_scheduler::ComputeScheduler;
-use compute_scheduler::placement::WorkloadClass;
-use compute_scheduler::placement::PlacementPolicy;
 
 #[tokio::main]
 async fn main() -> Result<()> {
