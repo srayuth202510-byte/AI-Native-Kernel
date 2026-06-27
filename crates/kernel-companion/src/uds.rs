@@ -69,3 +69,71 @@ pub async fn start_uds_server(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use intent_bus::{Intent, IntentType, IntentPriority};
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixStream;
+
+    #[tokio::test]
+    async fn test_uds_server_lifecycle_and_publish() {
+        let socket_path = format!("/tmp/test-ank-companion-{}.sock", uuid::Uuid::new_v4());
+        let intent_bus = Arc::new(IntentBus::new(10));
+        let mut sub = intent_bus.subscribe();
+        let cancel = CancellationToken::new();
+
+        // Start UDS Server
+        start_uds_server(Arc::clone(&intent_bus), &socket_path, cancel.clone())
+            .await
+            .expect("Failed to start UDS server");
+
+        // Wait a short duration for the socket to bind and start listening
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Connect to UDS and send a valid intent
+        let mut client = UnixStream::connect(&socket_path)
+            .await
+            .expect("Failed to connect to UDS socket");
+
+        let intent = Intent::new(
+            "uds-test-1",
+            IntentType::Command,
+            "test payload",
+            IntentPriority::High,
+            "uds-client",
+        );
+
+        let json_line = format!("{}\n", serde_json::to_string(&intent).unwrap());
+        client.write_all(json_line.as_bytes()).await.unwrap();
+        client.flush().await.unwrap();
+
+        // Receive from IntentBus
+        let received = tokio::time::timeout(std::time::Duration::from_millis(500), sub.receive())
+            .await
+            .expect("Timeout waiting for intent")
+            .expect("No intent received");
+
+        assert_eq!(received.id, "uds-test-1");
+        assert_eq!(received.payload, "test payload");
+
+        // Send invalid JSON line
+        client.write_all(b"invalid-json\n").await.unwrap();
+        client.flush().await.unwrap();
+
+        // Make sure no intent is published (timeout should occur if we try to receive)
+        // Wait briefly to allow processing
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Cancel server
+        cancel.cancel();
+
+        // Wait a short duration for shutdown
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+}
+

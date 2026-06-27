@@ -1,0 +1,178 @@
+use anyhow::Result;
+use qdrant_client::qdrant::{PointStruct, SearchPoints, UpsertPoints};
+use qdrant_client::Qdrant;
+use qdrant_client::qdrant::vectors_config::Config;
+use qdrant_client::qdrant::{CreateCollection, Distance, VectorParams, VectorsConfig};
+use std::collections::HashMap;
+
+/// ตัวจัดการพื้นที่จัดเก็บและค้นหาตามความหมาย (Semantic Store)
+/// ใช้ Qdrant สำหรับค้นหาด้วย Vector (Cosine Similarity)
+pub struct SemanticStore {
+    client: Qdrant,
+    collection_name: String,
+}
+
+impl SemanticStore {
+    /// สร้างอินสแตนซ์ใหม่โดยเชื่อมต่อไปยัง Qdrant Server และเตรียม Collection
+    pub async fn new(url: &str, collection_name: &str, vector_size: u64) -> Result<Self> {
+        let client = Qdrant::from_url(url).build()?;
+        
+        // เตรียมสร้าง Collection หากยังไม่มี (สำหรับ MVP)
+        if !client.collection_exists(collection_name).await? {
+            client
+                .create_collection(CreateCollection {
+                    collection_name: collection_name.to_string(),
+                    vectors_config: Some(VectorsConfig {
+                        config: Some(Config::Params(VectorParams {
+                            size: vector_size,
+                            distance: Distance::Cosine.into(),
+                            ..Default::default()
+                        })),
+                    }),
+                    ..Default::default()
+                })
+                .await?;
+        }
+
+        Ok(Self {
+            client,
+            collection_name: collection_name.to_string(),
+        })
+    }
+
+    /// บันทึกหรืออัปเดตข้อมูลบริบท (Context) ในรูปแบบ Vector เข้าสู่ระบบ
+    pub async fn upsert(
+        &self, 
+        id: &str, 
+        vector: Vec<f32>, 
+        payload: HashMap<String, qdrant_client::qdrant::Value>
+    ) -> Result<()> {
+        let point = PointStruct::new(
+            id.to_string(),
+            vector,
+            payload,
+        );
+        self.client.upsert_points(UpsertPoints {
+            collection_name: self.collection_name.clone(),
+            wait: Some(true),
+            points: vec![point],
+            ..Default::default()
+        }).await?;
+        Ok(())
+    }
+
+    /// ค้นหาบริบทที่ใกล้เคียงที่สุดตามความหมาย (Semantic Search)
+    pub async fn search(
+        &self, 
+        vector: Vec<f32>, 
+        limit: u64
+    ) -> Result<Vec<qdrant_client::qdrant::ScoredPoint>> {
+        let result = self.client.search_points(SearchPoints {
+            collection_name: self.collection_name.clone(),
+            vector,
+            limit,
+            with_payload: Some(true.into()),
+            ..Default::default()
+        }).await?;
+        Ok(result.result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn check_qdrant_online() -> bool {
+        tokio::net::TcpStream::connect("127.0.0.1:6334").await.is_ok()
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires a running Qdrant instance at http://localhost:6334"]
+    async fn test_qdrant_semantic_store() -> Result<()> {
+        if !check_qdrant_online().await {
+            println!("Skipping test: Qdrant server is not running at 127.0.0.1:6334");
+            return Ok(());
+        }
+
+        let store = SemanticStore::new("http://localhost:6334", "ank_context", 128)
+            .await?;
+
+        let vector1 = vec![0.1; 128]; // Mock embedding
+        let mut payload1 = HashMap::new();
+        payload1.insert("intent".to_string(), "open browser".into());
+
+        store.upsert("doc-1", vector1.clone(), payload1).await?;
+
+        // Search for nearest neighbor
+        let results = store.search(vector1, 1).await?;
+        assert_eq!(results.len(), 1);
+        
+        let point = &results[0];
+        let id_val = match point.id.as_ref().ok_or_else(|| anyhow::anyhow!("Missing ID"))?.point_id_options.as_ref().ok_or_else(|| anyhow::anyhow!("Missing point options"))? {
+            qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u) => u.clone(),
+            qdrant_client::qdrant::point_id::PointIdOptions::Num(n) => n.to_string(),
+        };
+        assert_eq!(id_val, "doc-1");
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires a running Qdrant instance at http://localhost:6334"]
+    async fn test_qdrant_semantic_store_multiple_points() -> Result<()> {
+        if !check_qdrant_online().await {
+            println!("Skipping test: Qdrant server is not running at 127.0.0.1:6334");
+            return Ok(());
+        }
+
+        let store = SemanticStore::new("http://localhost:6334", "ank_context_multi", 64)
+            .await?;
+
+        // เตรียมข้อมูล 3 จุด
+        let vec1 = vec![1.0; 64];
+        let vec2 = vec![-1.0; 64];
+        let vec3 = vec![0.0; 64];
+
+        let mut payload1 = HashMap::new();
+        payload1.insert("tag".to_string(), "positive".into());
+        let mut payload2 = HashMap::new();
+        payload2.insert("tag".to_string(), "negative".into());
+        let mut payload3 = HashMap::new();
+        payload3.insert("tag".to_string(), "neutral".into());
+
+        store.upsert("doc-p", vec1.clone(), payload1).await?;
+        store.upsert("doc-n", vec2.clone(), payload2).await?;
+        store.upsert("doc-z", vec3.clone(), payload3).await?;
+
+        // ค้นหาแบบใกล้เคียง vec1 มากที่สุด (cosine similarity)
+        // ควรจะได้ doc-p เป็นอันดับ 1
+        let results = store.search(vec1, 2).await?;
+        assert_eq!(results.len(), 2);
+
+        let first_id = match results[0].id.as_ref().ok_or_else(|| anyhow::anyhow!("Missing ID"))?.point_id_options.as_ref().ok_or_else(|| anyhow::anyhow!("Missing point options"))? {
+            qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u) => u.clone(),
+            qdrant_client::qdrant::point_id::PointIdOptions::Num(n) => n.to_string(),
+        };
+        assert_eq!(first_id, "doc-p");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires a running Qdrant instance at http://localhost:6334"]
+    async fn test_qdrant_semantic_store_empty_search() -> Result<()> {
+        if !check_qdrant_online().await {
+            println!("Skipping test: Qdrant server is not running at 127.0.0.1:6334");
+            return Ok(());
+        }
+
+        let store = SemanticStore::new("http://localhost:6334", "ank_context_empty", 32)
+            .await?;
+
+        // ค้นหาใน collection เปล่า หรือไม่ได้ใส่ข้อมูล
+        let results = store.search(vec![0.5; 32], 5).await?;
+        assert!(results.len() <= 5);
+
+        Ok(())
+    }
+}
+

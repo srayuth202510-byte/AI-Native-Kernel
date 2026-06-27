@@ -6,6 +6,7 @@
 pub mod cold;
 pub mod hot;
 pub mod warm;
+pub mod semantic;
 
 use crate::cold::ColdStore;
 use crate::hot::HotStore;
