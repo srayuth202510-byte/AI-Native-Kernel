@@ -336,6 +336,9 @@ impl KernelCompanion {
             let cancel_uds = tokio_util_cancel::CancellationToken::new();
             let _ = uds::start_uds_server(
                 Arc::clone(&self.intent_bus),
+                Some(Arc::clone(&self.tcell)),
+                Some(Arc::clone(&self.lsm_engine)),
+                Some(Arc::clone(&self.agent_scheduler)),
                 &self.config.kernel_companion.uds_socket_path,
                 cancel_uds,
             )

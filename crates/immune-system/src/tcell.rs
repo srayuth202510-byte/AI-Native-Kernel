@@ -209,6 +209,11 @@ impl TCellAgent {
         debug!(pid, "T-Cell: quarantine released");
     }
 
+    /// ดึงรายการ PID ทั้งหมดที่อยู่ระหว่างการกักกัน (Quarantined PIDs)
+    pub async fn get_quarantined_pids(&self) -> Vec<u32> {
+        self.quarantined.read().await.keys().copied().collect()
+    }
+
     /// ปลดกักกัน process ทั้งหมดที่ถูกกักกันเกินระยะเวลาที่กำหนด (Expired quarantine auto-release)
     pub async fn release_expired_quarantine(&self, duration: Duration) -> Vec<u32> {
         let mut q = self.quarantined.write().await;

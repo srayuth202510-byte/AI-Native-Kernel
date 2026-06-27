@@ -52,6 +52,16 @@ impl LsmPolicyEngine {
             .insert(syscall);
     }
 
+    /// ดึงรายการ syscall ทั้งหมดที่ถูกบล็อคโดยแอนติบอดี
+    pub fn get_blocked_syscalls(&self) -> Vec<String> {
+        self.blocked_syscalls
+            .read()
+            .expect("blocked_syscalls lock poisoned")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     /// ตรวจสอบ syscall และตัดสินใจว่าจะอนุญาตหรือปฏิเสธตามกฎที่กำหนดไว้
     /// 1. ตรวจสอบ Blocklist (Immune System Antibodies) — DENY ถ้าตรง
     /// 2. ตรวจสอบ Allowlist — ALLOW ถ้าตรง
