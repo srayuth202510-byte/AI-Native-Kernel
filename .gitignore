@@ -1,5 +1,6 @@
 # Build artifacts
 /target/
+/target2/
 /crates/kernel-companion/target/
 /.target-test/
 /.tools/
