@@ -88,7 +88,7 @@ fn main() {
                 );
                 all_succeeded = false;
             } else {
-                println!("cargo:warning=eBPF {stem} compiled successfully ✓");
+                println!("eBPF {stem} compiled successfully ✓");
             }
         }
 
