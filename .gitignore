@@ -1,5 +1,6 @@
 # Build artifacts
 /target/
+/crates/kernel-companion/target/
 /.target-test/
 /.tools/
 /.cargo-home/
