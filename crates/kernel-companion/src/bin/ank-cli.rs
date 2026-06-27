@@ -18,6 +18,7 @@ async fn main() -> Result<()> {
         println!("  ank-cli status                  Gets system & immune stats");
         println!("  ank-cli list-quarantine         Lists currently quarantined process IDs");
         println!("  ank-cli set-threshold <r> <d>   Sets T-Cell rate & deny thresholds");
+        println!("  ank-cli set-lsm-profile <name>  Switches active LSM profile");
         return Ok(());
     }
 
@@ -55,6 +56,16 @@ async fn main() -> Result<()> {
             intent
                 .metadata
                 .insert("deny".to_string(), args[3].to_string());
+        }
+        "set-lsm-profile" => {
+            if args.len() < 3 {
+                println!("Usage: ank-cli set-lsm-profile <profile>");
+                println!("available: strict|runtime|dev");
+                return Ok(());
+            }
+            intent
+                .metadata
+                .insert("profile".to_string(), args[2].to_string());
         }
         "place" => {
             // คำสั่งวางงานบนอุปกรณ์ที่เหมาะสมตามสถิติจริง
@@ -104,7 +115,11 @@ async fn main() -> Result<()> {
     stream.flush().await?;
 
     // หากเป็นคำสั่งสืบค้นข้อมูลหรือคำสั่งตั้งค่า ให้รอรับผลการตอบกลับจาก Companion
-    if cmd == "status" || cmd == "list-quarantine" || cmd == "set-threshold" {
+    if cmd == "status"
+        || cmd == "list-quarantine"
+        || cmd == "set-threshold"
+        || cmd == "set-lsm-profile"
+    {
         let (reader, _) = stream.split();
         let mut buf_reader = BufReader::new(reader);
         let mut response_line = String::new();
@@ -185,6 +200,28 @@ async fn main() -> Result<()> {
                     } else {
                         println!("เกิดข้อผิดพลาด: {}", msg);
                     }
+                } else if cmd == "set-lsm-profile" {
+                    let success = json_resp["success"].as_bool().unwrap_or(false);
+                    let msg = json_resp["message"].as_str().unwrap_or("");
+                    let active = json_resp["active_lsm_profile"]
+                        .as_str()
+                        .unwrap_or("unknown");
+                    let count = json_resp["allowed_syscalls_count"].as_u64().unwrap_or(0);
+                    let profiles = json_resp["available_profiles"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|v| v.as_str().unwrap_or("").to_string())
+                                .collect::<Vec<String>>()
+                        })
+                        .unwrap_or_default();
+                    if success {
+                        println!("สำเร็จ: {}", msg);
+                    } else {
+                        println!("เกิดข้อผิดพลาด: {}", msg);
+                    }
+                    println!("LSM Profile      : {} ({} allowed syscalls)", active, count);
+                    println!("Available Profiles: {:?}", profiles);
                 }
             } else {
                 println!("ผลการตอบกลับ: {}", response_line.trim());

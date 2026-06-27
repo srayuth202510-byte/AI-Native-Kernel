@@ -144,6 +144,47 @@ pub async fn start_uds_server(
                                                         let _ = writer.write_all(resp_json.as_bytes()).await;
                                                         let _ = writer.flush().await;
                                                         continue;
+                                                    // กรณีสลับ LSM allowlist profile runtime
+                                                    } else if cmd == "set-lsm-profile" {
+                                                        let requested_profile = intent.metadata.get("profile").cloned();
+                                                        let mut success = false;
+                                                        let mut message = String::from("Missing profile metadata");
+                                                        let mut active_lsm_profile = String::from("unknown");
+                                                        let mut allowed_syscalls_count = 0usize;
+                                                        let mut available_profiles = Vec::new();
+
+                                                        if let Some(profile) = requested_profile {
+                                                            if let Some(ref l) = lsm {
+                                                                available_profiles = l.available_profiles();
+                                                                match l.set_active_profile(&profile) {
+                                                                    Ok(()) => {
+                                                                        success = true;
+                                                                        message = format!("LSM profile switched to {profile}");
+                                                                        active_lsm_profile = l.active_profile_name();
+                                                                        allowed_syscalls_count = l.get_allowed_syscalls().len();
+                                                                    }
+                                                                    Err(err) => {
+                                                                        message = err.to_string();
+                                                                        active_lsm_profile = l.active_profile_name();
+                                                                        allowed_syscalls_count = l.get_allowed_syscalls().len();
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                message = "LSM engine unavailable".to_string();
+                                                            }
+                                                        }
+
+                                                        let response = serde_json::json!({
+                                                            "success": success,
+                                                            "message": message,
+                                                            "active_lsm_profile": active_lsm_profile,
+                                                            "allowed_syscalls_count": allowed_syscalls_count,
+                                                            "available_profiles": available_profiles,
+                                                        });
+                                                        let resp_json = format!("{}\n", response);
+                                                        let _ = writer.write_all(resp_json.as_bytes()).await;
+                                                        let _ = writer.flush().await;
+                                                        continue;
                                                     }
                                                 }
 

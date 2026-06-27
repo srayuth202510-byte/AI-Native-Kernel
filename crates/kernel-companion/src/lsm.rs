@@ -2,7 +2,7 @@ use crate::config::LsmConfig;
 use crate::ebpf::load_bpf_o;
 use crate::observability::kernel_metrics;
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, info, instrument, warn};
@@ -16,6 +16,9 @@ pub enum LsmError {
     /// ล้มเหลวในขั้นตอนการแนบ Hook เข้ากับ Kernel
     #[error("attachment failed")]
     AttachmentFailed,
+    /// profile ที่ร้องขอไม่มีอยู่ใน config
+    #[error("unknown profile: {0}")]
+    UnknownProfile(String),
 }
 
 /// การตัดสินใจเชิงนโยบายความปลอดภัยของ LSM
@@ -33,9 +36,9 @@ pub struct LsmPolicyEngine {
     /// ผลการตัดสินใจเริ่มต้นกรณีไม่ตรงกับเงื่อนไขใด ๆ (Fail-closed: DENY)
     default_decision: LsmDecision,
     /// profile ที่ active อยู่จาก config
-    active_profile: String,
-    /// allowlist ที่ resolve แล้วจาก config profile
-    allowed_syscalls: std::sync::RwLock<HashSet<String>>,
+    active_profile: std::sync::RwLock<String>,
+    /// profiles ที่ resolve แล้วจาก config
+    profiles: std::sync::RwLock<BTreeMap<String, HashSet<String>>>,
     /// รายชื่อ syscall ที่ถูกบล็อกโดย Immune System antibodies (deny rules)
     blocked_syscalls: std::sync::RwLock<std::collections::HashSet<String>>,
 }
@@ -50,10 +53,20 @@ impl LsmPolicyEngine {
     /// สร้างอินสแตนซ์ของ LSM Policy Engine จาก config profile ที่กำหนด
     #[must_use]
     pub fn with_config(config: &LsmConfig) -> Self {
+        let profiles = config
+            .profiles
+            .iter()
+            .map(|(name, profile)| {
+                (
+                    name.clone(),
+                    profile.allowed_syscalls.iter().cloned().collect(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         Self {
             default_decision: LsmDecision::Deny,
-            active_profile: config.active_profile_name().to_string(),
-            allowed_syscalls: std::sync::RwLock::new(config.allowed_syscalls()),
+            active_profile: std::sync::RwLock::new(config.active_profile_name().to_string()),
+            profiles: std::sync::RwLock::new(profiles),
             blocked_syscalls: std::sync::RwLock::new(std::collections::HashSet::new()),
         }
     }
@@ -86,16 +99,48 @@ impl LsmPolicyEngine {
     /// ดึง allowlist ที่ active อยู่ในรูปแบบ snapshot
     #[must_use]
     pub fn get_allowed_syscalls(&self) -> HashSet<String> {
-        self.allowed_syscalls
+        let active_profile = self.active_profile_name();
+        self.profiles
             .read()
-            .expect("allowed_syscalls lock poisoned")
-            .clone()
+            .expect("profiles lock poisoned")
+            .get(active_profile.as_str())
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// คืนชื่อ profile ที่ active อยู่
     #[must_use]
-    pub fn active_profile_name(&self) -> &str {
-        &self.active_profile
+    pub fn active_profile_name(&self) -> String {
+        self.active_profile
+            .read()
+            .expect("active_profile lock poisoned")
+            .clone()
+    }
+
+    /// รายชื่อ profile ทั้งหมดที่มีอยู่ใน config
+    #[must_use]
+    pub fn available_profiles(&self) -> Vec<String> {
+        self.profiles
+            .read()
+            .expect("profiles lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// สลับ active profile แบบ runtime
+    pub fn set_active_profile(&self, profile: &str) -> std::result::Result<(), LsmError> {
+        let profiles = self.profiles.read().expect("profiles lock poisoned");
+        if !profiles.contains_key(profile) {
+            return Err(LsmError::UnknownProfile(profile.to_string()));
+        }
+        drop(profiles);
+
+        *self
+            .active_profile
+            .write()
+            .expect("active_profile lock poisoned") = profile.to_string();
+        Ok(())
     }
 
     /// ตรวจสอบ syscall และตัดสินใจว่าจะอนุญาตหรือปฏิเสธตามกฎที่กำหนดไว้
@@ -121,12 +166,7 @@ impl LsmPolicyEngine {
             return LsmDecision::Deny;
         }
 
-        if self
-            .allowed_syscalls
-            .read()
-            .expect("allowed_syscalls lock poisoned")
-            .contains(syscall)
-        {
+        if self.get_allowed_syscalls().contains(syscall) {
             metrics.record_lsm_decision("allow", "allowlist");
             debug!(decision = "allow", "อนุญาต syscall ตามนโยบาย Zero-Trust");
             return LsmDecision::Allow;
@@ -401,6 +441,7 @@ mod tests {
         let config = LsmConfig::default();
         let engine = LsmPolicyEngine::with_config(&config);
         assert_eq!(engine.active_profile_name(), "runtime");
+        assert!(engine.available_profiles().contains(&"runtime".to_string()));
     }
 
     #[test]
@@ -410,5 +451,29 @@ mod tests {
         let engine = LsmPolicyEngine::with_config(&config);
         assert_eq!(engine.decision_for_syscall("socket"), LsmDecision::Deny);
         assert_eq!(engine.decision_for_syscall("read"), LsmDecision::Allow);
+    }
+
+    #[test]
+    fn switch_profile_updates_allowlist_runtime() {
+        let engine = LsmPolicyEngine::new();
+        assert_eq!(engine.active_profile_name(), "runtime");
+        engine
+            .set_active_profile("strict")
+            .expect("strict profile should exist");
+        assert_eq!(engine.active_profile_name(), "strict");
+        assert_eq!(engine.decision_for_syscall("socket"), LsmDecision::Deny);
+        assert_eq!(engine.decision_for_syscall("read"), LsmDecision::Allow);
+    }
+
+    #[test]
+    fn switch_profile_rejects_unknown_profile() {
+        let engine = LsmPolicyEngine::new();
+        let err = engine
+            .set_active_profile("definitely-not-a-profile")
+            .expect_err("unknown profile should be rejected");
+        assert_eq!(
+            err,
+            LsmError::UnknownProfile("definitely-not-a-profile".to_string())
+        );
     }
 }
