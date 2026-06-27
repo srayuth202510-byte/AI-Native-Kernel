@@ -10,6 +10,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
 };
+use intent_bus::{Intent, IntentPriority, IntentType};
 use serde_json::Value;
 use std::io::stdout;
 use std::time::Duration;
@@ -75,13 +76,13 @@ async fn fetch_status() -> Result<DashboardData, String> {
         .await
         .map_err(|e| format!("Connection failed: {}", e))?;
 
-    let intent = serde_json::json!({
-        "id": "tui-status",
-        "intent_type": "Command",
-        "payload": "status",
-        "priority": "High",
-        "source": "ank-tui",
-    });
+    let intent = Intent::new(
+        "tui-status",
+        IntentType::Command,
+        "status",
+        IntentPriority::High,
+        "ank-tui",
+    );
 
     let json_str = serde_json::to_string(&intent).map_err(|e| e.to_string())?;
     stream
@@ -251,6 +252,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         blocked_syscalls: vec![],
         hardware: vec![],
     };
+
+    // Draw initial frame immediately so user sees "connecting..." right away
+    terminal.draw(|f| ui(f, &data))?;
 
     loop {
         // Fetch latest status
