@@ -2,85 +2,59 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: ["**"]
   pull_request:
-    branches: [ main ]
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: always
+    branches: ["**"]
 
 jobs:
-  check-and-test:
-    name: Check, Fmt, Clippy, and Test
+  build:
     runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential clang llvm libelf-dev pkg-config
-
-      - name: Set up Rust toolchain
+      - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly-2026-06-25
-          components: rust-src,rustfmt,clippy
-          target: x86_64-unknown-linux-gnu
-          cache: false
+          toolchain: stable
+          components: rustfmt, clippy
+          override: true
 
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo registry and binaries
+        uses: actions/cache@v3
         with:
-          key: ${{ runner.os }}-nightly-2026-06-25-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-      - name: Install bpf-linker
-        uses: taiki-e/install-action@v2
-        with:
-          tool: bpf-linker
+      # Install clang for eBPF compilation
+      - name: Install clang & llvm
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libelf-dev
 
-      - name: Run cargo fmt
+      - name: Verify formatting
         run: cargo fmt --all -- --check
 
-      - name: Run cargo check
-        run: cargo check --workspace --all-targets --locked
+      - name: Lint with Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Run cargo clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run tests
+        run: cargo test --workspace --verbose
 
-      - name: Run cargo test
-        run: cargo test --workspace --locked --verbose
+      - name: Build release binary
+        run: cargo build --release
 
-  audit:
-    name: Audit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Run cargo vet (supply‑chain audit)
+        uses: actions-rs/cargo@v1
         with:
-          toolchain: nightly-2026-06-25
-          cache: false
+          command: vet
 
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Run cargo audit (security scan)
+        uses: actions-rs/audit@v1
         with:
-          key: ${{ runner.os }}-audit-nightly-2026-06-25-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-
-      - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-audit
-
-      - name: Run cargo audit
-        run: cargo audit
+          command: audit
