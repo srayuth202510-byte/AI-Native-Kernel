@@ -395,18 +395,10 @@ fn default_tracepoint_program() -> String {
     "sys_enter_tp".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LsmProfileConfig {
     #[serde(default)]
     pub allowed_syscalls: Vec<String>,
-}
-
-impl Default for LsmProfileConfig {
-    fn default() -> Self {
-        Self {
-            allowed_syscalls: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

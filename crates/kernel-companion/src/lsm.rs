@@ -446,8 +446,10 @@ mod tests {
 
     #[test]
     fn strict_profile_does_not_allow_socket() {
-        let mut config = LsmConfig::default();
-        config.active_profile = "strict".to_string();
+        let config = LsmConfig {
+            active_profile: "strict".to_string(),
+            ..LsmConfig::default()
+        };
         let engine = LsmPolicyEngine::with_config(&config);
         assert_eq!(engine.decision_for_syscall("socket"), LsmDecision::Deny);
         assert_eq!(engine.decision_for_syscall("read"), LsmDecision::Allow);
