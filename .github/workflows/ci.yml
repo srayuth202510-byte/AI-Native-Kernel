@@ -54,7 +54,7 @@ jobs:
         with:
           command: vet
 
-- name: Install cargo-audit
-  run: cargo install cargo-audit --locked
-- name: Run cargo audit (security scan)
-  run: cargo audit
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit (security scan)
+        run: cargo audit
