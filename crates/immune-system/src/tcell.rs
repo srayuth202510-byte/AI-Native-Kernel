@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -11,6 +12,7 @@ use tracing::{debug, instrument, warn};
 /// - ติดตามอัตราการเรียก syscall ของแต่ละ Process
 /// - ตรวจจับ rate spike ที่ผิดปกติ (เช่น fork bomb, tight loop)
 /// - ตรวจจับ syscall ต้องห้ามที่ถูก deny ซ้ำๆ
+/// - ตรวจจับรูปแบบลำดับ syscall ที่น่าสงสัย (Suspicious Syscall Sequence)
 /// - สั่ง quarantine หรือ kill process ที่น่าสงสัย
 
 #[derive(Debug, Error)]
@@ -43,6 +45,10 @@ pub struct ProcessStats {
     pub window_start: Instant,
     /// syscall ล่าสุดที่เรียก
     pub last_syscall: Option<String>,
+    /// คะแนนความผิดปกติสะสม (Anomaly Score)
+    pub anomaly_score: f64,
+    /// ประวัติการเรียก syscall ล่าสุด 5 รายการ
+    pub syscall_history: VecDeque<String>,
 }
 
 impl Default for ProcessStats {
@@ -52,6 +58,8 @@ impl Default for ProcessStats {
             deny_count: 0,
             window_start: Instant::now(),
             last_syscall: None,
+            anomaly_score: 0.0,
+            syscall_history: VecDeque::with_capacity(5),
         }
     }
 }
@@ -61,9 +69,9 @@ pub struct TCellAgent {
     /// สถิติของแต่ละ PID
     stats: Arc<RwLock<HashMap<u32, ProcessStats>>>,
     /// จำนวน syscall ต่อวินาทีที่ถือว่าผิดปกติ
-    rate_threshold: u64,
+    rate_threshold: AtomicU64,
     /// จำนวน deny ติดต่อกันที่ถือว่าผิดปกติ
-    deny_threshold: u32,
+    deny_threshold: AtomicU32,
     /// รายการ PID ที่ถูก quarantine แล้ว
     quarantined: Arc<RwLock<HashMap<u32, Instant>>>,
 }
@@ -73,10 +81,20 @@ impl TCellAgent {
     pub fn new(rate_threshold: u64, deny_threshold: u32) -> Self {
         Self {
             stats: Arc::new(RwLock::new(HashMap::new())),
-            rate_threshold,
-            deny_threshold,
+            rate_threshold: AtomicU64::new(rate_threshold),
+            deny_threshold: AtomicU32::new(deny_threshold),
             quarantined: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// อัปเดตขีดจำกัดความปลอดภัยของ T-Cell แบบ thread-safe
+    pub fn update_thresholds(&self, rate_threshold: u64, deny_threshold: u32) {
+        self.rate_threshold.store(rate_threshold, Ordering::Relaxed);
+        self.deny_threshold.store(deny_threshold, Ordering::Relaxed);
+        debug!(
+            rate_threshold,
+            deny_threshold, "T-Cell: thresholds updated dynamically"
+        );
     }
 
     /// บันทึก syscall event และตัดสินใจว่ามีภัยคุกคามหรือไม่
@@ -87,6 +105,9 @@ impl TCellAgent {
         syscall_name: &str,
         denied: bool,
     ) -> ThreatDecision {
+        let rate_limit = self.rate_threshold.load(Ordering::Relaxed);
+        let deny_limit = self.deny_threshold.load(Ordering::Relaxed);
+
         let mut stats = self.stats.write().await;
         let entry = stats.entry(pid).or_default();
 
@@ -101,42 +122,68 @@ impl TCellAgent {
         entry.syscall_count += 1;
         entry.last_syscall = Some(syscall_name.to_string());
 
+        // จัดเก็บประวัติ syscall ย้อนหลัง (เก็บสูงสุด 5 รายการ)
+        if entry.syscall_history.len() >= 5 {
+            entry.syscall_history.pop_front();
+        }
+        entry.syscall_history.push_back(syscall_name.to_string());
+
         if denied {
             entry.deny_count += 1;
         } else {
             entry.deny_count = 0;
         }
 
-        // ตัดสินใจระดับภัยคุกคาม
-        if entry.deny_count >= self.deny_threshold as u64 {
+        // คำนวณ Anomaly Score แบบไดนามิก
+        let mut score = 0.0;
+
+        // 1. ผลกระทบจากปริมาณ syscall (Syscall Rate contribution)
+        if rate_limit > 0 {
+            score += (entry.syscall_count as f64 / rate_limit as f64) * 4.0;
+        }
+
+        // 2. ผลกระทบจากการเรียกปฏิเสธ (Deny count contribution)
+        score += entry.deny_count as f64 * 2.0;
+
+        // 3. ผลกระทบจากลำดับการเรียกที่น่าสงสัย (Suspicious sequence contribution)
+        if has_suspicious_sequence(&entry.syscall_history) {
+            score += 8.0;
+        }
+
+        entry.anomaly_score = score;
+
+        // ตัดสินใจระดับภัยคุกคามโดยอ้างอิงจากเกณฑ์ (Hard limits) และ Anomaly Score
+        if entry.deny_count >= deny_limit as u64
+            || (rate_limit > 0 && entry.syscall_count >= rate_limit * 2)
+            || score >= 15.0
+        {
             warn!(
                 pid,
+                score = ?score,
                 deny_count = entry.deny_count,
-                "T-Cell: critical threat — multiple denied syscalls"
+                syscall_count = entry.syscall_count,
+                "T-Cell: critical threat detected — Action: KILL"
             );
             return ThreatDecision::Kill;
         }
 
-        if entry.syscall_count >= self.rate_threshold * 2 {
+        if (rate_limit > 0 && entry.syscall_count >= rate_limit) || score >= 8.0 {
             warn!(
                 pid,
-                rate = entry.syscall_count,
-                "T-Cell: critical threat — extreme syscall rate"
-            );
-            return ThreatDecision::Kill;
-        }
-
-        if entry.syscall_count >= self.rate_threshold {
-            warn!(
-                pid,
-                rate = entry.syscall_count,
-                "T-Cell: high syscall rate — quarantine recommended"
+                score = ?score,
+                syscall_count = entry.syscall_count,
+                "T-Cell: high syscall rate/anomaly — Action: QUARANTINE"
             );
             return ThreatDecision::Quarantine;
         }
 
-        if entry.deny_count > 0 {
-            debug!(pid, deny_count = entry.deny_count, "T-Cell: denied syscall");
+        if entry.deny_count > 0 || score >= 2.0 {
+            debug!(
+                pid,
+                score = ?score,
+                deny_count = entry.deny_count,
+                "T-Cell: suspicious syscall/anomaly — Action: WARN"
+            );
             return ThreatDecision::Warn;
         }
 
@@ -162,10 +209,73 @@ impl TCellAgent {
         debug!(pid, "T-Cell: quarantine released");
     }
 
+    /// ปลดกักกัน process ทั้งหมดที่ถูกกักกันเกินระยะเวลาที่กำหนด (Expired quarantine auto-release)
+    pub async fn release_expired_quarantine(&self, duration: Duration) -> Vec<u32> {
+        let mut q = self.quarantined.write().await;
+        let now = Instant::now();
+        let mut expired = Vec::new();
+
+        q.retain(|pid, timestamp| {
+            if now.duration_since(*timestamp) >= duration {
+                expired.push(*pid);
+                false // Remove from quarantined map
+            } else {
+                true // Keep in quarantined map
+            }
+        });
+
+        for pid in &expired {
+            debug!(pid = %pid, "T-Cell: auto-released expired quarantine");
+        }
+        expired
+    }
+
     /// ดึงสถิติของ process
     pub async fn get_stats(&self, pid: u32) -> Option<ProcessStats> {
         self.stats.read().await.get(&pid).cloned()
     }
+}
+
+/// ตรวจสอบรูปแบบ syscall sequence ย้อนหลังเพื่อดูความน่าจะเป็นในการโจมตีระบบ
+fn has_suspicious_sequence(history: &VecDeque<String>) -> bool {
+    if history.len() < 2 {
+        return false;
+    }
+
+    // 1. Privilege Escalation signature: setuid/setgid -> execve
+    let mut has_setuid = false;
+    for s in history {
+        if s == "setuid" || s == "setgid" {
+            has_setuid = true;
+        } else if (s == "execve" || s == "execveat") && has_setuid {
+            return true;
+        }
+    }
+
+    // 2. Process Hijack/Injection signature: ptrace -> memfd_create / process_vm_writev
+    let mut has_ptrace = false;
+    for s in history {
+        if s == "ptrace" {
+            has_ptrace = true;
+        } else if (s == "memfd_create" || s == "process_vm_writev") && has_ptrace {
+            return true;
+        }
+    }
+
+    // 3. Reverse Shell signature: socket/connect -> dup2/dup3 -> execve
+    let mut has_socket = false;
+    let mut has_dup = false;
+    for s in history {
+        if s == "socket" || s == "connect" {
+            has_socket = true;
+        } else if (s == "dup2" || s == "dup3") && has_socket {
+            has_dup = true;
+        } else if (s == "execve" || s == "execveat") && has_socket && has_dup {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -208,5 +318,48 @@ mod tests {
         let stats = t.get_stats(1).await.unwrap();
         assert_eq!(stats.syscall_count, 2);
         assert_eq!(stats.last_syscall.as_deref(), Some("write"));
+    }
+
+    #[tokio::test]
+    async fn dynamic_threshold_update() {
+        let t = make_tcell();
+        t.update_thresholds(10, 2);
+        // rate threshold is now 10. 10 * 2 = 20 is critical limit.
+        for _ in 0..20 {
+            let _ = t.observe_syscall(1, "read", false).await;
+        }
+        let d = t.observe_syscall(1, "read", false).await;
+        assert_eq!(d, ThreatDecision::Kill);
+    }
+
+    #[tokio::test]
+    async fn test_suspicious_sequence_escalation() {
+        let t = make_tcell();
+        t.observe_syscall(1, "setuid", false).await;
+        let d = t.observe_syscall(1, "execve", false).await;
+        // setuid -> execve triggers has_suspicious_sequence (+8.0 anomaly score) -> Quarantine
+        assert_eq!(d, ThreatDecision::Quarantine);
+    }
+
+    #[tokio::test]
+    async fn test_suspicious_sequence_reverse_shell() {
+        let t = make_tcell();
+        t.observe_syscall(1, "socket", false).await;
+        t.observe_syscall(1, "dup2", false).await;
+        let d = t.observe_syscall(1, "execve", false).await;
+        // socket -> dup2 -> execve triggers reverse shell (+8.0 score) -> Quarantine
+        assert_eq!(d, ThreatDecision::Quarantine);
+    }
+
+    #[tokio::test]
+    async fn test_quarantine_expiry() {
+        let t = make_tcell();
+        t.quarantine(42).await;
+        assert!(t.is_quarantined(42).await);
+
+        // Wait a tiny bit and check expiry
+        let released = t.release_expired_quarantine(Duration::from_nanos(1)).await;
+        assert_eq!(released, vec![42]);
+        assert!(!t.is_quarantined(42).await);
     }
 }
