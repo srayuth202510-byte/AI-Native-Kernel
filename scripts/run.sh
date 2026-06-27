@@ -15,7 +15,7 @@ build() {
 
 run_companion() {
     echo "==> Starting AI-Native Kernel Companion Daemon..."
-    rtk cargo run --release --bin ank-companion -- "$@"
+    rtk cargo run --release --bin kernel-companion -- "$@"
 }
 
 run_cli() {
