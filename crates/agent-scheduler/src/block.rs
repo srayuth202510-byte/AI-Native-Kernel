@@ -1,5 +1,5 @@
 use crate::priority::Priority;
-use capability_security::{CapabilityToken, Scope};
+use capability_security::CapabilityToken;
 use std::time::Instant;
 
 /// ข้อมูลควบคุมและสถานะของ Agent (Agent Control Block หรือ ACB)
@@ -58,6 +58,7 @@ impl AgentControlBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use capability_security::Scope;
 
     #[test]
     fn test_agent_control_block_creation() {
