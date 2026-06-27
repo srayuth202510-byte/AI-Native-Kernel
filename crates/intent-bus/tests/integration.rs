@@ -157,3 +157,27 @@ async fn source_target_filters() {
         "untrusted source should fail filter"
     );
 }
+
+#[tokio::test]
+async fn removing_filter_restores_broader_traffic() {
+    let bus = IntentBus::new(8);
+
+    bus.add_filter(IntentFilter {
+        name: "critical-only".to_string(),
+        conditions: vec![FilterCondition::Priority(IntentPriority::Critical)],
+        enabled: true,
+    })
+    .await;
+
+    let medium = Intent::new(
+        "medium",
+        IntentType::Event,
+        "heartbeat",
+        IntentPriority::Medium,
+        "system",
+    );
+
+    assert!(!bus.passes_filters(&medium).await);
+    bus.remove_filter("critical-only").await;
+    assert!(bus.passes_filters(&medium).await);
+}

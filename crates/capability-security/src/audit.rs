@@ -116,3 +116,60 @@ impl Default for AuditLogger {
         Self::new(PathBuf::from("audit.log"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_log_path(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("ank-audit-{name}.log"));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn record_and_reload_entries_round_trip() {
+        let path = test_log_path("round-trip");
+        let logger = AuditLogger::new(path.clone());
+
+        logger
+            .record(AuditEntry::issued(1))
+            .expect("first record should succeed");
+        logger
+            .record(AuditEntry::allowed(1))
+            .expect("second record should succeed");
+
+        let entries = logger.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].action, "issued");
+        assert_eq!(entries[1].action, "allowed");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn entries_skip_invalid_json_lines() {
+        let path = test_log_path("skip-invalid");
+        std::fs::write(
+            &path,
+            "{\"action\":\"issued\",\"token_id\":1,\"timestamp\":1}\nnot-json\n",
+        )
+        .expect("fixture log should be written");
+
+        let logger = AuditLogger::new(path.clone());
+        let entries = logger.entries();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].token_id, 1);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn helper_constructors_use_expected_actions() {
+        assert_eq!(AuditEntry::issued(1).action, "issued");
+        assert_eq!(AuditEntry::allowed(1).action, "allowed");
+        assert_eq!(AuditEntry::denied(1).action, "denied");
+        assert_eq!(AuditEntry::revoked(1).action, "revoked");
+    }
+}

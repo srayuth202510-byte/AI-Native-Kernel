@@ -117,5 +117,48 @@ rtk cargo fmt
 
 รายละเอียด remediation เพิ่มเติมดู [docs/ebpf_prereqs.md](docs/ebpf_prereqs.md)
 
+## 6. รัน Qdrant Integration Tests
+
+ชุด `ignored` ของ `context-memory` รองรับ Qdrant จริงแล้วผ่าน environment variables:
+
+```bash
+QDRANT_URL=http://127.0.0.1:6334 ./scripts/run-qdrant-tests.sh
+```
+
+ถ้าไม่ได้ตั้ง `QDRANT_URL` script จะยก local Qdrant mock ขึ้นให้ชั่วคราวเอง
+
+หรือกำหนดปลายทางเองผ่านตัว test โดยตรง:
+
+```bash
+QDRANT_URL=http://qdrant.internal:6334 rtk cargo test -p context-memory --lib -- --ignored
+```
+
+ตัวแปรที่รองรับ:
+1. `QDRANT_URL`
+2. `QDRANT_HOST`
+3. `QDRANT_PORT`
+
+ถ้ากำหนด `QDRANT_URL` จะถูกใช้ก่อน `QDRANT_HOST`/`QDRANT_PORT`
+
+## 7. รัน Test ทั้งหมดคำสั่งเดียว
+
+มี script รวมสำหรับรัน workspace tests ทั้งหมด และตามด้วย ignored Qdrant tests:
+
+```bash
+./scripts/run-all-tests.sh
+```
+
+script นี้จะ:
+1. รัน `cargo test --workspace`
+2. ใช้ `QDRANT_URL` จริงถ้ากำหนดไว้
+3. ถ้าไม่ได้กำหนด `QDRANT_URL` จะยก local Qdrant mock ขึ้นชั่วคราว
+4. รัน `cargo test -p context-memory --lib -- --ignored`
+
+ตัวอย่างใช้ Qdrant จริง:
+
+```bash
+QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
+```
+
 ---
 > **ระดับความปลอดภัย**: Zero-Trust | โค้ดทั้งหมดใช้ **Rust 2024 Edition** ร่วมกับ **Tokio Async Runtime** ปลอดจาก Unsafe blocks และไม่มีการใช้งาน `.unwrap()` ในโค้ดการรันงานหลัก

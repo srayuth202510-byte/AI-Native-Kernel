@@ -137,22 +137,54 @@ impl SemanticStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+
+    fn qdrant_url() -> String {
+        env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".to_string())
+    }
+
+    fn qdrant_host_port() -> (String, u16) {
+        if let Ok(url) = env::var("QDRANT_URL") {
+            let trimmed = url
+                .trim_start_matches("http://")
+                .trim_start_matches("https://");
+            let host_port = trimmed.split('/').next().unwrap_or("localhost:6334");
+            let mut parts = host_port.split(':');
+            let host = parts.next().unwrap_or("localhost").to_string();
+            let port = parts
+                .next()
+                .and_then(|value| value.parse::<u16>().ok())
+                .unwrap_or(6334);
+            return (host, port);
+        }
+
+        let host = env::var("QDRANT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port = env::var("QDRANT_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(6334);
+        (host, port)
+    }
 
     async fn check_qdrant_online() -> bool {
-        tokio::net::TcpStream::connect("127.0.0.1:6334")
+        let (host, port) = qdrant_host_port();
+        tokio::net::TcpStream::connect((host.as_str(), port))
             .await
             .is_ok()
     }
 
     #[tokio::test]
-    #[ignore = "Requires a running Qdrant instance at http://localhost:6334"]
+    #[ignore = "Requires a running Qdrant instance; override with QDRANT_URL/QDRANT_HOST/QDRANT_PORT"]
     async fn test_qdrant_semantic_store() -> Result<()> {
         if !check_qdrant_online().await {
-            println!("Skipping test: Qdrant server is not running at 127.0.0.1:6334");
+            println!(
+                "Skipping test: Qdrant server is not reachable at {}",
+                qdrant_url()
+            );
             return Ok(());
         }
 
-        let store = SemanticStore::new("http://localhost:6334", "ank_context", 128).await?;
+        let store = SemanticStore::new(&qdrant_url(), "ank_context", 128).await?;
 
         let vector1 = vec![0.1; 128]; // Mock embedding
         let mut payload1 = HashMap::new();
@@ -181,14 +213,17 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires a running Qdrant instance at http://localhost:6334"]
+    #[ignore = "Requires a running Qdrant instance; override with QDRANT_URL/QDRANT_HOST/QDRANT_PORT"]
     async fn test_qdrant_semantic_store_multiple_points() -> Result<()> {
         if !check_qdrant_online().await {
-            println!("Skipping test: Qdrant server is not running at 127.0.0.1:6334");
+            println!(
+                "Skipping test: Qdrant server is not reachable at {}",
+                qdrant_url()
+            );
             return Ok(());
         }
 
-        let store = SemanticStore::new("http://localhost:6334", "ank_context_multi", 64).await?;
+        let store = SemanticStore::new(&qdrant_url(), "ank_context_multi", 64).await?;
 
         // เตรียมข้อมูล 3 จุด
         let vec1 = vec![1.0; 64];
@@ -228,14 +263,17 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires a running Qdrant instance at http://localhost:6334"]
+    #[ignore = "Requires a running Qdrant instance; override with QDRANT_URL/QDRANT_HOST/QDRANT_PORT"]
     async fn test_qdrant_semantic_store_empty_search() -> Result<()> {
         if !check_qdrant_online().await {
-            println!("Skipping test: Qdrant server is not running at 127.0.0.1:6334");
+            println!(
+                "Skipping test: Qdrant server is not reachable at {}",
+                qdrant_url()
+            );
             return Ok(());
         }
 
-        let store = SemanticStore::new("http://localhost:6334", "ank_context_empty", 32).await?;
+        let store = SemanticStore::new(&qdrant_url(), "ank_context_empty", 32).await?;
 
         // ค้นหาใน collection เปล่า หรือไม่ได้ใส่ข้อมูล
         let results = store.search(vec![0.5; 32], 5).await?;

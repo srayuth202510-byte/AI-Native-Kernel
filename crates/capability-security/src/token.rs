@@ -1,8 +1,9 @@
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 use zeroize::Zeroize;
 
 /// โทเค็นแสดงสิทธิ์ความสามารถ (Capability Token) สำหรับระบุสิทธิ์ ขอบเขต และอายุการใช้งานของตัวแทนหรือส่วนประกอบระบบ
-#[derive(Debug, Clone, PartialEq, Eq, Zeroize)]
+#[derive(Debug, Clone, PartialEq, Eq, Zeroize, Serialize, Deserialize)]
 #[zeroize(drop)]
 pub struct CapabilityToken {
     /// รหัสระบุเฉพาะตัวของโทเค็นความสามารถ
@@ -52,7 +53,7 @@ impl CapabilityToken {
 }
 
 /// ขอบเขตในการบังคับใช้สิทธิ์ของโทเค็นความสามารถ
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroize, Serialize, Deserialize)]
 pub enum Scope {
     /// ขอบเขตระดับโปรเซส (Process-level) พร้อมระบุ PID
     Process(u32),
@@ -60,4 +61,83 @@ pub enum Scope {
     Thread(u32),
     /// ขอบเขตระดับสากล (Global-level) ครอบคลุมทั่วทั้งระบบ
     Global,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_token_carries_expected_fields() {
+        let secret = [0xAB; 32];
+        let token = CapabilityToken::new(
+            7,
+            Scope::Process(42),
+            vec!["read".to_string(), "execute".to_string()],
+            Duration::from_secs(30),
+            secret,
+        );
+
+        assert_eq!(token.id, 7);
+        assert_eq!(token.scope, Scope::Process(42));
+        assert_eq!(token.secret, secret);
+        assert!(token.allows("read"));
+        assert!(token.allows("execute"));
+    }
+
+    #[test]
+    fn token_validity_tracks_expiration() {
+        let valid = CapabilityToken::new(
+            8,
+            Scope::Global,
+            vec!["read".to_string()],
+            Duration::from_secs(1),
+            [0x08; 32],
+        );
+        assert!(valid.is_valid());
+
+        let expired = CapabilityToken {
+            id: 9,
+            scope: Scope::Thread(3),
+            capabilities: vec!["read".to_string()],
+            expires_at: SystemTime::now() - Duration::from_secs(1),
+            secret: [0x09; 32],
+        };
+        assert!(!expired.is_valid());
+    }
+
+    #[test]
+    fn allows_requires_exact_capability_match() {
+        let token = CapabilityToken::new(
+            10,
+            Scope::Global,
+            vec!["read".to_string()],
+            Duration::from_secs(30),
+            [0x10; 32],
+        );
+
+        assert!(token.allows("read"));
+        assert!(!token.allows("write"));
+        assert!(!token.allows("READ"));
+    }
+
+    #[test]
+    fn token_json_round_trip_preserves_secret_and_scope() {
+        let token = CapabilityToken::new(
+            11,
+            Scope::Thread(99),
+            vec!["execute".to_string()],
+            Duration::from_secs(30),
+            [0x11; 32],
+        );
+
+        let json = serde_json::to_string(&token).expect("token serialization should succeed");
+        let restored: CapabilityToken =
+            serde_json::from_str(&json).expect("token deserialization should succeed");
+
+        assert_eq!(restored.id, token.id);
+        assert_eq!(restored.scope, token.scope);
+        assert_eq!(restored.capabilities, token.capabilities);
+        assert_eq!(restored.secret, token.secret);
+    }
 }

@@ -233,6 +233,19 @@ impl IntentSubscriber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct RecordingProcessor {
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl IntentProcessor for RecordingProcessor {
+        async fn process(&self, intent: Intent) {
+            self.seen.lock().await.push(intent.id);
+        }
+    }
 
     #[tokio::test]
     async fn publish_reaches_subscriber() {
@@ -310,5 +323,92 @@ mod tests {
         .await;
 
         assert!(bus.passes_filters(&intent).await);
+    }
+
+    #[tokio::test]
+    async fn publish_without_subscribers_fails_closed() {
+        let bus = IntentBus::new(8);
+        let intent = Intent::new(
+            "intent-4",
+            IntentType::Event,
+            "orphan",
+            IntentPriority::Low,
+            "system",
+        );
+
+        assert!(matches!(
+            bus.publish(intent).await,
+            Err(IntentBusError::SendFailed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn remove_filter_restores_pass_through() {
+        let bus = IntentBus::new(8);
+        let intent = Intent::new(
+            "intent-5",
+            IntentType::Event,
+            "heartbeat",
+            IntentPriority::Low,
+            "system",
+        );
+
+        bus.add_filter(IntentFilter {
+            name: "commands-only".to_string(),
+            conditions: vec![FilterCondition::IntentType(IntentType::Command)],
+            enabled: true,
+        })
+        .await;
+
+        assert!(!bus.passes_filters(&intent).await);
+        bus.remove_filter("commands-only").await;
+        assert!(bus.passes_filters(&intent).await);
+    }
+
+    #[tokio::test]
+    async fn process_intents_only_for_matching_filters() {
+        let bus = IntentBus::new(8);
+        let processor = RecordingProcessor::default();
+
+        bus.add_filter(IntentFilter {
+            name: "critical-commands".to_string(),
+            conditions: vec![
+                FilterCondition::IntentType(IntentType::Command),
+                FilterCondition::Priority(IntentPriority::Critical),
+            ],
+            enabled: true,
+        })
+        .await;
+
+        let worker_bus = bus.clone();
+        let worker_processor = processor.clone();
+        let handle = tokio::spawn(async move {
+            worker_bus.process_intents(&worker_processor).await;
+        });
+        tokio::task::yield_now().await;
+
+        let ignored = Intent::new(
+            "intent-6",
+            IntentType::Command,
+            "low-priority",
+            IntentPriority::Low,
+            "user",
+        );
+        let accepted = Intent::new(
+            "intent-7",
+            IntentType::Command,
+            "critical-op",
+            IntentPriority::Critical,
+            "user",
+        );
+
+        bus.publish(ignored).await.expect("publish should succeed");
+        bus.publish(accepted).await.expect("publish should succeed");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        handle.abort();
+
+        let seen = processor.seen.lock().await.clone();
+        assert_eq!(seen, vec!["intent-7".to_string()]);
     }
 }

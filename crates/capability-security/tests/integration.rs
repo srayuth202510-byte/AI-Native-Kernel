@@ -97,3 +97,43 @@ fn reject_expired_token() {
 
     let _ = std::fs::remove_dir_all(&log_dir);
 }
+
+#[test]
+fn revoke_emits_audit_and_denies_future_validation() {
+    let (manager, log_dir) = manager("revoke_audit_denial");
+    let token = CapabilityToken::new(
+        77,
+        Scope::Process(77),
+        vec!["read".to_string()],
+        Duration::from_secs(3600),
+        [0x77u8; 32],
+    );
+
+    manager
+        .issue_token(token.clone())
+        .expect("issue should succeed");
+    manager
+        .revoke_token(token.id)
+        .expect("revoke should succeed");
+
+    assert!(
+        !manager
+            .validate(token.id, &[0x77u8; 32], &Scope::Process(77), "read")
+            .expect("revoked token should deny validation")
+    );
+    assert_eq!(
+        manager
+            .decision_for(token.id, &[0x77u8; 32], &Scope::Process(77), "read")
+            .expect("decision should succeed"),
+        PolicyDecision::Deny
+    );
+
+    let actions: Vec<String> = manager
+        .audit_entries()
+        .into_iter()
+        .map(|entry| entry.action)
+        .collect();
+    assert_eq!(actions, vec!["issued", "revoked", "denied", "denied"]);
+
+    let _ = std::fs::remove_dir_all(&log_dir);
+}

@@ -74,3 +74,51 @@ impl Default for AdaptiveWeights {
         Self::from_mode(SchedulerMode::Throughput)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ComputeProfile;
+
+    #[test]
+    fn mode_presets_sum_to_one() {
+        for mode in [
+            SchedulerMode::Battery,
+            SchedulerMode::Throughput,
+            SchedulerMode::Cost,
+        ] {
+            let weights = AdaptiveWeights::from_mode(mode);
+            let total = weights.latency + weights.power + weights.cost;
+            assert!((total - 1.0).abs() < 1e-9, "preset must be normalized");
+        }
+    }
+
+    #[test]
+    fn observe_zero_total_sample_is_noop() {
+        let mut weights = AdaptiveWeights::default();
+        let before = weights;
+
+        weights.observe(ComputeProfile {
+            latency_ms: 0.0,
+            power_watts: 0.0,
+            cost_units: 0.0,
+        });
+
+        assert_eq!(weights, before);
+    }
+
+    #[test]
+    fn observe_moves_weights_toward_sample_distribution() {
+        let mut weights = AdaptiveWeights::new(0.8, 0.1, 0.1);
+        weights.observe(ComputeProfile {
+            latency_ms: 1.0,
+            power_watts: 100.0,
+            cost_units: 1.0,
+        });
+
+        assert!(weights.power > 0.1);
+        assert!(weights.latency < 0.8);
+        let total = weights.latency + weights.power + weights.cost;
+        assert!((total - 1.0).abs() < 1e-9);
+    }
+}

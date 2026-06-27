@@ -177,24 +177,55 @@ impl SemanticFileSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+
+    fn qdrant_url() -> String {
+        env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".to_string())
+    }
+
+    fn qdrant_host_port() -> (String, u16) {
+        if let Ok(url) = env::var("QDRANT_URL") {
+            let trimmed = url
+                .trim_start_matches("http://")
+                .trim_start_matches("https://");
+            let host_port = trimmed.split('/').next().unwrap_or("localhost:6334");
+            let mut parts = host_port.split(':');
+            let host = parts.next().unwrap_or("localhost").to_string();
+            let port = parts
+                .next()
+                .and_then(|value| value.parse::<u16>().ok())
+                .unwrap_or(6334);
+            return (host, port);
+        }
+
+        let host = env::var("QDRANT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port = env::var("QDRANT_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(6334);
+        (host, port)
+    }
 
     async fn check_qdrant_online() -> bool {
-        tokio::net::TcpStream::connect("127.0.0.1:6334")
+        let (host, port) = qdrant_host_port();
+        tokio::net::TcpStream::connect((host.as_str(), port))
             .await
             .is_ok()
     }
 
     #[tokio::test]
-    #[ignore = "Requires a running Qdrant instance at http://localhost:6334"]
+    #[ignore = "Requires a running Qdrant instance; override with QDRANT_URL/QDRANT_HOST/QDRANT_PORT"]
     async fn test_semantic_file_system_operations() -> Result<()> {
         if !check_qdrant_online().await {
-            println!("Skipping SFS test: Qdrant server is not running");
+            println!(
+                "Skipping SFS test: Qdrant server is not reachable at {}",
+                qdrant_url()
+            );
             return Ok(());
         }
 
         let temp_dir = std::env::temp_dir().join(format!("ank-sfs-{}", uuid::Uuid::new_v4()));
-        let store =
-            Arc::new(SemanticStore::new("http://localhost:6334", "ank_sfs_test", 128).await?);
+        let store = Arc::new(SemanticStore::new(&qdrant_url(), "ank_sfs_test", 128).await?);
         let sfs = SemanticFileSystem::new(&temp_dir, store, 128).await?;
 
         // 1. เขียนไฟล์

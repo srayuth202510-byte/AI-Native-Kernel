@@ -85,3 +85,96 @@ impl Default for PolicyEngine {
         Self::new(PolicyDecision::Deny)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    fn token(scope: Scope, capabilities: &[&str]) -> CapabilityToken {
+        CapabilityToken::new(
+            1,
+            scope,
+            capabilities.iter().map(|cap| (*cap).to_string()).collect(),
+            Duration::from_secs(60),
+            [0xAA; 32],
+        )
+    }
+
+    #[test]
+    fn decision_allows_matching_scope_and_capability() {
+        let engine = PolicyEngine::default();
+        let token = token(Scope::Process(7), &["read"]);
+
+        assert_eq!(
+            engine.decision(&token, &Scope::Process(7), "read"),
+            PolicyDecision::Allow
+        );
+        assert!(engine.authorize(&token, &Scope::Process(7), "read"));
+    }
+
+    #[test]
+    fn decision_denies_scope_mismatch_by_default() {
+        let engine = PolicyEngine::default();
+        let token = token(Scope::Process(7), &["read"]);
+
+        assert_eq!(
+            engine.decision(&token, &Scope::Thread(7), "read"),
+            PolicyDecision::Deny
+        );
+    }
+
+    #[test]
+    fn decision_can_allow_scope_mismatch_when_default_is_allow() {
+        let engine = PolicyEngine::new(PolicyDecision::Allow);
+        let token = token(Scope::Process(7), &["read"]);
+
+        assert_eq!(
+            engine.decision(&token, &Scope::Thread(7), "read"),
+            PolicyDecision::Allow
+        );
+    }
+
+    #[test]
+    fn decision_denies_capability_outside_allowlist() {
+        let engine = PolicyEngine::default();
+        let token = token(Scope::Global, &["write"]);
+
+        assert_eq!(
+            engine.decision(&token, &Scope::Global, "write"),
+            PolicyDecision::Deny
+        );
+    }
+
+    #[test]
+    fn decision_denies_expired_tokens_even_when_scope_matches() {
+        let engine = PolicyEngine::default();
+        let expired = CapabilityToken {
+            id: 2,
+            scope: Scope::Global,
+            capabilities: vec!["read".to_string()],
+            expires_at: SystemTime::now() - Duration::from_secs(1),
+            secret: [0xBB; 32],
+        };
+
+        assert_eq!(
+            engine.decision(&expired, &Scope::Global, "read"),
+            PolicyDecision::Deny
+        );
+    }
+
+    #[test]
+    fn custom_allowlist_is_honored() {
+        let engine = PolicyEngine::with_allowed_capabilities(PolicyDecision::Deny, ["write"]);
+        let token = token(Scope::Global, &["write"]);
+
+        assert_eq!(
+            engine.decision(&token, &Scope::Global, "write"),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            engine.decision(&token, &Scope::Global, "read"),
+            PolicyDecision::Deny
+        );
+    }
+}
