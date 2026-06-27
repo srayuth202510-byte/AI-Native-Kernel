@@ -92,20 +92,16 @@ impl LsmPolicyEngine {
             return LsmDecision::Deny;
         }
 
-        // ขั้นสอง: ตรวจสอบ Allowlist สำหรับ syscall พื้นฐาน
-        match syscall {
-            "read" | "write" | "recvmsg" => {
-                metrics.record_lsm_decision("allow", "allowlist");
-                debug!(decision = "allow", "อนุญาต syscall ตามนโยบาย Zero-Trust");
-                LsmDecision::Allow
-            }
-            // ขั้นสาม: ปฏิเสธ syscall อื่น ๆ ทั้งหมด (fail-closed)
-            _ => {
-                metrics.record_lsm_decision("deny", "default_deny");
-                warn!(decision = "deny", "ปฏิเสธ syscall ที่ไม่อยู่ใน allowlist");
-                self.default_decision
-            }
+        if is_allowed_by_default(syscall) {
+            metrics.record_lsm_decision("allow", "allowlist");
+            debug!(decision = "allow", "อนุญาต syscall ตามนโยบาย Zero-Trust");
+            return LsmDecision::Allow;
         }
+
+        // ขั้นสาม: ปฏิเสธ syscall อื่น ๆ ทั้งหมด (fail-closed)
+        metrics.record_lsm_decision("deny", "default_deny");
+        warn!(decision = "deny", "ปฏิเสธ syscall ที่ไม่อยู่ใน allowlist");
+        self.default_decision
     }
 }
 
@@ -113,6 +109,68 @@ impl Default for LsmPolicyEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Default allowlist สำหรับ syscall ที่ถือว่าปลอดภัยพอสำหรับ runtime/companion daemon
+/// และลด noise จากงานพื้นฐานของ Tokio, logging, และ I/O runtime.
+pub fn is_allowed_by_default(syscall: &str) -> bool {
+    matches!(
+        syscall,
+        "read"
+            | "write"
+            | "recvmsg"
+            | "close"
+            | "poll"
+            | "mprotect"
+            | "clone"
+            | "clone3"
+            | "futex"
+            | "rt_sigaction"
+            | "rt_sigprocmask"
+            | "sigaltstack"
+            | "clock_gettime"
+            | "clock_nanosleep"
+            | "nanosleep"
+            | "sched_yield"
+            | "getpid"
+            | "gettid"
+            | "set_tid_address"
+            | "set_robust_list"
+            | "rseq"
+            | "brk"
+            | "mmap"
+            | "munmap"
+            | "madvise"
+            | "fstat"
+            | "newfstatat"
+            | "statx"
+            | "lseek"
+            | "readv"
+            | "writev"
+            | "pread64"
+            | "pwrite64"
+            | "openat"
+            | "openat2"
+            | "readlinkat"
+            | "fchmod"
+            | "fchown"
+            | "fchdir"
+            | "getrandom"
+            | "prlimit64"
+            | "sendmsg"
+            | "recvfrom"
+            | "sendto"
+            | "pipe2"
+            | "dup"
+            | "dup2"
+            | "dup3"
+            | "epoll_create"
+            | "epoll_ctl"
+            | "epoll_wait"
+            | "eventfd2"
+            | "ioctl"
+            | "fcntl"
+    )
 }
 
 /// โครงสร้างข้อมูลสำหรับอ้างอิงสถานะการเชื่อมต่อ LSM Hook
@@ -311,11 +369,14 @@ mod tests {
         // ทดสอบว่า syscall ที่ไม่รู้จักต้องถูกปฏิเสธตามหลัก fail-closed
         let engine = LsmPolicyEngine::new();
         assert_eq!(
-            engine.decision_for_syscall("unknown_syscall"),
+            engine.decision_for_syscall("definitely_not_a_real_syscall"),
             LsmDecision::Deny
         );
         assert_eq!(engine.decision_for_syscall(""), LsmDecision::Deny);
-        assert_eq!(engine.decision_for_syscall("mmap"), LsmDecision::Deny);
+        assert_eq!(
+            engine.decision_for_syscall("definitely_not_a_real_syscall_2"),
+            LsmDecision::Deny
+        );
     }
 
     #[test]
@@ -333,9 +394,32 @@ mod tests {
         let engine = LsmPolicyEngine::default();
         // ทดสอบด้วย syscall สุ่มที่ไม่อยู่ใน allowlist
         assert_eq!(
-            engine.decision_for_syscall("getpid"),
+            engine.decision_for_syscall("this_syscall_should_not_exist"),
             LsmDecision::Deny,
             "ค่าเริ่มต้นต้องปฏิเสธ syscall ที่ไม่รู้จัก"
         );
+    }
+
+    #[test]
+    fn runtime_allowlist_covers_common_runtime_syscalls() {
+        let engine = LsmPolicyEngine::new();
+        for syscall in [
+            "close",
+            "poll",
+            "mprotect",
+            "clone",
+            "futex",
+            "rt_sigaction",
+            "rt_sigprocmask",
+            "clock_gettime",
+            "gettid",
+            "set_robust_list",
+        ] {
+            assert_eq!(
+                engine.decision_for_syscall(syscall),
+                LsmDecision::Allow,
+                "{syscall} should be allowed by default runtime allowlist"
+            );
+        }
     }
 }

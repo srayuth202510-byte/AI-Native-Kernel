@@ -1,7 +1,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 
-char LICENSE[] SEC("license") = "MIT";
+char LICENSE[] SEC("license") = "GPL";
 
 struct syscall_event {
     __u64 syscall_nr;

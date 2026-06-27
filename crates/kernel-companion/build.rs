@@ -1,9 +1,27 @@
 use std::path::Path;
 use std::process::Command;
 
-fn resolve_tool(candidates: &[&str]) -> Option<String> {
+fn candidate_works(candidate: &str) -> bool {
+    if candidate.is_empty() {
+        return false;
+    }
+
+    if candidate.contains('/') {
+        return Path::new(candidate).exists();
+    }
+
+    Command::new(candidate).arg("--version").output().is_ok()
+}
+
+fn resolve_tool(env_var: &str, candidates: &[&str]) -> Option<String> {
+    if let Ok(value) = std::env::var(env_var) {
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+
     for candidate in candidates {
-        if Command::new(candidate).arg("--version").output().is_ok() {
+        if candidate_works(candidate) {
             return Some((*candidate).to_string());
         }
     }
@@ -24,6 +42,21 @@ fn main() {
     for src in bpf_sources {
         println!("cargo:rerun-if-changed={}", src);
     }
+    println!("cargo:rerun-if-env-changed=CLANG_BIN");
+    println!("cargo:rerun-if-env-changed=BPFTOOL_BIN");
+
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let prebuilt_bpf_dir = Path::new(&manifest_dir).join("target").join("bpf");
+    let prebuilt_syscall = prebuilt_bpf_dir.join("syscall-tracer.bpf.o");
+    let prebuilt_lsm = prebuilt_bpf_dir.join("lsm-security.bpf.o");
+    if prebuilt_syscall.exists() && prebuilt_lsm.exists() {
+        println!(
+            "cargo:warning=using prebuilt eBPF objects from {}",
+            prebuilt_bpf_dir.display()
+        );
+        println!("cargo:rustc-env=BPF_OUT_DIR={}", prebuilt_bpf_dir.display());
+        return;
+    }
 
     let kernel_release = std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .ok()
@@ -36,8 +69,22 @@ fn main() {
     );
 
     let vmlinux_h = bpf_out_dir.join("vmlinux.h");
-    let clang = resolve_tool(&["clang", "clang-18", "clang-17"]);
-    let bpftool = resolve_tool(&["bpftool"]);
+    let clang = resolve_tool(
+        "CLANG_BIN",
+        &[
+            "clang",
+            "clang-18",
+            "clang-17",
+            "/usr/lib/llvm-18/bin/clang",
+            "/usr/lib/llvm-17/bin/clang",
+            "/usr/lib/llvm-16/bin/clang",
+            "/usr/local/bin/clang",
+        ],
+    );
+    let bpftool = resolve_tool(
+        "BPFTOOL_BIN",
+        &["bpftool", "/usr/sbin/bpftool", "/usr/local/bin/bpftool"],
+    );
 
     let can_compile = Path::new("/sys/kernel/btf/vmlinux").exists()
         && Path::new(&bpf_inc).join("bpf/bpf_helpers.h").exists()
@@ -50,7 +97,7 @@ fn main() {
         let bpftool = bpftool.expect("bpftool should be resolved");
 
         if !vmlinux_h.exists() {
-            let vmlinux_output = Command::new(&bpftool)
+            let vmlinux_output = match Command::new(&bpftool)
                 .args([
                     "btf",
                     "dump",
@@ -60,7 +107,14 @@ fn main() {
                     "c",
                 ])
                 .output()
-                .expect("bpftool should be available");
+            {
+                Ok(output) => output,
+                Err(err) => {
+                    println!("cargo:warning=bpftool invocation failed: {err}");
+                    print_bpf_disabled_instructions();
+                    return;
+                }
+            };
 
             if vmlinux_output.status.success() {
                 std::fs::write(&vmlinux_h, vmlinux_output.stdout).expect("write vmlinux.h");

@@ -4,7 +4,7 @@
 
 #define EPERM 1
 
-char LICENSE[] SEC("license") = "MIT";
+char LICENSE[] SEC("license") = "GPL";
 
 /* ── eBPF hash map for process allowlist ──
  * Key:   u32 PID of the process

@@ -19,11 +19,23 @@ CLANG_CANDIDATES=(
     clang
     clang-18
     clang-17
+    /usr/lib/llvm-18/bin/clang
+    /usr/lib/llvm-17/bin/clang
+    /usr/lib/llvm-16/bin/clang
+    /usr/local/bin/clang
 )
+if [[ -n "${CLANG_BIN:-}" ]]; then
+    CLANG_CANDIDATES=("$CLANG_BIN" "${CLANG_CANDIDATES[@]}")
+fi
 
 BPFTOOL_CANDIDATES=(
     bpftool
+    /usr/sbin/bpftool
+    /usr/local/bin/bpftool
 )
+if [[ -n "${BPFTOOL_BIN:-}" ]]; then
+    BPFTOOL_CANDIDATES=("$BPFTOOL_BIN" "${BPFTOOL_CANDIDATES[@]}")
+fi
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -71,7 +83,14 @@ resolve_command() {
     local candidate
 
     for candidate in "${candidates_ref[@]}"; do
+        if [[ -z "$candidate" ]]; then
+            continue
+        fi
         if command -v "$candidate" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        if [[ -x "$candidate" ]]; then
             printf '%s\n' "$candidate"
             return 0
         fi

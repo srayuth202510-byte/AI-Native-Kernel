@@ -8,24 +8,35 @@ cd "$PROJECT_ROOT"
 
 MODE="${1:-companion}"
 
+if command -v rtk >/dev/null 2>&1; then
+    RTK=(rtk)
+elif [[ -f "$SCRIPT_DIR/use-local-toolchain.sh" ]]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/use-local-toolchain.sh"
+    RTK=()
+else
+    RTK=()
+fi
+
 build() {
     echo "==> Building AI-Native Kernel..."
-    rtk cargo build --release 2>&1
+    bash "$SCRIPT_DIR/build-ebpf-objects.sh" || echo "==> eBPF object prebuild failed; continuing with simulation fallback"
+    "${RTK[@]}" cargo build --release 2>&1
 }
 
 run_companion() {
     echo "==> Starting AI-Native Kernel Companion Daemon..."
-    rtk cargo run --release --bin kernel-companion -- "$@"
+    "${RTK[@]}" cargo run --release --bin kernel-companion -- "$@"
 }
 
 run_cli() {
     echo "==> Starting ANK CLI..."
-    rtk cargo run --release --bin ank-cli -- "$@"
+    "${RTK[@]}" cargo run --release --bin ank-cli -- "$@"
 }
 
 run_tui() {
     echo "==> Starting ANK TUI Dashboard..."
-    rtk cargo run --release --bin ank-tui -- "$@"
+    "${RTK[@]}" cargo run --release --bin ank-tui -- "$@"
 }
 
 check_prereqs() {
