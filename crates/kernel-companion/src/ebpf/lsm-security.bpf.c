@@ -2,6 +2,8 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#define EPERM 1
+
 char LICENSE[] SEC("license") = "MIT";
 
 /* ── eBPF hash map for process allowlist ──
