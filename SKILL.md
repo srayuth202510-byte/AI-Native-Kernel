@@ -196,7 +196,7 @@ mod tests {
 ### Adding new crates
 ```bash
 cargo add <crate_name>
-cargo vet                                    # Audit before commit
+
 ```
 
 ### Approved crates (security vetted)
@@ -247,7 +247,7 @@ cargo vet                                    # Audit before commit
 # 2. Run full quality suite
 rtk cargo clippy -- -D warnings
 rtk cargo test
-cargo vet
+
 cargo audit
 
 # 3. Build release

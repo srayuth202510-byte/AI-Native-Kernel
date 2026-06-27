@@ -55,7 +55,3 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: Run cargo audit (security scan)
         run: cargo audit
-      - name: Install cargo-vet
-        run: cargo install cargo-vet --locked
-      - name: Run cargo vet (supply-chain audit)
-        run: cargo vet

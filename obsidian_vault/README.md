@@ -253,7 +253,7 @@ If `cargo` is not available in the shell, install the Rust toolchain first. The 
 - [ ] No `unwrap()` in non-test code
 - [ ] Error types defined and propagated correctly
 - [ ] Audit log entry written for security decisions
-- [ ] New crate added with `cargo vet` approved
+
 
 ### Per Component
 

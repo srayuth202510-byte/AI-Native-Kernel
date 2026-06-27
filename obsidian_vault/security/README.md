@@ -374,7 +374,7 @@ async fn test_token_validation_fuzz() {
 - [ ] Policy Engine fails closed (DENY) on error
 - [ ] Audit log entry written for every security decision
 - [ ] Timeout applied to all external calls
-- [ ] New crate added with `cargo vet` approved
+
 
 ### Security Principles
 

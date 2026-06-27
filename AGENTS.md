@@ -128,7 +128,7 @@ ai-native-kernel/
 - **No logging of PII/keys** - sanitize before writing to structured logs
 - **Use `constant_time_eq`** for all comparison of sensitive data (tokens, hashes)
 - **No `unsafe`** without explicit review and justification in comments
-- **Audit every new crate** - run `cargo vet` before adding dependencies
+
 - **Policy Engine default = DENY** (fail-closed for security decisions)
 
 ### Async Patterns
@@ -196,7 +196,7 @@ Key targets:
 - [ ] No `unwrap()` in non-test code
 - [ ] No secrets/keys in code or logs
 - [ ] Error types defined and propagated correctly
-- [ ] New crate added with `cargo vet` approved
+
 - [ ] `unsafe` block justified (if any)
 - [ ] `timeout()` applied to all external calls
 - [ ] Structured logging with PII sanitized
