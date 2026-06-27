@@ -19,6 +19,7 @@ use tracing::{info, instrument, warn};
 pub mod config;
 pub mod ebpf;
 pub mod lsm;
+pub mod metrics_server;
 pub mod uds;
 
 pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
@@ -60,6 +61,8 @@ pub struct KernelCompanion {
     tracer_task: Option<JoinHandle<()>>,
     /// handle ของ tcell event receiver task
     tcell_task: Option<JoinHandle<()>>,
+    /// handle ของ prometheus metrics server task
+    metrics_task: Option<JoinHandle<()>>,
 }
 
 impl KernelCompanion {
@@ -127,6 +130,7 @@ impl KernelCompanion {
             immune_task: None,
             tracer_task: None,
             tcell_task: None,
+            metrics_task: None,
         }
     }
 
@@ -344,6 +348,12 @@ impl KernelCompanion {
             )
             .await;
 
+            let metrics_addr = self.config.kernel_companion.metrics_server_addr.clone();
+            let cancel_metrics = tokio_util_cancel::CancellationToken::new();
+            self.metrics_task = Some(tokio::spawn(async move {
+                let _ = metrics_server::start_metrics_server(&metrics_addr, cancel_metrics).await;
+            }));
+
             self.shutdown_tx = Some(shutdown_tx);
         }
 
@@ -399,6 +409,9 @@ impl KernelCompanion {
             let _ = task.await;
         }
         if let Some(task) = self.tcell_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.metrics_task.take() {
             let _ = task.await;
         }
         if let Some(attachment) = self.attachment.as_mut() {

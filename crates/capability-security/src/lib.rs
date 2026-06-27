@@ -51,6 +51,8 @@ pub struct CapabilitySecurityManager {
     policy_engine: PolicyEngine,
     /// ตัวบันทึกประวัติการตรวจสอบการทำงานและความปลอดภัย (Audit Logger)
     audit_logger: AuditLogger,
+    /// ตัววัดผลความปลอดภัย (Prometheus Metrics)
+    metrics: Option<std::sync::Arc<SecurityMetrics>>,
 }
 
 /// ฟังก์ชันเปรียบเทียบข้อมูลไบต์อาร์เรย์ขนาด 32 ไบต์แบบคงเวลา (Constant-time comparison)
@@ -68,22 +70,26 @@ impl CapabilitySecurityManager {
     /// สร้างตัวจัดการความปลอดภัย `CapabilitySecurityManager` ใหม่ด้วยการตั้งค่าเริ่มต้น
     #[must_use]
     pub fn new() -> Self {
+        let metrics = SecurityMetrics::register(prometheus::default_registry()).ok();
         Self {
             tokens: RwLock::new(HashMap::new()),
             revoked: RwLock::new(HashSet::new()),
             policy_engine: PolicyEngine::default(),
             audit_logger: AuditLogger::default(),
+            metrics,
         }
     }
 
     /// สร้างตัวจัดการความปลอดภัย `CapabilitySecurityManager` ใหม่พร้อมระบุพาธในการบันทึกไฟล์ประวัติการตรวจสอบ
     #[must_use]
     pub fn new_with_log_path(log_path: std::path::PathBuf) -> Self {
+        let metrics = SecurityMetrics::register(prometheus::default_registry()).ok();
         Self {
             tokens: RwLock::new(HashMap::new()),
             revoked: RwLock::new(HashSet::new()),
             policy_engine: PolicyEngine::default(),
             audit_logger: AuditLogger::new(log_path),
+            metrics,
         }
     }
 
@@ -92,6 +98,10 @@ impl CapabilitySecurityManager {
         self.audit_logger
             .record(AuditEntry::issued(token.id))
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
+        if let Some(ref m) = self.metrics {
+            m.tokens_issued_total.inc();
+            m.audit_entries_total.inc();
+        }
         self.tokens
             .write()
             .expect("capability tokens lock poisoned")
@@ -109,6 +119,9 @@ impl CapabilitySecurityManager {
         self.audit_logger
             .record(AuditEntry::revoked(token_id))
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
+        if let Some(ref m) = self.metrics {
+            m.audit_entries_total.inc();
+        }
         Ok(())
     }
 
@@ -146,6 +159,12 @@ impl CapabilitySecurityManager {
         self.audit_logger
             .record(entry)
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
+
+        if let Some(ref m) = self.metrics {
+            m.audit_entries_total.inc();
+            let label = if allowed { "allow" } else { "deny" };
+            m.policy_decisions_total.with_label_values(&[label]).inc();
+        }
         Ok(allowed)
     }
 
@@ -160,6 +179,9 @@ impl CapabilitySecurityManager {
     ) -> Result<bool> {
         let tokens = self.tokens.read().expect("capability tokens lock poisoned");
         let Some(token) = tokens.get(&token_id) else {
+            if let Some(ref m) = self.metrics {
+                m.token_validation_failures_total.inc();
+            }
             return Ok(false);
         };
 
@@ -168,6 +190,11 @@ impl CapabilitySecurityManager {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            if let Some(ref m) = self.metrics {
+                m.audit_entries_total.inc();
+                m.policy_decisions_total.with_label_values(&["deny"]).inc();
+                m.token_validation_failures_total.inc();
+            }
             return Ok(false);
         }
 
@@ -176,6 +203,11 @@ impl CapabilitySecurityManager {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            if let Some(ref m) = self.metrics {
+                m.audit_entries_total.inc();
+                m.policy_decisions_total.with_label_values(&["deny"]).inc();
+                m.token_validation_failures_total.inc();
+            }
             return Ok(false);
         }
 
@@ -188,6 +220,15 @@ impl CapabilitySecurityManager {
         self.audit_logger
             .record(entry)
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
+
+        if let Some(ref m) = self.metrics {
+            m.audit_entries_total.inc();
+            let label = if allowed { "allow" } else { "deny" };
+            m.policy_decisions_total.with_label_values(&[label]).inc();
+            if !allowed {
+                m.token_validation_failures_total.inc();
+            }
+        }
         Ok(allowed)
     }
 
@@ -205,6 +246,10 @@ impl CapabilitySecurityManager {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            if let Some(ref m) = self.metrics {
+                m.audit_entries_total.inc();
+                m.policy_decisions_total.with_label_values(&["deny"]).inc();
+            }
             return Ok(PolicyDecision::Deny);
         };
 
@@ -213,6 +258,10 @@ impl CapabilitySecurityManager {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            if let Some(ref m) = self.metrics {
+                m.audit_entries_total.inc();
+                m.policy_decisions_total.with_label_values(&["deny"]).inc();
+            }
             return Ok(PolicyDecision::Deny);
         }
 
@@ -221,6 +270,10 @@ impl CapabilitySecurityManager {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
+            if let Some(ref m) = self.metrics {
+                m.audit_entries_total.inc();
+                m.policy_decisions_total.with_label_values(&["deny"]).inc();
+            }
             return Ok(PolicyDecision::Deny);
         }
 
@@ -232,6 +285,15 @@ impl CapabilitySecurityManager {
         self.audit_logger
             .record(entry)
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
+
+        if let Some(ref m) = self.metrics {
+            m.audit_entries_total.inc();
+            let label = match decision {
+                PolicyDecision::Allow => "allow",
+                PolicyDecision::Deny => "deny",
+            };
+            m.policy_decisions_total.with_label_values(&[label]).inc();
+        }
         Ok(decision)
     }
 

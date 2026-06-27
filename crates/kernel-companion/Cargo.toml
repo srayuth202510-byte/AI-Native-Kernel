@@ -26,6 +26,7 @@ context-memory = { path = "../context-memory" }
 intent-bus = { path = "../intent-bus" }
 immune-system = { path = "../immune-system" }
 uuid = { workspace = true, features = ["v4"] }
+prometheus = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -82,6 +82,9 @@ impl Config {
         if let Ok(v) = std::env::var("ANK_UDS_SOCKET_PATH") {
             self.kernel_companion.uds_socket_path = v;
         }
+        if let Ok(v) = std::env::var("ANK_METRICS_ADDR") {
+            self.kernel_companion.metrics_server_addr = v;
+        }
         if let Ok(v) = std::env::var("ANK_INTENT_BUS_CAPACITY") {
             if let Ok(n) = v.parse() {
                 self.kernel_companion.intent_bus_capacity = n;
@@ -148,6 +151,8 @@ pub struct KernelCompanionConfig {
     pub intent_bus_capacity: usize,
     #[serde(default = "default_monitoring_cap")]
     pub monitoring_channel_capacity: usize,
+    #[serde(default = "default_metrics_addr")]
+    pub metrics_server_addr: String,
 }
 
 impl Default for KernelCompanionConfig {
@@ -156,6 +161,7 @@ impl Default for KernelCompanionConfig {
             uds_socket_path: default_uds_socket(),
             intent_bus_capacity: default_intent_bus_cap(),
             monitoring_channel_capacity: default_monitoring_cap(),
+            metrics_server_addr: default_metrics_addr(),
         }
     }
 }
@@ -168,6 +174,9 @@ fn default_intent_bus_cap() -> usize {
 }
 fn default_monitoring_cap() -> usize {
     1024
+}
+fn default_metrics_addr() -> String {
+    "127.0.0.1:9090".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
