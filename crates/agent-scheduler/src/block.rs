@@ -23,7 +23,7 @@ pub struct AgentControlBlock {
 }
 
 /// สถานะวงจรชีวิต (Lifecycle States) ของ Agent ในระบบ
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum AgentState {
     /// อยู่ในระหว่างการสร้างข้อมูลและการเตรียมทรัพยากร
     Creating,
@@ -108,9 +108,9 @@ mod tests {
             AgentState::Restarting,
         ];
 
-        for state in states.iter().cloned() {
+        for state in states.iter().copied() {
             let mut acb = AgentControlBlock::new(0);
-            acb.state = state.clone();
+            acb.state = state;
             assert_eq!(acb.state, state);
         }
     }

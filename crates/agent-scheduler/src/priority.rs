@@ -153,12 +153,7 @@ mod tests {
 
     #[test]
     fn test_priority_enum_derived_traits() {
-        let priorities = vec![
-            Priority::Eco,
-            Priority::Batch,
-            Priority::Interactive,
-            Priority::RealTime,
-        ];
+        let priorities = vec![Priority::Eco, Priority::Batch, Priority::Interactive, Priority::RealTime];
 
         for (i, p1) in priorities.iter().enumerate() {
             for (j, p2) in priorities.iter().enumerate() {
