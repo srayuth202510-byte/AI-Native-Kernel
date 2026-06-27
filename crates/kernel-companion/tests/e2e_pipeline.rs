@@ -39,7 +39,7 @@ async fn e2e_tracer_delivers_simulated_events() {
     let cancel = CancellationToken::new();
     let (tracer, mut rx) = SyscallTracer::new(Arc::new(kernel_companion::LsmPolicyEngine::new()));
 
-    let handle = tokio::spawn(async move { tracer.run(cancel).await });
+    let handle = tokio::spawn(async move { tracer.run(cancel, true).await });
 
     let mut events = Vec::new();
     while let Some(event) = timeout(Duration::from_millis(500), rx.recv())
@@ -79,7 +79,7 @@ async fn e2e_full_pipeline_tracer_to_scheduler() {
     let (tracer, mut rx) = SyscallTracer::new(Arc::new(kernel_companion::LsmPolicyEngine::new()));
 
     // 1) Start tracer (simulation mode)
-    let tracer_handle = tokio::spawn(async move { tracer.run(cancel).await });
+    let tracer_handle = tokio::spawn(async move { tracer.run(cancel, true).await });
 
     // 2) Bridge: convert SyscallEvents → Intents and publish to IntentBus
     let bus_arc = Arc::new(intent_bus);
@@ -155,7 +155,7 @@ async fn e2e_policy_denies_dangerous_syscalls() {
     let (tracer, mut rx) = SyscallTracer::new(policy);
 
     let cancel = CancellationToken::new();
-    tokio::spawn(async move { tracer.run(cancel).await });
+    tokio::spawn(async move { tracer.run(cancel, true).await });
 
     let mut allow_count = 0;
     let mut deny_count = 0;

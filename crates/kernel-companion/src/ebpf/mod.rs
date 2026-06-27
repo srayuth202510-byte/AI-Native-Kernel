@@ -5,7 +5,7 @@ use std::convert::TryInto;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::lsm::{LsmDecision, LsmPolicyEngine};
 use crate::observability::kernel_metrics;
@@ -63,7 +63,11 @@ impl SyscallTracer {
     }
 
     #[instrument(skip(self, cancel))]
-    pub async fn run(self, cancel: CancellationToken) -> Result<(), TracerError> {
+    pub async fn run(
+        self,
+        cancel: CancellationToken,
+        enable_fallback: bool,
+    ) -> Result<(), TracerError> {
         info!("SyscallTracer starting — attempting real eBPF program load");
 
         match self.try_run_bpf(cancel.clone()).await {
@@ -73,6 +77,17 @@ impl SyscallTracer {
                 Ok(())
             }
             Err(e) => {
+                if !enable_fallback {
+                    // --no-bpf-fallback: fail hard instead of degrading to simulation.
+                    // Use case: production deployments that refuse to run without
+                    // kernel-level enforcement (fail-closed posture).
+                    kernel_metrics().record_attach_attempt("tracer", "failed");
+                    error!(
+                        error = %e,
+                        "real eBPF load failed and fallback is disabled (use --no-bpf-fallback=false to allow simulation)"
+                    );
+                    return Err(e);
+                }
                 let metrics = kernel_metrics();
                 metrics.record_attach_attempt("tracer", "fallback");
                 metrics.set_active_mode("tracer", "simulation");
@@ -557,7 +572,7 @@ mod tests {
         let (tracer, mut rx) = make_tracer();
 
         tokio::spawn(async move {
-            let _ = tracer.run(cancel).await;
+            let _ = tracer.run(cancel, true).await;
         });
 
         let event = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
@@ -587,7 +602,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             tokio::spawn(async move {
-                let _ = tracer.run(cancel).await;
+                let _ = tracer.run(cancel, true).await;
             });
 
             let event = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())

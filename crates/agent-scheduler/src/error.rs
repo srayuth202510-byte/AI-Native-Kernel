@@ -34,4 +34,8 @@ pub enum SchedulerError {
     /// เกิดข้อผิดพลาดระบบความปลอดภัยภายในเมื่อขอรับสิทธิ์ความสามารถ
     #[error("capability security failure")]
     CapabilitySecurityFailed,
+
+    /// Scheduler loop กำลังทำงานอยู่แล้ว
+    #[error("scheduler already running")]
+    SchedulerAlreadyRunning,
 }

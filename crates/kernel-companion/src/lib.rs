@@ -224,9 +224,10 @@ impl KernelCompanion {
             // เริ่มต้น SyscallTracer เพื่อดักฟัง syscall และส่งต่อให้ TCellAgent
             let (tracer, mut event_rx) = SyscallTracer::new(Arc::clone(&self.lsm_engine));
             let cancel = tokio_util_cancel::CancellationToken::new();
+            let enable_fallback = self.config.ebpf.enable_fallback;
             self.tracer_cancel = Some(cancel.clone());
             self.tracer_task = Some(tokio::spawn(async move {
-                let _ = tracer.run(cancel).await;
+                let _ = tracer.run(cancel, enable_fallback).await;
             }));
 
             let tcell = Arc::clone(&self.tcell);

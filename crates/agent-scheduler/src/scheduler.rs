@@ -1,13 +1,16 @@
 use crate::block::{AgentControlBlock, AgentState};
 use crate::error::SchedulerError;
-use crate::priority::Priority;
+use crate::priority::{Priority, PriorityAgent, PriorityQueue};
 use crate::supervisor::SupervisorService;
 use capability_security::{CapabilitySecurityManager, CapabilityToken};
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{RwLock, broadcast};
+use tokio::task::JoinHandle;
+use tracing::{debug, info, instrument};
 
 /// ตัวจัดตารางเวลาและการประมวลผลของ Agent (Agent Scheduler)
 /// ทำหน้าที่บริหารจัดการสถานะ วงจรชีวิต และการสื่อสารประสานงานของ Agent ทั้งหมดในระบบ
@@ -27,6 +30,14 @@ pub struct AgentScheduler {
     supervisor_service: Arc<SupervisorService>,
     /// ช่องสัญญาณกระจายข่าวสารประวัติการทำงานของ Agent (Agent Events monitoring)
     monitoring_tx: broadcast::Sender<AgentEvent>,
+    /// คิวลำดับความสำคัญสำหรับการจัดตารางการทำงานของ Agent
+    run_queue: Arc<RwLock<PriorityQueue>>,
+    /// Task handle สำหรับ scheduling loop
+    scheduler_task: Arc<RwLock<Option<JoinHandle<()>>>>,
+    /// Cancellation token สำหรับ scheduler loop
+    scheduler_cancel: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Time slice configuration per priority level (in microseconds)
+    time_slices: [Duration; 4],
 }
 
 /// เหตุการณ์การเปลี่ยนแปลงสถานะหรือคุณลักษณะของ Agent ในระบบ
@@ -92,6 +103,16 @@ impl AgentScheduler {
             restart_backoff_ms,
         ));
         let (monitoring_tx, _) = broadcast::channel(monitoring_capacity);
+        let run_queue = Arc::new(RwLock::new(PriorityQueue::new()));
+        let (scheduler_cancel_tx, _) = tokio::sync::watch::channel(false);
+
+        // Time slices per priority: Eco=10ms, Batch=5ms, Interactive=1ms, RealTime=500µs
+        let time_slices = [
+            Duration::from_millis(10),  // Eco
+            Duration::from_millis(5),   // Batch
+            Duration::from_millis(1),   // Interactive
+            Duration::from_micros(500), // RealTime
+        ];
 
         Self {
             agents,
@@ -101,6 +122,10 @@ impl AgentScheduler {
             capability_security,
             supervisor_service,
             monitoring_tx,
+            run_queue,
+            scheduler_task: Arc::new(RwLock::new(None)),
+            scheduler_cancel: Arc::new(scheduler_cancel_tx),
+            time_slices,
         }
     }
 
@@ -375,6 +400,224 @@ impl AgentScheduler {
             .monitoring_tx
             .send(AgentEvent::AgentCapabilityGranted(agent_id, token));
         Ok(())
+    }
+
+    /// เพิ่ม Agent เข้าสู่คิวการทำงาน (Run Queue) ตามลำดับความสำคัญ
+    ///
+    /// # Errors
+    /// ส่งคืนข้อผิดพลาดหากไม่พบ Agent หรือ Agent ไม่อยู่ในสถานะ Running
+    pub async fn enqueue_agent(&self, agent_id: u64) -> Result<(), SchedulerError> {
+        let mut agents = self.agents.write().await;
+        let agent = agents
+            .get_mut(&agent_id)
+            .ok_or(SchedulerError::AgentNotFound)?;
+
+        if agent.state != AgentState::Running {
+            return Err(SchedulerError::AgentNotRunning);
+        }
+
+        let priority_agent = PriorityAgent::new(agent_id, agent.priority);
+        let mut queue = self.run_queue.write().await;
+        queue.push(priority_agent);
+        Ok(())
+    }
+
+    /// นำ Agent ออกจากคิวการทำงาน
+    pub async fn dequeue_agent(&self, agent_id: u64) -> bool {
+        let mut queue = self.run_queue.write().await;
+        // PriorityQueue ไม่มี remove by ID ตรงๆ ต้องสร้างใหม่
+        let mut temp = Vec::new();
+        let mut found = false;
+        while let Some(pa) = queue.pop() {
+            if pa.id == agent_id {
+                found = true;
+            } else {
+                temp.push(pa);
+            }
+        }
+        for pa in temp {
+            queue.push(pa);
+        }
+        found
+    }
+
+    /// เริ่มต้น Scheduling Loop ที่ทำงานแบบ Time-sliced ตาม Priority
+    ///
+    /// Scheduling Loop จะ:
+    /// 1. ดึง Agent ที่มี Priority สูงสุดจาก Run Queue
+    /// 2. รัน Agent เป็นเวลา Time Slice ตาม Priority ของมัน
+    /// 3. ถ้า Agent ยัง Running อยู่ ให้ Enqueue กลับเข้า Queue
+    /// 4. ทำซ้ำจนกว่าจะได้รับสัญญาณ Cancel
+    ///
+    /// # Errors
+    /// ส่งคืนข้อผิดพลาดหาก Scheduler Task กำลังทำงานอยู่แล้ว
+    #[instrument(skip(self))]
+    pub async fn start_scheduler_loop(&self) -> Result<(), SchedulerError> {
+        let mut task_guard = self.scheduler_task.write().await;
+        if task_guard.is_some() {
+            return Err(SchedulerError::SchedulerAlreadyRunning);
+        }
+
+        let agents = Arc::clone(&self.agents);
+        let run_queue = Arc::clone(&self.run_queue);
+        let context_memory = Arc::clone(&self.context_memory);
+        let monitoring_tx = self.monitoring_tx.clone();
+        let time_slices = self.time_slices;
+        let mut shutdown_rx = self.scheduler_cancel.subscribe();
+
+        let task = tokio::spawn(async move {
+            info!("Agent Scheduler Loop started");
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            info!("Scheduler loop received shutdown signal");
+                            break;
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_micros(100)) => {
+                        // ดึง Agent ถัดไปจากคิว
+                        let next_agent = {
+                            let mut queue = run_queue.write().await;
+                            queue.pop()
+                        };
+
+                        if let Some(priority_agent) = next_agent {
+                            let agent_id = priority_agent.id;
+                            let priority = priority_agent.priority;
+                            let time_slice = time_slices[priority as usize];
+
+                            // ตรวจสอบว่า Agent ยังอยู่และ Running
+                            let agent_opt = {
+                                let agents_read = agents.read().await;
+                                agents_read.get(&agent_id).cloned()
+                            };
+
+                            if let Some(agent) = agent_opt {
+                                if agent.state == AgentState::Running {
+                                    // Execute agent time slice
+                                    Self::execute_agent_slice(
+                                        agent_id,
+                                        priority,
+                                        time_slice,
+                                        &context_memory,
+                                        &monitoring_tx,
+                                    ).await;
+
+                                    // Enqueue กลับเข้า Queue ถ้ายัง Running
+                                    let still_running = {
+                                        let agents_read = agents.read().await;
+                                        agents_read.get(&agent_id)
+                                            .map(|a| a.state == AgentState::Running)
+                                            .unwrap_or(false)
+                                    };
+                                    if still_running {
+                                        let mut queue = run_queue.write().await;
+                                        queue.push(priority_agent);
+                                    } else {
+                                        debug!(agent_id, "Agent no longer running, not re-queued");
+                                    }
+                                } else {
+                                    debug!(agent_id, ?agent.state, "Agent not running, skipped");
+                                }
+                            } else {
+                                debug!(agent_id, "Agent not found, skipped");
+                            }
+                        }
+                    }
+                }
+            }
+            info!("Agent Scheduler Loop stopped");
+        });
+
+        *task_guard = Some(task);
+        Ok(())
+    }
+
+    /// หยุด Scheduling Loop
+    pub async fn stop_scheduler_loop(&self) {
+        let _ = self.scheduler_cancel.send(true);
+        let mut task_guard = self.scheduler_task.write().await;
+        if let Some(task) = task_guard.take() {
+            let _ = task.await;
+        }
+    }
+
+    /// Execute a single time slice for an agent
+    async fn execute_agent_slice(
+        agent_id: u64,
+        priority: Priority,
+        time_slice: Duration,
+        context_memory: &ContextMemoryManager,
+        monitoring_tx: &broadcast::Sender<AgentEvent>,
+    ) {
+        debug!(
+            agent_id,
+            ?priority,
+            ?time_slice,
+            "Executing agent time slice"
+        );
+
+        // Simulate agent work - in real implementation this would run the agent's task
+        // For now, we just sleep for the time slice duration
+        tokio::time::sleep(time_slice).await;
+
+        // Promote context to hot tier if agent has context
+        let agents_read = context_memory.tier_of(&format!("agent-{}", agent_id));
+        if let Some(tier) = agents_read {
+            if tier != "hot" {
+                let _ = context_memory.promote(&format!("agent-{}", agent_id));
+                let _ = monitoring_tx.send(AgentEvent::AgentContextSwitched(
+                    agent_id,
+                    format!("agent-{}", agent_id),
+                ));
+            }
+        }
+    }
+
+    /// เปลี่ยน Priority ของ Agent และอัปเดตคิวการทำงาน
+    ///
+    /// # Errors
+    /// ส่งคืนข้อผิดพลาดหากไม่พบ Agent
+    pub async fn set_agent_priority(
+        &self,
+        agent_id: u64,
+        priority: Priority,
+    ) -> Result<(), SchedulerError> {
+        let mut agents = self.agents.write().await;
+        let agent = agents
+            .get_mut(&agent_id)
+            .ok_or(SchedulerError::AgentNotFound)?;
+
+        let old_priority = agent.priority;
+        agent.priority = priority;
+
+        // ถ้า Agent อยู่ใน Run Queue ให้ Dequeue แล้ว Enqueue ใหม่ด้วย Priority ใหม่
+        let was_queued = self.dequeue_agent(agent_id).await;
+        if was_queued {
+            let priority_agent = PriorityAgent::new(agent_id, priority);
+            let mut queue = self.run_queue.write().await;
+            queue.push(priority_agent);
+        }
+
+        let _ = self
+            .monitoring_tx
+            .send(AgentEvent::AgentPriorityChanged(agent_id, priority));
+
+        debug!(agent_id, old = ?old_priority, new = ?priority, "Agent priority changed");
+        Ok(())
+    }
+
+    /// ดึงขนาดคิวการทำงานปัจจุบัน
+    pub async fn run_queue_len(&self) -> usize {
+        let queue = self.run_queue.read().await;
+        queue.len()
+    }
+
+    /// ตรวจสอบว่า Scheduler Loop กำลังทำงานอยู่หรือไม่
+    pub async fn is_scheduler_running(&self) -> bool {
+        let task_guard = self.scheduler_task.read().await;
+        task_guard.is_some()
     }
 }
 

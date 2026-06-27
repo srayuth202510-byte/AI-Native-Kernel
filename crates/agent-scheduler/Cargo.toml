@@ -11,6 +11,7 @@ keywords = ["ai", "scheduler", "agent", "isolation"]
 [dependencies]
 tokio = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 intent-bus = { path = "../intent-bus" }
 context-memory = { path = "../context-memory" }
 capability-security = { path = "../capability-security" }
