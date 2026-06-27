@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn test_agent_state_enum_all_variants() {
-        let states = vec![
+        let states = [
             AgentState::Creating,
             AgentState::Running,
             AgentState::Paused,
