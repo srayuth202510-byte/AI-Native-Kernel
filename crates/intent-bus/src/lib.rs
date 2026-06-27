@@ -6,7 +6,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{RwLock, broadcast};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// `Intent` คือตัวแทนของเจตจำนงหรือความต้องการที่ส่งเข้ามาในระบบ
 /// เพื่อให้ Agent หรือส่วนประกอบอื่น ๆ นำไปประมวลผลต่อ

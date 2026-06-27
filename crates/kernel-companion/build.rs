@@ -31,21 +31,28 @@ fn main() {
     if can_compile {
         if !vmlinux_h.exists() {
             let vmlinux_output = Command::new("bpftool")
-                .args(["btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c"])
+                .args([
+                    "btf",
+                    "dump",
+                    "file",
+                    "/sys/kernel/btf/vmlinux",
+                    "format",
+                    "c",
+                ])
                 .output()
                 .expect("bpftool should be available");
 
             if vmlinux_output.status.success() {
-                std::fs::write(&vmlinux_h, vmlinux_output.stdout)
-                    .expect("write vmlinux.h");
+                std::fs::write(&vmlinux_h, vmlinux_output.stdout).expect("write vmlinux.h");
             } else {
                 let stderr = String::from_utf8_lossy(&vmlinux_output.stderr);
                 println!("cargo:warning=bpftool stderr: {stderr}");
-                println!("cargo:warning=bpftool failed to generate vmlinux.h — BPF will not be compiled");
+                println!(
+                    "cargo:warning=bpftool failed to generate vmlinux.h — BPF will not be compiled"
+                );
                 print_bpf_disabled_instructions();
                 return;
             }
-
         }
 
         let clang_status = Command::new("clang")
@@ -67,7 +74,9 @@ fn main() {
             .expect("clang should be available");
 
         if !clang_status.success() {
-            println!("cargo:warning=clang failed to compile BPF program — falling back to simulation");
+            println!(
+                "cargo:warning=clang failed to compile BPF program — falling back to simulation"
+            );
             print_bpf_disabled_instructions();
             return;
         }
@@ -83,7 +92,9 @@ fn main() {
 fn print_bpf_disabled_instructions() {
     println!("cargo:warning=  To enable real eBPF tracing, ensure:");
     println!("cargo:warning=    1. Kernel BTF:  /sys/kernel/btf/vmlinux");
-    println!("cargo:warning=    2. BPF headers: /usr/src/linux-headers-$(uname -r)/.../bpf/bpf_helpers.h");
+    println!(
+        "cargo:warning=    2. BPF headers: /usr/src/linux-headers-$(uname -r)/.../bpf/bpf_helpers.h"
+    );
     println!("cargo:warning=    3. clang with BPF target support");
     println!("cargo:warning=    4. bpftool installed");
 }

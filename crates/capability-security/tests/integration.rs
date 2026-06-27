@@ -1,4 +1,6 @@
-use capability_security::{CapabilitySecurityManager, CapabilityToken, Scope, policy::PolicyDecision};
+use capability_security::{
+    CapabilitySecurityManager, CapabilityToken, Scope, policy::PolicyDecision,
+};
 use std::time::Duration;
 
 fn manager(test_name: &str) -> (CapabilitySecurityManager, String) {
@@ -6,7 +8,10 @@ fn manager(test_name: &str) -> (CapabilitySecurityManager, String) {
     let _ = std::fs::remove_dir_all(&log_dir);
     std::fs::create_dir_all(&log_dir).ok();
     let log_path = log_dir.join("audit.log");
-    (CapabilitySecurityManager::new_with_log_path(log_path), log_dir.display().to_string())
+    (
+        CapabilitySecurityManager::new_with_log_path(log_path),
+        log_dir.display().to_string(),
+    )
 }
 
 #[test]

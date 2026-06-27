@@ -79,12 +79,11 @@ impl SyscallTracer {
 
     #[instrument(skip(self, cancel))]
     async fn try_run_bpf(&self, cancel: CancellationToken) -> Result<(), TracerError> {
-        let bpf_bytes = load_bpf_program_bytes().map_err(|e| {
-            TracerError::LoadFailed(format!("cannot load BPF .o bytes: {e}"))
-        })?;
+        let bpf_bytes = load_bpf_program_bytes()
+            .map_err(|e| TracerError::LoadFailed(format!("cannot load BPF .o bytes: {e}")))?;
 
-        let mut bpf = aya::Bpf::load(&bpf_bytes)
-            .map_err(|e| TracerError::LoadFailed(e.to_string()))?;
+        let mut bpf =
+            aya::Bpf::load(&bpf_bytes).map_err(|e| TracerError::LoadFailed(e.to_string()))?;
 
         let program: &mut aya::programs::TracePoint = bpf
             .program_mut("sys_enter_tp")
@@ -110,12 +109,10 @@ impl SyscallTracer {
 
         let mut perf_array: aya::maps::PerfEventArray<_> = map
             .try_into()
-            .map_err(|e: aya::maps::MapError| {
-                TracerError::RingBufferError(e.to_string())
-            })?;
+            .map_err(|e: aya::maps::MapError| TracerError::RingBufferError(e.to_string()))?;
 
-        let cpus = aya::util::online_cpus()
-            .map_err(|e| TracerError::RingBufferError(e.to_string()))?;
+        let cpus =
+            aya::util::online_cpus().map_err(|e| TracerError::RingBufferError(e.to_string()))?;
 
         let mut buffers: Vec<PerfBufferState> = Vec::new();
         for cpu_id in cpus {
@@ -137,9 +134,8 @@ impl SyscallTracer {
                     Ok(events) if events.read > 0 => {
                         for buf in state.out_bufs.iter() {
                             if let Some(raw) = parse_raw_event(buf) {
-                                let event = self.process_syscall_event(
-                                    raw.syscall_nr, raw.pid, raw.uid,
-                                );
+                                let event =
+                                    self.process_syscall_event(raw.syscall_nr, raw.pid, raw.uid);
                                 if self.event_tx.try_send(event).is_err() {
                                     debug!("event channel full — dropping syscall event");
                                 }
@@ -163,10 +159,7 @@ impl SyscallTracer {
     }
 
     #[instrument(skip(self, cancel))]
-    async fn run_simulation_loop(
-        &self,
-        cancel: CancellationToken,
-    ) -> Result<(), TracerError> {
+    async fn run_simulation_loop(&self, cancel: CancellationToken) -> Result<(), TracerError> {
         info!("SyscallTracer running in simulation mode (Phase 1 — no real kernel tracepoint)");
 
         let simulated: &[(u64, u32, u32)] = &[
@@ -262,7 +255,12 @@ fn parse_raw_event(buf: &[u8]) -> Option<RawSyscallEvent> {
     let pid = u32::from_ne_bytes(buf[8..12].try_into().ok()?);
     let uid = u32::from_ne_bytes(buf[12..16].try_into().ok()?);
     let timestamp_ns = u64::from_ne_bytes(buf[16..24].try_into().ok()?);
-    Some(RawSyscallEvent { syscall_nr, pid, uid, timestamp_ns })
+    Some(RawSyscallEvent {
+        syscall_nr,
+        pid,
+        uid,
+        timestamp_ns,
+    })
 }
 
 // ---- BPF program loading ----
@@ -453,13 +451,10 @@ mod tests {
                 let _ = tracer.run(cancel).await;
             });
 
-            let event = tokio::time::timeout(
-                std::time::Duration::from_millis(500),
-                rx.recv(),
-            )
-            .await
-            .expect("should receive event within 500ms")
-            .expect("channel should be open");
+            let event = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+                .await
+                .expect("should receive event within 500ms")
+                .expect("channel should be open");
 
             assert_eq!(event.syscall_nr, 0);
             assert_eq!(event.syscall_name, "read");

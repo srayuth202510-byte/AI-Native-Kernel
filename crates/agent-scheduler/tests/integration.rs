@@ -1,5 +1,5 @@
-use agent_scheduler::block::AgentControlBlock;
 use agent_scheduler::AgentScheduler;
+use agent_scheduler::block::AgentControlBlock;
 use capability_security::{CapabilitySecurityManager, CapabilityToken, Scope};
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentPriority, IntentType};

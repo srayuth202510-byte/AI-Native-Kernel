@@ -25,7 +25,10 @@ impl HardwareProber {
                 Some(n)
             }
             Err(e) => {
-                warn!("NVML initialization failed (no NVIDIA GPU or driver missing): {}", e);
+                warn!(
+                    "NVML initialization failed (no NVIDIA GPU or driver missing): {}",
+                    e
+                );
                 None
             }
         };

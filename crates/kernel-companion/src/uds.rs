@@ -1,10 +1,10 @@
+use crate::tokio_util_cancel::CancellationToken;
 use anyhow::Result;
 use intent_bus::{Intent, IntentBus};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::UnixListener;
 use tracing::{debug, error, info};
-use crate::tokio_util_cancel::CancellationToken;
 
 /// เริ่มต้น Unix Domain Socket Server สำหรับรับ Intent จากภายนอก
 pub async fn start_uds_server(
@@ -73,7 +73,7 @@ pub async fn start_uds_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use intent_bus::{Intent, IntentType, IntentPriority};
+    use intent_bus::{Intent, IntentPriority, IntentType};
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
 
@@ -136,4 +136,3 @@ mod tests {
         let _ = tokio::fs::remove_file(&socket_path).await;
     }
 }
-

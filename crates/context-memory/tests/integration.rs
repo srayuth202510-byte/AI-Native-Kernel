@@ -1,4 +1,4 @@
-use context_memory::{ContextMemoryManager, ContextError};
+use context_memory::{ContextError, ContextMemoryManager};
 
 #[test]
 fn eviction_preserves_data_in_warm() {
@@ -17,7 +17,10 @@ fn eviction_preserves_data_in_warm() {
     memory.put("e", b"5".to_vec());
     memory.put("f", b"6".to_vec());
 
-    assert!(memory.get("keep").is_ok(), "keep should survive multiple evictions");
+    assert!(
+        memory.get("keep").is_ok(),
+        "keep should survive multiple evictions"
+    );
     assert_eq!(memory.get("keep").unwrap(), b"important".to_vec());
 }
 
@@ -28,10 +31,18 @@ fn promote_warm_to_hot_round_trip() {
     assert_eq!(memory.tier_of("key"), Some("hot"));
 
     memory.put("other", b"bump".to_vec());
-    assert_eq!(memory.tier_of("key"), Some("warm"), "key should be evicted to warm");
+    assert_eq!(
+        memory.tier_of("key"),
+        Some("warm"),
+        "key should be evicted to warm"
+    );
 
     memory.promote("key").expect("promote should succeed");
-    assert_eq!(memory.tier_of("key"), Some("hot"), "key should be promoted back to hot");
+    assert_eq!(
+        memory.tier_of("key"),
+        Some("hot"),
+        "key should be promoted back to hot"
+    );
     assert_eq!(memory.get("key").unwrap(), b"promote-me".to_vec());
 }
 
@@ -42,8 +53,16 @@ fn demote_hot_to_warm_round_trip() {
     assert_eq!(memory.tier_of("hot-data"), Some("hot"));
 
     memory.demote("hot-data").expect("demote should succeed");
-    assert_eq!(memory.tier_of("hot-data"), Some("warm"), "should be in warm after demote");
-    assert_eq!(memory.get("hot-data").unwrap(), b"will-be-demoted".to_vec(), "data intact after demote");
+    assert_eq!(
+        memory.tier_of("hot-data"),
+        Some("warm"),
+        "should be in warm after demote"
+    );
+    assert_eq!(
+        memory.get("hot-data").unwrap(),
+        b"will-be-demoted".to_vec(),
+        "data intact after demote"
+    );
 }
 
 #[test]

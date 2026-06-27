@@ -1,8 +1,8 @@
 use anyhow::Result;
-use qdrant_client::qdrant::{PointStruct, SearchPoints, UpsertPoints};
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::vectors_config::Config;
 use qdrant_client::qdrant::{CreateCollection, Distance, VectorParams, VectorsConfig};
+use qdrant_client::qdrant::{PointStruct, SearchPoints, UpsertPoints};
 use std::collections::HashMap;
 
 /// ตัวจัดการพื้นที่จัดเก็บและค้นหาตามความหมาย (Semantic Store)
@@ -16,7 +16,7 @@ impl SemanticStore {
     /// สร้างอินสแตนซ์ใหม่โดยเชื่อมต่อไปยัง Qdrant Server และเตรียม Collection
     pub async fn new(url: &str, collection_name: &str, vector_size: u64) -> Result<Self> {
         let client = Qdrant::from_url(url).build()?;
-        
+
         // เตรียมสร้าง Collection หากยังไม่มี (สำหรับ MVP)
         if !client.collection_exists(collection_name).await? {
             client
@@ -42,38 +42,39 @@ impl SemanticStore {
 
     /// บันทึกหรืออัปเดตข้อมูลบริบท (Context) ในรูปแบบ Vector เข้าสู่ระบบ
     pub async fn upsert(
-        &self, 
-        id: &str, 
-        vector: Vec<f32>, 
-        payload: HashMap<String, qdrant_client::qdrant::Value>
+        &self,
+        id: &str,
+        vector: Vec<f32>,
+        payload: HashMap<String, qdrant_client::qdrant::Value>,
     ) -> Result<()> {
-        let point = PointStruct::new(
-            id.to_string(),
-            vector,
-            payload,
-        );
-        self.client.upsert_points(UpsertPoints {
-            collection_name: self.collection_name.clone(),
-            wait: Some(true),
-            points: vec![point],
-            ..Default::default()
-        }).await?;
+        let point = PointStruct::new(id.to_string(), vector, payload);
+        self.client
+            .upsert_points(UpsertPoints {
+                collection_name: self.collection_name.clone(),
+                wait: Some(true),
+                points: vec![point],
+                ..Default::default()
+            })
+            .await?;
         Ok(())
     }
 
     /// ค้นหาบริบทที่ใกล้เคียงที่สุดตามความหมาย (Semantic Search)
     pub async fn search(
-        &self, 
-        vector: Vec<f32>, 
-        limit: u64
+        &self,
+        vector: Vec<f32>,
+        limit: u64,
     ) -> Result<Vec<qdrant_client::qdrant::ScoredPoint>> {
-        let result = self.client.search_points(SearchPoints {
-            collection_name: self.collection_name.clone(),
-            vector,
-            limit,
-            with_payload: Some(true.into()),
-            ..Default::default()
-        }).await?;
+        let result = self
+            .client
+            .search_points(SearchPoints {
+                collection_name: self.collection_name.clone(),
+                vector,
+                limit,
+                with_payload: Some(true.into()),
+                ..Default::default()
+            })
+            .await?;
         Ok(result.result)
     }
 
@@ -87,7 +88,11 @@ impl SemanticStore {
         let mut extracted = Vec::new();
 
         for point in results {
-            let id = match point.id.as_ref().and_then(|id| id.point_id_options.as_ref()) {
+            let id = match point
+                .id
+                .as_ref()
+                .and_then(|id| id.point_id_options.as_ref())
+            {
                 Some(qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u)) => u.clone(),
                 Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)) => n.to_string(),
                 None => continue,
@@ -109,18 +114,22 @@ impl SemanticStore {
 
     /// ลบข้อมูลบริบท (Context) ออกจากระบบ Qdrant ด้วย ID
     pub async fn delete(&self, id: &str) -> Result<()> {
-        use qdrant_client::qdrant::{DeletePoints, PointsIdsList, PointsSelector, points_selector::PointsSelectorOneOf};
+        use qdrant_client::qdrant::{
+            DeletePoints, PointsIdsList, PointsSelector, points_selector::PointsSelectorOneOf,
+        };
 
-        self.client.delete_points(DeletePoints {
-            collection_name: self.collection_name.clone(),
-            wait: Some(true),
-            points: Some(PointsSelector {
-                points_selector_one_of: Some(PointsSelectorOneOf::Points(PointsIdsList {
-                    ids: vec![id.to_string().into()],
-                })),
-            }),
-            ..Default::default()
-        }).await?;
+        self.client
+            .delete_points(DeletePoints {
+                collection_name: self.collection_name.clone(),
+                wait: Some(true),
+                points: Some(PointsSelector {
+                    points_selector_one_of: Some(PointsSelectorOneOf::Points(PointsIdsList {
+                        ids: vec![id.to_string().into()],
+                    })),
+                }),
+                ..Default::default()
+            })
+            .await?;
         Ok(())
     }
 }
@@ -130,7 +139,9 @@ mod tests {
     use super::*;
 
     async fn check_qdrant_online() -> bool {
-        tokio::net::TcpStream::connect("127.0.0.1:6334").await.is_ok()
+        tokio::net::TcpStream::connect("127.0.0.1:6334")
+            .await
+            .is_ok()
     }
 
     #[tokio::test]
@@ -141,8 +152,7 @@ mod tests {
             return Ok(());
         }
 
-        let store = SemanticStore::new("http://localhost:6334", "ank_context", 128)
-            .await?;
+        let store = SemanticStore::new("http://localhost:6334", "ank_context", 128).await?;
 
         let vector1 = vec![0.1; 128]; // Mock embedding
         let mut payload1 = HashMap::new();
@@ -153,9 +163,16 @@ mod tests {
         // Search for nearest neighbor
         let results = store.search(vector1, 1).await?;
         assert_eq!(results.len(), 1);
-        
+
         let point = &results[0];
-        let id_val = match point.id.as_ref().ok_or_else(|| anyhow::anyhow!("Missing ID"))?.point_id_options.as_ref().ok_or_else(|| anyhow::anyhow!("Missing point options"))? {
+        let id_val = match point
+            .id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing ID"))?
+            .point_id_options
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing point options"))?
+        {
             qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u) => u.clone(),
             qdrant_client::qdrant::point_id::PointIdOptions::Num(n) => n.to_string(),
         };
@@ -171,8 +188,7 @@ mod tests {
             return Ok(());
         }
 
-        let store = SemanticStore::new("http://localhost:6334", "ank_context_multi", 64)
-            .await?;
+        let store = SemanticStore::new("http://localhost:6334", "ank_context_multi", 64).await?;
 
         // เตรียมข้อมูล 3 จุด
         let vec1 = vec![1.0; 64];
@@ -195,7 +211,14 @@ mod tests {
         let results = store.search(vec1, 2).await?;
         assert_eq!(results.len(), 2);
 
-        let first_id = match results[0].id.as_ref().ok_or_else(|| anyhow::anyhow!("Missing ID"))?.point_id_options.as_ref().ok_or_else(|| anyhow::anyhow!("Missing point options"))? {
+        let first_id = match results[0]
+            .id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing ID"))?
+            .point_id_options
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing point options"))?
+        {
             qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u) => u.clone(),
             qdrant_client::qdrant::point_id::PointIdOptions::Num(n) => n.to_string(),
         };
@@ -212,8 +235,7 @@ mod tests {
             return Ok(());
         }
 
-        let store = SemanticStore::new("http://localhost:6334", "ank_context_empty", 32)
-            .await?;
+        let store = SemanticStore::new("http://localhost:6334", "ank_context_empty", 32).await?;
 
         // ค้นหาใน collection เปล่า หรือไม่ได้ใส่ข้อมูล
         let results = store.search(vec![0.5; 32], 5).await?;
@@ -222,4 +244,3 @@ mod tests {
         Ok(())
     }
 }
-

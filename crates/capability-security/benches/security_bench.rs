@@ -1,6 +1,4 @@
-use capability_security::{
-    CapabilitySecurityManager, CapabilityToken, Scope,
-};
+use capability_security::{CapabilitySecurityManager, CapabilityToken, Scope};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
@@ -34,9 +32,7 @@ fn bench_authorize_token_allow(c: &mut Criterion) {
 
     c.bench_function("authorize_token_allow", |b| {
         b.iter(|| {
-            let result = manager
-                .authorize_token(black_box(&token), "read")
-                .unwrap();
+            let result = manager.authorize_token(black_box(&token), "read").unwrap();
             black_box(result)
         });
     });
@@ -55,9 +51,7 @@ fn bench_authorize_token_deny(c: &mut Criterion) {
 
     c.bench_function("authorize_token_deny", |b| {
         b.iter(|| {
-            let result = manager
-                .authorize_token(black_box(&token), "write")
-                .unwrap();
+            let result = manager.authorize_token(black_box(&token), "write").unwrap();
             black_box(result)
         });
     });
@@ -111,7 +105,8 @@ fn bench_constant_time_eq(c: &mut Criterion) {
 
     c.bench_function("constant_time_eq_match", |bench| {
         bench.iter(|| {
-            let result = capability_security::constant_time_eq(black_box(&arr_a), black_box(&arr_b));
+            let result =
+                capability_security::constant_time_eq(black_box(&arr_a), black_box(&arr_b));
             black_box(result)
         });
     });

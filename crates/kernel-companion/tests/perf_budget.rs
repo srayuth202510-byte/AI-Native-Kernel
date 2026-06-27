@@ -1,6 +1,6 @@
 #![deny(unsafe_code)]
 
-use agent_scheduler::{block::AgentControlBlock, AgentScheduler};
+use agent_scheduler::{AgentScheduler, block::AgentControlBlock};
 use capability_security::{CapabilitySecurityManager, CapabilityToken, Scope};
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentPriority, IntentType};
@@ -34,9 +34,7 @@ async fn budget_agent_spawn_p99_below_500us() {
 
     for _ in 0..samples {
         let start = Instant::now();
-        let _ = scheduler
-            .spawn_agent(AgentControlBlock::new(0))
-            .await;
+        let _ = scheduler.spawn_agent(AgentControlBlock::new(0)).await;
         latencies.push(start.elapsed());
     }
 

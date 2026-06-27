@@ -612,10 +612,7 @@ mod tests {
                 .expect("terminate should succeed");
         }
 
-        assert_eq!(
-            scheduler.get_running_agents().await.len(),
-            0,
-        );
+        assert_eq!(scheduler.get_running_agents().await.len(), 0,);
     }
 
     #[tokio::test]
@@ -631,9 +628,7 @@ mod tests {
             .await
             .expect("first pause should succeed");
         let result = scheduler.pause_agent(id).await;
-        assert!(
-            matches!(result, Err(SchedulerError::AgentNotRunning)),
-        );
+        assert!(matches!(result, Err(SchedulerError::AgentNotRunning)),);
     }
 
     #[tokio::test]
@@ -645,18 +640,14 @@ mod tests {
             .expect("spawn should succeed");
 
         let result = scheduler.resume_agent(id).await;
-        assert!(
-            matches!(result, Err(SchedulerError::AgentNotPaused)),
-        );
+        assert!(matches!(result, Err(SchedulerError::AgentNotPaused)),);
     }
 
     #[tokio::test]
     async fn error_pause_nonexistent_agent() {
         let scheduler = scheduler();
         let result = scheduler.pause_agent(999_999).await;
-        assert!(
-            matches!(result, Err(SchedulerError::AgentNotFound)),
-        );
+        assert!(matches!(result, Err(SchedulerError::AgentNotFound)),);
     }
 
     #[tokio::test]
@@ -670,8 +661,6 @@ mod tests {
             .expect("first spawn should succeed");
 
         let result = scheduler.spawn_agent(agent).await;
-        assert!(
-            matches!(result, Err(SchedulerError::AgentAlreadyExists)),
-        );
+        assert!(matches!(result, Err(SchedulerError::AgentAlreadyExists)),);
     }
 }

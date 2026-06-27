@@ -2,7 +2,6 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-
 /// โครงสร้างข้อมูลสำหรับเก็บหน้าบริบทแบบชั่วคราว (Warm Store)
 ///
 /// **โหมดปกติ (default)**: จำลองด้วยหน่วยความจำ (HashMap) เหมาะสำหรับ CI และการทดสอบ

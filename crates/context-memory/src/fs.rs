@@ -1,9 +1,9 @@
+use crate::semantic::SemanticStore;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, Context};
 use std::sync::Arc;
 use tokio::fs as tokio_fs;
-use crate::semantic::SemanticStore;
 
 /// ตัวแทนของข้อมูลไฟล์ในระบบ Semantic File System
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +35,8 @@ impl SemanticFileSystem {
         vector_size: usize,
     ) -> Result<Self> {
         let base_dir = base_dir.as_ref().to_path_buf();
-        tokio_fs::create_dir_all(&base_dir).await
+        tokio_fs::create_dir_all(&base_dir)
+            .await
             .context("Failed to create base directory for SFS")?;
 
         Ok(Self {
@@ -51,12 +52,14 @@ impl SemanticFileSystem {
 
         // 1. ตรวจสอบและสร้างโฟลเดอร์สำหรับไฟล์ย่อย
         if let Some(parent) = file_path.parent() {
-            tokio_fs::create_dir_all(parent).await
+            tokio_fs::create_dir_all(parent)
+                .await
                 .context("Failed to create parent directories for file")?;
         }
 
         // 2. เขียนไฟล์จริงลงดิสก์
-        tokio_fs::write(&file_path, content).await
+        tokio_fs::write(&file_path, content)
+            .await
             .context("Failed to write physical file content")?;
 
         // 3. คำนวณ Embedding เวกเตอร์อย่างง่ายจากคำศัพท์ (Simple Keyword Hash Embedder)
@@ -65,12 +68,18 @@ impl SemanticFileSystem {
         // 4. เตรียม Payload ข้อมูลไฟล์
         let mut payload = HashMap::new();
         payload.insert("path".to_string(), relative_path.to_string().into());
-        payload.insert("content_preview".to_string(), content.chars().take(200).collect::<String>().into());
+        payload.insert(
+            "content_preview".to_string(),
+            content.chars().take(200).collect::<String>().into(),
+        );
         payload.insert("size".to_string(), (content.len() as i64).into());
 
         // 5. บันทึก/อัปเดตเวกเตอร์ลงใน Qdrant
-        let point_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, relative_path.as_bytes()).to_string();
-        self.semantic_store.upsert(&point_id, vector, payload).await
+        let point_id =
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, relative_path.as_bytes()).to_string();
+        self.semantic_store
+            .upsert(&point_id, vector, payload)
+            .await
             .context("Failed to upsert file index to Qdrant")?;
 
         Ok(())
@@ -79,7 +88,8 @@ impl SemanticFileSystem {
     /// อ่านเนื้อหาไฟล์เต็มจากดิสก์
     pub async fn read_file(&self, relative_path: &str) -> Result<String> {
         let file_path = self.base_dir.join(relative_path);
-        let content = tokio_fs::read_to_string(&file_path).await
+        let content = tokio_fs::read_to_string(&file_path)
+            .await
             .context("Failed to read file from disk")?;
         Ok(content)
     }
@@ -88,12 +98,14 @@ impl SemanticFileSystem {
     pub async fn delete_file(&self, relative_path: &str) -> Result<()> {
         let file_path = self.base_dir.join(relative_path);
         if file_path.exists() {
-            tokio_fs::remove_file(&file_path).await
+            tokio_fs::remove_file(&file_path)
+                .await
                 .context("Failed to remove file from disk")?;
         }
 
         // ลบ Index ออกจาก Qdrant
-        let point_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, relative_path.as_bytes()).to_string();
+        let point_id =
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, relative_path.as_bytes()).to_string();
         let _ = self.semantic_store.delete(&point_id).await;
 
         Ok(())
@@ -102,8 +114,11 @@ impl SemanticFileSystem {
     /// ค้นหาไฟล์ตามความหมายและคืนค่าผลลัพธ์เป็นรายการ Path ของไฟล์
     pub async fn search_paths(&self, query_text: &str, limit: usize) -> Result<Vec<String>> {
         let query_vector = self.generate_embedding(query_text);
-        let results = self.semantic_store.search_metadata(query_vector, limit as u64).await?;
-        
+        let results = self
+            .semantic_store
+            .search_metadata(query_vector, limit as u64)
+            .await?;
+
         let mut paths = Vec::new();
         for (_id, metadata) in results {
             if let Some(path) = metadata.get("path") {
@@ -164,7 +179,9 @@ mod tests {
     use super::*;
 
     async fn check_qdrant_online() -> bool {
-        tokio::net::TcpStream::connect("127.0.0.1:6334").await.is_ok()
+        tokio::net::TcpStream::connect("127.0.0.1:6334")
+            .await
+            .is_ok()
     }
 
     #[tokio::test]
@@ -176,15 +193,26 @@ mod tests {
         }
 
         let temp_dir = std::env::temp_dir().join(format!("ank-sfs-{}", uuid::Uuid::new_v4()));
-        let store = Arc::new(SemanticStore::new("http://localhost:6334", "ank_sfs_test", 128).await?);
+        let store =
+            Arc::new(SemanticStore::new("http://localhost:6334", "ank_sfs_test", 128).await?);
         let sfs = SemanticFileSystem::new(&temp_dir, store, 128).await?;
 
         // 1. เขียนไฟล์
-        sfs.write_file("notes/ai.txt", "Artificial Intelligence and Kernel integration rules").await?;
-        sfs.write_file("notes/recipes.txt", "Delicious chocolate cake recipe ingredients").await?;
+        sfs.write_file(
+            "notes/ai.txt",
+            "Artificial Intelligence and Kernel integration rules",
+        )
+        .await?;
+        sfs.write_file(
+            "notes/recipes.txt",
+            "Delicious chocolate cake recipe ingredients",
+        )
+        .await?;
 
         // 2. ค้นหาไฟล์ตามความหมาย
-        let paths = sfs.search_paths("deep neural networks and OS design", 1).await?;
+        let paths = sfs
+            .search_paths("deep neural networks and OS design", 1)
+            .await?;
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], "notes/ai.txt");
 

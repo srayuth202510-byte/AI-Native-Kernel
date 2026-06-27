@@ -1,6 +1,6 @@
 #![deny(unsafe_code)]
 
-use agent_scheduler::{block::AgentControlBlock, AgentScheduler};
+use agent_scheduler::{AgentScheduler, block::AgentControlBlock};
 use capability_security::CapabilitySecurityManager;
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentPriority, IntentType};
@@ -50,7 +50,11 @@ async fn e2e_tracer_delivers_simulated_events() {
         events.push(event);
     }
 
-    assert_eq!(events.len(), 4, "simulation should produce exactly 4 events");
+    assert_eq!(
+        events.len(),
+        4,
+        "simulation should produce exactly 4 events"
+    );
     assert_eq!(events[0].syscall_name, "read");
     assert_eq!(events[1].syscall_name, "write");
     assert_eq!(events[2].syscall_name, "execve");
@@ -85,7 +89,10 @@ async fn e2e_full_pipeline_tracer_to_scheduler() {
             let intent = Intent::new(
                 format!("syscall-{}", event.syscall_nr),
                 IntentType::Event,
-                format!("syscall:{} pid={} uid={}", event.syscall_name, event.pid, event.uid),
+                format!(
+                    "syscall:{} pid={} uid={}",
+                    event.syscall_name, event.pid, event.uid
+                ),
                 IntentPriority::Medium,
                 "ebpf-tracer",
             );
@@ -129,7 +136,11 @@ async fn e2e_full_pipeline_tracer_to_scheduler() {
 
     // 6) Verify agent was spawned
     let running = agent_scheduler.get_running_agents().await;
-    assert_eq!(running.len(), 1, "AgentScheduler should have 1 running agent");
+    assert_eq!(
+        running.len(),
+        1,
+        "AgentScheduler should have 1 running agent"
+    );
 
     // Cleanup
     tracer_handle.abort();
@@ -286,7 +297,10 @@ async fn e2e_supervisor_recovers_failed_agent() {
 
     // Re-read agent AFTER fail to get the current Failed state
     let failed_agent = scheduler.get_agent(agent_id).await.unwrap();
-    assert_eq!(failed_agent.state, agent_scheduler::block::AgentState::Failed);
+    assert_eq!(
+        failed_agent.state,
+        agent_scheduler::block::AgentState::Failed
+    );
 
     let recovered = scheduler.supervisor().monitor_agent(&failed_agent).await;
     assert!(recovered, "supervisor should recover the agent");

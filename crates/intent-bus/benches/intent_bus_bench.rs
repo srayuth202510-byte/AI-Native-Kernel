@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use intent_bus::{Intent, IntentBus, IntentFilter, IntentPriority, IntentType, FilterCondition};
+use intent_bus::{FilterCondition, Intent, IntentBus, IntentFilter, IntentPriority, IntentType};
 use tokio::runtime::Runtime;
 
 fn bench_publish_subscribe(c: &mut Criterion) {

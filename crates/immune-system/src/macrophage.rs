@@ -53,13 +53,11 @@ impl MacrophageAgent {
         let mut subscriber = self.intent_bus.subscribe();
         let mut stale_count = 0u64;
 
-        while let Some(intent) = tokio::time::timeout(
-            Duration::from_millis(10),
-            subscriber.receive(),
-        )
-        .await
-        .ok()
-        .flatten()
+        while let Some(intent) =
+            tokio::time::timeout(Duration::from_millis(10), subscriber.receive())
+                .await
+                .ok()
+                .flatten()
         {
             if Self::is_stale(&intent, self.max_intent_age_ms) {
                 debug!(
@@ -93,7 +91,7 @@ pub struct SweepStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use intent_bus::{IntentType, IntentPriority};
+    use intent_bus::{IntentPriority, IntentType};
     use std::time::SystemTime;
 
     fn make_macrophage() -> MacrophageAgent {

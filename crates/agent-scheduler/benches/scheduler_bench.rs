@@ -1,5 +1,5 @@
-use agent_scheduler::block::AgentControlBlock;
 use agent_scheduler::AgentScheduler;
+use agent_scheduler::block::AgentControlBlock;
 use capability_security::{CapabilitySecurityManager, CapabilityToken, Scope};
 use context_memory::ContextMemoryManager;
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
@@ -115,10 +115,7 @@ fn bench_grant_capability(c: &mut Criterion) {
             },
             |(scheduler, id)| {
                 rt.block_on(async {
-                    scheduler
-                        .grant_capability(id, token.clone())
-                        .await
-                        .unwrap();
+                    scheduler.grant_capability(id, token.clone()).await.unwrap();
                     black_box(())
                 });
             },

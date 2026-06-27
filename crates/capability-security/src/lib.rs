@@ -432,13 +432,25 @@ mod tests {
             [10u8; 32],
         );
 
-        manager.issue_token(token.clone()).expect("issue should succeed");
+        manager
+            .issue_token(token.clone())
+            .expect("issue should succeed");
 
         // ตรวจสอบว่าโทเค็นใช้งานได้ก่อนเพิกถอน
-        assert!(manager.authorize_token(&token, "read").expect("authorize should succeed"));
-        assert!(manager.validate(10, &[10u8; 32], &Scope::Process(1), "read").expect("validate should succeed"));
+        assert!(
+            manager
+                .authorize_token(&token, "read")
+                .expect("authorize should succeed")
+        );
+        assert!(
+            manager
+                .validate(10, &[10u8; 32], &Scope::Process(1), "read")
+                .expect("validate should succeed")
+        );
         assert_eq!(
-            manager.decision_for(10, &[10u8; 32], &Scope::Process(1), "read").expect("decision should succeed"),
+            manager
+                .decision_for(10, &[10u8; 32], &Scope::Process(1), "read")
+                .expect("decision should succeed"),
             PolicyDecision::Allow
         );
 
@@ -448,10 +460,20 @@ mod tests {
         assert_eq!(manager.revoked_count(), 1);
 
         // ตรวจสอบว่าโทเค็นใช้งานไม่ได้หลังเพิกถอน
-        assert!(!manager.authorize_token(&token, "read").expect("authorize should succeed"));
-        assert!(!manager.validate(10, &[10u8; 32], &Scope::Process(1), "read").expect("validate should succeed"));
+        assert!(
+            !manager
+                .authorize_token(&token, "read")
+                .expect("authorize should succeed")
+        );
+        assert!(
+            !manager
+                .validate(10, &[10u8; 32], &Scope::Process(1), "read")
+                .expect("validate should succeed")
+        );
         assert_eq!(
-            manager.decision_for(10, &[10u8; 32], &Scope::Process(1), "read").expect("decision should succeed"),
+            manager
+                .decision_for(10, &[10u8; 32], &Scope::Process(1), "read")
+                .expect("decision should succeed"),
             PolicyDecision::Deny
         );
 
@@ -484,17 +506,32 @@ mod tests {
             [11u8; 32],
         );
 
-        manager.issue_token(token.clone()).expect("issue should succeed");
+        manager
+            .issue_token(token.clone())
+            .expect("issue should succeed");
         manager.revoke_token(11).expect("revoke should succeed");
 
         // authorize หลังเพิกถอน — ต้องได้ denied audit entry
         let _ = manager.authorize_token(&token, "read");
         let entries = manager.audit_entries();
-        let denied_entries: Vec<_> = entries.iter().filter(|e| e.action == "denied" && e.token_id == 11).collect();
-        assert!(!denied_entries.is_empty(), "revoked token authorization should log denied");
+        let denied_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.action == "denied" && e.token_id == 11)
+            .collect();
+        assert!(
+            !denied_entries.is_empty(),
+            "revoked token authorization should log denied"
+        );
         // ต้องมี revoked entry
-        let revoked_entries: Vec<_> = entries.iter().filter(|e| e.action == "revoked" && e.token_id == 11).collect();
-        assert_eq!(revoked_entries.len(), 1, "should have exactly one revoked entry");
+        let revoked_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.action == "revoked" && e.token_id == 11)
+            .collect();
+        assert_eq!(
+            revoked_entries.len(),
+            1,
+            "should have exactly one revoked entry"
+        );
 
         let _ = std::fs::remove_file(&log_path);
     }

@@ -110,7 +110,10 @@ impl BCellAgent {
         };
 
         let mut antibodies = self.antibodies.write().await;
-        if !antibodies.iter().any(|a| a.blocked_syscall == antibody.blocked_syscall) {
+        if !antibodies
+            .iter()
+            .any(|a| a.blocked_syscall == antibody.blocked_syscall)
+        {
             antibodies.push(antibody.clone());
             debug!(syscall = %antibody.blocked_syscall, confidence = antibody.confidence, "B-Cell: generated new antibody");
             return Some(antibody);
