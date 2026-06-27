@@ -34,7 +34,7 @@ jobs:
         with:
           toolchain: nightly-2026-06-25
           components: rust-src,rustfmt,clippy
-          targets: x86_64-unknown-linux-gnu
+          target: x86_64-unknown-linux-gnu
           cache: false
 
       - name: Cache Rust artifacts
