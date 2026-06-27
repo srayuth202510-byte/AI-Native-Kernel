@@ -1,6 +1,8 @@
+use crate::config::LsmConfig;
 use crate::ebpf::load_bpf_o;
 use crate::observability::kernel_metrics;
 use anyhow::Result;
+use std::collections::HashSet;
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, info, instrument, warn};
@@ -30,6 +32,10 @@ pub enum LsmDecision {
 pub struct LsmPolicyEngine {
     /// ผลการตัดสินใจเริ่มต้นกรณีไม่ตรงกับเงื่อนไขใด ๆ (Fail-closed: DENY)
     default_decision: LsmDecision,
+    /// profile ที่ active อยู่จาก config
+    active_profile: String,
+    /// allowlist ที่ resolve แล้วจาก config profile
+    allowed_syscalls: std::sync::RwLock<HashSet<String>>,
     /// รายชื่อ syscall ที่ถูกบล็อกโดย Immune System antibodies (deny rules)
     blocked_syscalls: std::sync::RwLock<std::collections::HashSet<String>>,
 }
@@ -38,8 +44,16 @@ impl LsmPolicyEngine {
     /// สร้างอินสแตนซ์ของ LSM Policy Engine โดยตั้งค่าเริ่มต้นให้ปฏิเสธการเรียกใช้งานไว้ก่อน
     #[must_use]
     pub fn new() -> Self {
+        Self::with_config(&LsmConfig::default())
+    }
+
+    /// สร้างอินสแตนซ์ของ LSM Policy Engine จาก config profile ที่กำหนด
+    #[must_use]
+    pub fn with_config(config: &LsmConfig) -> Self {
         Self {
             default_decision: LsmDecision::Deny,
+            active_profile: config.active_profile_name().to_string(),
+            allowed_syscalls: std::sync::RwLock::new(config.allowed_syscalls()),
             blocked_syscalls: std::sync::RwLock::new(std::collections::HashSet::new()),
         }
     }
@@ -69,6 +83,21 @@ impl LsmPolicyEngine {
             .collect()
     }
 
+    /// ดึง allowlist ที่ active อยู่ในรูปแบบ snapshot
+    #[must_use]
+    pub fn get_allowed_syscalls(&self) -> HashSet<String> {
+        self.allowed_syscalls
+            .read()
+            .expect("allowed_syscalls lock poisoned")
+            .clone()
+    }
+
+    /// คืนชื่อ profile ที่ active อยู่
+    #[must_use]
+    pub fn active_profile_name(&self) -> &str {
+        &self.active_profile
+    }
+
     /// ตรวจสอบ syscall และตัดสินใจว่าจะอนุญาตหรือปฏิเสธตามกฎที่กำหนดไว้
     /// 1. ตรวจสอบ Blocklist (Immune System Antibodies) — DENY ถ้าตรง
     /// 2. ตรวจสอบ Allowlist — ALLOW ถ้าตรง
@@ -92,7 +121,12 @@ impl LsmPolicyEngine {
             return LsmDecision::Deny;
         }
 
-        if is_allowed_by_default(syscall) {
+        if self
+            .allowed_syscalls
+            .read()
+            .expect("allowed_syscalls lock poisoned")
+            .contains(syscall)
+        {
             metrics.record_lsm_decision("allow", "allowlist");
             debug!(decision = "allow", "อนุญาต syscall ตามนโยบาย Zero-Trust");
             return LsmDecision::Allow;
@@ -109,68 +143,6 @@ impl Default for LsmPolicyEngine {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Default allowlist สำหรับ syscall ที่ถือว่าปลอดภัยพอสำหรับ runtime/companion daemon
-/// และลด noise จากงานพื้นฐานของ Tokio, logging, และ I/O runtime.
-pub fn is_allowed_by_default(syscall: &str) -> bool {
-    matches!(
-        syscall,
-        "read"
-            | "write"
-            | "recvmsg"
-            | "close"
-            | "poll"
-            | "mprotect"
-            | "clone"
-            | "clone3"
-            | "futex"
-            | "rt_sigaction"
-            | "rt_sigprocmask"
-            | "sigaltstack"
-            | "clock_gettime"
-            | "clock_nanosleep"
-            | "nanosleep"
-            | "sched_yield"
-            | "getpid"
-            | "gettid"
-            | "set_tid_address"
-            | "set_robust_list"
-            | "rseq"
-            | "brk"
-            | "mmap"
-            | "munmap"
-            | "madvise"
-            | "fstat"
-            | "newfstatat"
-            | "statx"
-            | "lseek"
-            | "readv"
-            | "writev"
-            | "pread64"
-            | "pwrite64"
-            | "openat"
-            | "openat2"
-            | "readlinkat"
-            | "fchmod"
-            | "fchown"
-            | "fchdir"
-            | "getrandom"
-            | "prlimit64"
-            | "sendmsg"
-            | "recvfrom"
-            | "sendto"
-            | "pipe2"
-            | "dup"
-            | "dup2"
-            | "dup3"
-            | "epoll_create"
-            | "epoll_ctl"
-            | "epoll_wait"
-            | "eventfd2"
-            | "ioctl"
-            | "fcntl"
-    )
 }
 
 /// โครงสร้างข้อมูลสำหรับอ้างอิงสถานะการเชื่อมต่อ LSM Hook
@@ -299,8 +271,9 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
     if let Some(map_ref) = bpf.map_mut("allowed_syscalls") {
         use aya::maps::HashMap;
         if let Ok(mut sc_map) = HashMap::<_, u64, u32>::try_from(map_ref) {
+            let allowed_syscalls = engine.get_allowed_syscalls();
             for (nr, name) in crate::ebpf::build_syscall_table() {
-                if engine.decision_for_syscall(name) == LsmDecision::Allow {
+                if allowed_syscalls.contains(name) {
                     let _ = sc_map.insert(nr, 1, 0);
                     debug!("LSM eBPF: syscall {name}({nr}) added to allowlist");
                 }
@@ -421,5 +394,21 @@ mod tests {
                 "{syscall} should be allowed by default runtime allowlist"
             );
         }
+    }
+
+    #[test]
+    fn active_profile_is_exposed_from_config() {
+        let config = LsmConfig::default();
+        let engine = LsmPolicyEngine::with_config(&config);
+        assert_eq!(engine.active_profile_name(), "runtime");
+    }
+
+    #[test]
+    fn strict_profile_does_not_allow_socket() {
+        let mut config = LsmConfig::default();
+        config.active_profile = "strict".to_string();
+        let engine = LsmPolicyEngine::with_config(&config);
+        assert_eq!(engine.decision_for_syscall("socket"), LsmDecision::Deny);
+        assert_eq!(engine.decision_for_syscall("read"), LsmDecision::Allow);
     }
 }

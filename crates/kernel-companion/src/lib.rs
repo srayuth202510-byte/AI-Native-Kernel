@@ -121,7 +121,7 @@ impl KernelCompanion {
 
         Self {
             config: config.clone(),
-            lsm_engine: Arc::new(LsmPolicyEngine::new()),
+            lsm_engine: Arc::new(LsmPolicyEngine::with_config(&config.lsm)),
             intent_bus,
             context_memory,
             capability_security,

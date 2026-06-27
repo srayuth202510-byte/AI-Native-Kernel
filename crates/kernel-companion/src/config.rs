@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 /// Top-level configuration for the AI-Native Kernel companion daemon.
@@ -23,6 +24,8 @@ pub struct Config {
     pub immune_system: ImmuneSystemConfig,
     #[serde(default)]
     pub ebpf: EbpfConfig,
+    #[serde(default)]
+    pub lsm: LsmConfig,
 }
 
 impl Config {
@@ -120,6 +123,9 @@ impl Config {
             if let Ok(b) = v.parse::<bool>() {
                 self.ebpf.enable_fallback = b;
             }
+        }
+        if let Ok(v) = std::env::var("ANK_LSM_PROFILE") {
+            self.lsm.active_profile = v;
         }
         self
     }
@@ -387,4 +393,251 @@ fn default_ebpf_fallback() -> bool {
 }
 fn default_tracepoint_program() -> String {
     "sys_enter_tp".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LsmProfileConfig {
+    #[serde(default)]
+    pub allowed_syscalls: Vec<String>,
+}
+
+impl Default for LsmProfileConfig {
+    fn default() -> Self {
+        Self {
+            allowed_syscalls: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LsmConfig {
+    #[serde(default = "default_lsm_profile")]
+    pub active_profile: String,
+    #[serde(default = "default_lsm_profiles")]
+    pub profiles: BTreeMap<String, LsmProfileConfig>,
+}
+
+impl Default for LsmConfig {
+    fn default() -> Self {
+        Self {
+            active_profile: default_lsm_profile(),
+            profiles: default_lsm_profiles(),
+        }
+    }
+}
+
+impl LsmConfig {
+    /// รายชื่อ syscall ที่อนุญาตตาม profile ที่ active อยู่
+    #[must_use]
+    pub fn allowed_syscalls(&self) -> HashSet<String> {
+        self.profiles
+            .get(&self.active_profile)
+            .map(|profile| profile.allowed_syscalls.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// คืนชื่อ profile ที่ใช้งานอยู่
+    #[must_use]
+    pub fn active_profile_name(&self) -> &str {
+        &self.active_profile
+    }
+}
+
+fn default_lsm_profile() -> String {
+    "runtime".to_string()
+}
+
+fn default_lsm_profiles() -> BTreeMap<String, LsmProfileConfig> {
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        "strict".to_string(),
+        LsmProfileConfig {
+            allowed_syscalls: strict_allowlist().iter().map(|s| s.to_string()).collect(),
+        },
+    );
+    profiles.insert(
+        "runtime".to_string(),
+        LsmProfileConfig {
+            allowed_syscalls: runtime_allowlist().iter().map(|s| s.to_string()).collect(),
+        },
+    );
+    profiles.insert(
+        "dev".to_string(),
+        LsmProfileConfig {
+            allowed_syscalls: dev_allowlist().iter().map(|s| s.to_string()).collect(),
+        },
+    );
+    profiles
+}
+
+fn strict_allowlist() -> &'static [&'static str] {
+    &["read", "write", "recvmsg", "close"]
+}
+
+fn runtime_allowlist() -> &'static [&'static str] {
+    &[
+        "read",
+        "write",
+        "recvmsg",
+        "close",
+        "poll",
+        "mprotect",
+        "clone",
+        "clone3",
+        "futex",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "sigaltstack",
+        "clock_gettime",
+        "clock_nanosleep",
+        "nanosleep",
+        "sched_yield",
+        "getpid",
+        "gettid",
+        "set_tid_address",
+        "set_robust_list",
+        "rseq",
+        "brk",
+        "mmap",
+        "munmap",
+        "madvise",
+        "fstat",
+        "newfstatat",
+        "statx",
+        "lseek",
+        "readv",
+        "writev",
+        "pread64",
+        "pwrite64",
+        "openat",
+        "openat2",
+        "readlinkat",
+        "fchmod",
+        "fchown",
+        "fchdir",
+        "getrandom",
+        "prlimit64",
+        "sendmsg",
+        "recvfrom",
+        "sendto",
+        "pipe2",
+        "dup",
+        "dup2",
+        "dup3",
+        "epoll_create",
+        "epoll_ctl",
+        "epoll_wait",
+        "eventfd2",
+        "ioctl",
+        "fcntl",
+    ]
+}
+
+fn dev_allowlist() -> &'static [&'static str] {
+    &[
+        "read",
+        "write",
+        "recvmsg",
+        "close",
+        "poll",
+        "mprotect",
+        "clone",
+        "clone3",
+        "futex",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "sigaltstack",
+        "clock_gettime",
+        "clock_nanosleep",
+        "nanosleep",
+        "sched_yield",
+        "getpid",
+        "gettid",
+        "set_tid_address",
+        "set_robust_list",
+        "rseq",
+        "brk",
+        "mmap",
+        "munmap",
+        "madvise",
+        "fstat",
+        "newfstatat",
+        "statx",
+        "lseek",
+        "readv",
+        "writev",
+        "pread64",
+        "pwrite64",
+        "openat",
+        "openat2",
+        "readlinkat",
+        "fchmod",
+        "fchown",
+        "fchdir",
+        "getrandom",
+        "prlimit64",
+        "sendmsg",
+        "recvfrom",
+        "sendto",
+        "socket",
+        "connect",
+        "accept",
+        "accept4",
+        "pipe2",
+        "dup",
+        "dup2",
+        "dup3",
+        "epoll_create",
+        "epoll_ctl",
+        "epoll_wait",
+        "eventfd2",
+        "ioctl",
+        "fcntl",
+        "fsync",
+        "fdatasync",
+        "ftruncate",
+        "chmod",
+        "chown",
+        "rename",
+        "mkdir",
+        "rmdir",
+        "unlink",
+        "symlink",
+        "link",
+        "fallocate",
+        "copy_file_range",
+        "memfd_create",
+        "statx",
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_lsm_profile_is_runtime() {
+        let config = LsmConfig::default();
+        assert_eq!(config.active_profile_name(), "runtime");
+        assert!(config.profiles.contains_key("strict"));
+        assert!(config.profiles.contains_key("runtime"));
+        assert!(config.profiles.contains_key("dev"));
+    }
+
+    #[test]
+    fn runtime_profile_contains_common_runtime_syscalls() {
+        let config = LsmConfig::default();
+        let allowed = config.allowed_syscalls();
+        assert!(allowed.contains("openat"));
+        assert!(allowed.contains("poll"));
+        assert!(allowed.contains("futex"));
+        assert!(!allowed.contains("socket"));
+    }
+
+    #[test]
+    fn strict_profile_is_small_and_explicit() {
+        let config = LsmConfig::default();
+        let strict = &config.profiles["strict"].allowed_syscalls;
+        assert_eq!(strict, &vec!["read", "write", "recvmsg", "close"]);
+    }
 }
