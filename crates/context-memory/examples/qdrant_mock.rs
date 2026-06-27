@@ -199,6 +199,7 @@ fn ok_points_response() -> PointsOperationResponse {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn unsupported<T>() -> Result<Response<T>, Status> {
     Err(Status::unimplemented("not required by ANK qdrant mock"))
 }
