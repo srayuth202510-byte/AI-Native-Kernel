@@ -140,7 +140,16 @@ async fn main() -> Result<()> {
                                 .collect::<Vec<String>>()
                         })
                         .unwrap_or_default();
+                    let active_lsm_profile = json_resp["active_lsm_profile"]
+                        .as_str()
+                        .unwrap_or("unknown");
+                    let allowed_syscalls_count =
+                        json_resp["allowed_syscalls_count"].as_u64().unwrap_or(0);
                     println!("Blocked Syscalls : {:?}", blocked);
+                    println!(
+                        "LSM Profile      : {} ({} allowed syscalls)",
+                        active_lsm_profile, allowed_syscalls_count
+                    );
 
                     if let Some(hardware) = json_resp["hardware_targets"].as_array() {
                         println!("-----------------------------------------");

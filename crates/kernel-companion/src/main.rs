@@ -53,6 +53,10 @@ struct Cli {
     #[arg(long = "metrics-addr", env = "ANK_METRICS_ADDR")]
     metrics_addr: Option<String>,
 
+    /// Active LSM allowlist profile (strict, runtime, dev)
+    #[arg(long = "lsm-profile", env = "ANK_LSM_PROFILE")]
+    lsm_profile: Option<String>,
+
     /// Disable eBPF fallback simulation
     #[arg(long = "no-bpf-fallback")]
     no_bpf_fallback: bool,
@@ -93,6 +97,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(metrics_addr) = cli.metrics_addr {
         config.kernel_companion.metrics_server_addr = metrics_addr;
+    }
+    if let Some(profile) = cli.lsm_profile {
+        config.lsm.active_profile = profile;
     }
     if cli.no_bpf_fallback {
         config.ebpf.enable_fallback = false;

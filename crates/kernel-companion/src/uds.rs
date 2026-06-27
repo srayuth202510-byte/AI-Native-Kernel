@@ -72,6 +72,8 @@ pub async fn start_uds_server(
                                                         let mut quarantined_pids = Vec::new();
                                                         let mut blocked_syscalls = Vec::new();
                                                         let mut hardware_targets = Vec::new();
+                                                        let mut active_lsm_profile = String::from("unknown");
+                                                        let mut allowed_syscalls_count = 0usize;
 
                                                         if let Some(ref sched) = agent_scheduler {
                                                             running_agents = sched.get_running_agents().await.len();
@@ -81,6 +83,8 @@ pub async fn start_uds_server(
                                                         }
                                                         if let Some(ref l) = lsm {
                                                             blocked_syscalls = l.get_blocked_syscalls();
+                                                            active_lsm_profile = l.active_profile_name().to_string();
+                                                            allowed_syscalls_count = l.get_allowed_syscalls().len();
                                                         }
                                                         if let Some(ref cs) = compute_scheduler {
                                                             for (target, profile) in cs.scan_real_hardware() {
@@ -98,6 +102,8 @@ pub async fn start_uds_server(
                                                             "running_agents": running_agents,
                                                             "quarantined_pids": quarantined_pids,
                                                             "blocked_syscalls": blocked_syscalls,
+                                                            "active_lsm_profile": active_lsm_profile,
+                                                            "allowed_syscalls_count": allowed_syscalls_count,
                                                             "hardware_targets": hardware_targets,
                                                         });
                                                         let resp_json = format!("{}\n", response);
