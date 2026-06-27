@@ -1253,6 +1253,7 @@ dependencies = [
  "compute-scheduler",
  "context-memory",
  "criterion",
+ "immune-system",
  "intent-bus",
  "proptest",
  "serde",

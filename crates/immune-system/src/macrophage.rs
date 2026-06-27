@@ -13,27 +13,32 @@ use tracing::{debug, instrument};
 #[derive(Clone)]
 pub struct MacrophageAgent {
     intent_bus: Arc<IntentBus>,
-    #[allow(dead_code)]
     context_memory: Arc<ContextMemoryManager>,
     /// อายุสูงสุดของ Intent ก่อนถูกกำจัด (ms)
     max_intent_age_ms: u64,
+    /// อายุสูงสุดของ Context entry ก่อนถูกกำจัด (s)
+    context_ttl_secs: u64,
     /// จำนวน Intent ที่กำจัดได้ในรอบล่าสุด
     pub collected: Arc<std::sync::atomic::AtomicU64>,
+    /// จำนวน Context entries ที่กำจัดได้ในรอบล่าสุด
+    pub collected_context: Arc<std::sync::atomic::AtomicU64>,
 }
 
-#[allow(dead_code)]
 impl MacrophageAgent {
     #[must_use]
     pub fn new(
         intent_bus: Arc<IntentBus>,
         context_memory: Arc<ContextMemoryManager>,
         max_intent_age_ms: u64,
+        context_ttl_secs: u64,
     ) -> Self {
         Self {
             intent_bus,
             context_memory,
             max_intent_age_ms,
+            context_ttl_secs,
             collected: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            collected_context: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -74,11 +79,28 @@ impl MacrophageAgent {
         stale_count
     }
 
+    /// ล้าง Context entries ที่หมดอายุออกจาก ContextMemory
+    #[instrument(skip(self))]
+    pub async fn sweep_context(&self) -> u64 {
+        let count = self
+            .context_memory
+            .clean_expired(Duration::from_secs(self.context_ttl_secs));
+        if count > 0 {
+            debug!(count, "Macrophage: cleaned expired context entries");
+        }
+        self.collected_context
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+        count
+    }
+
     /// รายงานสถิติการกวาดล้าง
     #[must_use]
     pub fn stats(&self) -> SweepStats {
         SweepStats {
             collected: self.collected.load(std::sync::atomic::Ordering::Relaxed),
+            collected_context: self
+                .collected_context
+                .load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 }
@@ -86,6 +108,7 @@ impl MacrophageAgent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SweepStats {
     pub collected: u64,
+    pub collected_context: u64,
 }
 
 #[cfg(test)]
@@ -99,6 +122,7 @@ mod tests {
             Arc::new(IntentBus::new(8)),
             Arc::new(ContextMemoryManager::new()),
             1000,
+            3600,
         )
     }
 

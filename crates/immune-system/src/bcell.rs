@@ -127,6 +127,15 @@ impl BCellAgent {
         self.antibodies.read().await.clone()
     }
 
+    /// ดึงและล้าง antibody rules ใหม่ที่ยังไม่ได้ถูกประมวลผล
+    /// ใช้โดย KernelCompanion เพื่อส่งต่อไปยัง LsmPolicyEngine
+    pub async fn take_new_antibodies(&self) -> Vec<AntibodyRule> {
+        let mut antibodies = self.antibodies.write().await;
+        let result = antibodies.clone();
+        antibodies.clear();
+        result
+    }
+
     /// ดู patterns ที่เรียนรู้ไว้
     pub async fn get_patterns(&self) -> Vec<AttackPattern> {
         self.patterns.read().await.iter().cloned().collect()

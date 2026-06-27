@@ -13,7 +13,9 @@ use crate::cold::ColdStore;
 use crate::hot::HotStore;
 use crate::warm::WarmStore;
 pub use fs::{SemanticFile, SemanticFileSystem};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
 use tracing::{debug, instrument, warn};
 
@@ -41,6 +43,8 @@ pub struct ContextMemoryManager {
     hot_capacity: usize,
     /// ขนาดความจุสูงสุดของ Warm Store ก่อนที่จะถูกย้ายไปยัง Cold Store
     warm_capacity: usize,
+    /// บันทึกเวลาในการป้อนข้อมูล (สำหรับ GC / TTL-based clean)
+    timestamps: std::sync::RwLock<HashMap<String, Instant>>,
 }
 
 impl ContextMemoryManager {
@@ -60,6 +64,7 @@ impl ContextMemoryManager {
             cold: Arc::new(std::sync::RwLock::new(ColdStore::new())),
             hot_capacity,
             warm_capacity,
+            timestamps: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -69,6 +74,10 @@ impl ContextMemoryManager {
     #[instrument(skip(self, value), fields(key = %key.as_ref(), value_len = value.len()))]
     pub fn put(&self, key: impl Into<String> + AsRef<str>, value: Vec<u8>) {
         let key = key.into();
+        self.timestamps
+            .write()
+            .expect("timestamps lock poisoned")
+            .insert(key.clone(), Instant::now());
         debug!(tier = "hot", "บันทึกข้อมูลบริบทลง Hot Store");
         let mut hot = self.hot.write().expect("hot memory lock poisoned");
         hot.insert(key, value);
@@ -234,6 +243,36 @@ impl ContextMemoryManager {
             return Some("cold");
         }
         None
+    }
+
+    /// ลบข้อมูลบริบทที่หมดอายุ (> ttl) ออกจากทั้ง Hot, Warm, Cold tiers
+    /// คืนจำนวนข้อมูลที่ถูกลบ
+    #[instrument(skip(self), fields(ttl_ms = ttl.as_millis() as u64))]
+    pub fn clean_expired(&self, ttl: std::time::Duration) -> u64 {
+        let now = Instant::now();
+        let timestamps = self.timestamps.read().expect("timestamps lock poisoned");
+        let expired_keys: Vec<String> = timestamps
+            .iter()
+            .filter(|(_, ts)| now.duration_since(**ts) > ttl)
+            .map(|(k, _)| k.clone())
+            .collect();
+        drop(timestamps);
+
+        let count = expired_keys.len() as u64;
+        if count == 0 {
+            return 0;
+        }
+
+        let mut ts = self.timestamps.write().expect("timestamps lock poisoned");
+        for key in &expired_keys {
+            ts.remove(key);
+            self.hot.write().expect("hot lock poisoned").remove(key);
+            self.warm.write().expect("warm lock poisoned").remove(key);
+            self.cold.write().expect("cold lock poisoned").remove(key);
+        }
+
+        debug!(count, "ContextMemory: cleaned expired entries");
+        count
     }
 }
 

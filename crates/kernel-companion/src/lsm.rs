@@ -25,10 +25,12 @@ pub enum LsmDecision {
 }
 
 /// ตัวตัดสินใจและบังคับใช้สิทธิ์ความปลอดภัยในระดับ Kernel (LSM Policy Engine)
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LsmPolicyEngine {
     /// ผลการตัดสินใจเริ่มต้นกรณีไม่ตรงกับเงื่อนไขใด ๆ (Fail-closed: DENY)
     default_decision: LsmDecision,
+    /// รายชื่อ syscall ที่ถูกบล็อกโดย Immune System antibodies (deny rules)
+    blocked_syscalls: std::sync::RwLock<std::collections::HashSet<String>>,
 }
 
 impl LsmPolicyEngine {
@@ -37,20 +39,47 @@ impl LsmPolicyEngine {
     pub fn new() -> Self {
         Self {
             default_decision: LsmDecision::Deny,
+            blocked_syscalls: std::sync::RwLock::new(std::collections::HashSet::new()),
         }
     }
 
-    /// ตรวจสอบ syscall และตัดสินใจว่าจะยอมรับหรือปฏิเสธตามกฎที่กำหนดไว้
+    /// เพิ่ม syscall ใน Blocklist ตาม Antibody Rule จาก Immune System B-Cell Agent
+    pub fn add_blocked_syscall(&self, syscall: impl Into<String>) {
+        let syscall = syscall.into();
+        self.blocked_syscalls
+            .write()
+            .expect("blocked_syscalls lock poisoned")
+            .insert(syscall);
+    }
+
+    /// ตรวจสอบ syscall และตัดสินใจว่าจะอนุญาตหรือปฏิเสธตามกฎที่กำหนดไว้
+    /// 1. ตรวจสอบ Blocklist (Immune System Antibodies) — DENY ถ้าตรง
+    /// 2. ตรวจสอบ Allowlist — ALLOW ถ้าตรง
+    /// 3. Default = DENY (Zero-Trust fail-closed)
     #[must_use]
     #[instrument(skip(self), fields(syscall = %syscall))]
     pub fn decision_for_syscall(&self, syscall: &str) -> LsmDecision {
+        // ขั้นแรก: ตรวจสอบ Blocklist จาก Immune System antibodies
+        if self
+            .blocked_syscalls
+            .read()
+            .expect("blocked_syscalls lock poisoned")
+            .contains(syscall)
+        {
+            warn!(
+                decision = "deny (antibody)",
+                syscall, "LSM blocked syscall per Immune System antibody rule"
+            );
+            return LsmDecision::Deny;
+        }
+
+        // ขั้นสอง: ตรวจสอบ Allowlist สำหรับ syscall พื้นฐาน
         match syscall {
-            // อนุญาตเฉพาะ syscall พื้นฐานที่จำเป็นสำหรับ agent ทั่วไป
             "read" | "write" | "recvmsg" => {
                 debug!(decision = "allow", "อนุญาต syscall ตามนโยบาย Zero-Trust");
                 LsmDecision::Allow
             }
-            // ปฏิเสธ syscall อื่น ๆ ทั้งหมดเพื่อความปลอดภัยแบบ Zero-Trust
+            // ขั้นสาม: ปฏิเสธ syscall อื่น ๆ ทั้งหมด (fail-closed)
             _ => {
                 warn!(decision = "deny", "ปฏิเสธ syscall ที่ไม่อยู่ใน allowlist");
                 self.default_decision

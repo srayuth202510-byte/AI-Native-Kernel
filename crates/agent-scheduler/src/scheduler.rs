@@ -58,15 +58,40 @@ pub enum AgentEvent {
 
 impl AgentScheduler {
     /// สร้างตัวจัดตารางการทำงานของ Agent ตัวใหม่ พร้อมกำหนดบัสสื่อสาร คลังหน่วยความจำ และระบบรักษาความปลอดภัย
+    /// ใช้ค่าเริ่มต้น: max_restarts=3, backoff=100ms, monitoring_capacity=1024
     #[must_use]
     pub fn new(
         intent_bus: Arc<IntentBus>,
         context_memory: Arc<ContextMemoryManager>,
         capability_security: Arc<CapabilitySecurityManager>,
     ) -> Self {
+        Self::with_params(
+            intent_bus,
+            context_memory,
+            capability_security,
+            3,
+            100,
+            1024,
+        )
+    }
+
+    /// สร้าง AgentScheduler พร้อมกำหนดค่าพารามิเตอร์ต่าง ๆ ตามที่ต้องการ
+    #[must_use]
+    pub fn with_params(
+        intent_bus: Arc<IntentBus>,
+        context_memory: Arc<ContextMemoryManager>,
+        capability_security: Arc<CapabilitySecurityManager>,
+        max_restarts: u32,
+        restart_backoff_ms: u64,
+        monitoring_capacity: usize,
+    ) -> Self {
         let agents = Arc::new(RwLock::new(HashMap::new()));
-        let supervisor_service = Arc::new(SupervisorService::new(agents.clone(), 3, 100));
-        let (monitoring_tx, _) = broadcast::channel(1024);
+        let supervisor_service = Arc::new(SupervisorService::new(
+            agents.clone(),
+            max_restarts,
+            restart_backoff_ms,
+        ));
+        let (monitoring_tx, _) = broadcast::channel(monitoring_capacity);
 
         Self {
             agents,

@@ -9,6 +9,7 @@ use capability_security::CapabilitySecurityManager;
 use compute_scheduler::ComputeProfile;
 use compute_scheduler::ComputeScheduler;
 use context_memory::ContextMemoryManager;
+use immune_system::{BCellAgent, MacrophageAgent, TCellAgent};
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -37,6 +38,13 @@ pub struct KernelCompanion {
     compute_scheduler: Arc<ComputeScheduler>,
     /// ตัวจัดตารางการทำงานของ Agent (Agent Scheduler) ควบคุมวงจรชีวิตของ Agent
     agent_scheduler: Arc<AgentScheduler>,
+    /// T-Cell Agent — ตรวจจับ Anomaly (reserved for syscall event feed)
+    #[allow(dead_code)]
+    tcell: Arc<TCellAgent>,
+    /// B-Cell Agent — เรียนรู้และสร้าง Antibody Rules
+    bcell: Arc<BCellAgent>,
+    /// Macrophage Agent — GC สำหรับ Intent + Context
+    macrophage: Arc<MacrophageAgent>,
     /// การตั้งค่าที่ใช้ขณะรัน (kept for reference)
     config: Config,
     /// สถานะการเชื่อมต่อกับ LSM Hook ในระบบ Linux Kernel
@@ -47,6 +55,8 @@ pub struct KernelCompanion {
     routing_task: Option<JoinHandle<()>>,
     /// handle ของ supervisor task
     supervisor_task: Option<JoinHandle<()>>,
+    /// handle ของ immune system antibody sync task
+    immune_task: Option<JoinHandle<()>>,
 }
 
 impl KernelCompanion {
@@ -58,6 +68,7 @@ impl KernelCompanion {
     }
 
     /// สร้างอินสแตนซ์ของ KernelCompanion ด้วยการตั้งค่าที่กำหนด (Config struct)
+    /// ใช้ค่าจาก config/default.toml หรือ CLI/env overrides
     #[must_use]
     pub fn with_config(config: &Config) -> Self {
         let intent_bus = Arc::new(IntentBus::new(config.kernel_companion.intent_bus_capacity));
@@ -68,10 +79,31 @@ impl KernelCompanion {
         let capability_security = Arc::new(CapabilitySecurityManager::new_with_log_path(
             std::path::PathBuf::from(&config.capability_security.audit_log_path),
         ));
-        let agent_scheduler = Arc::new(AgentScheduler::new(
+        let agent_scheduler = Arc::new(AgentScheduler::with_params(
             Arc::clone(&intent_bus),
             Arc::clone(&context_memory),
             Arc::clone(&capability_security),
+            config.agent_scheduler.max_restart_attempts,
+            config.agent_scheduler.supervisor_interval_ms,
+            config.kernel_companion.monitoring_channel_capacity,
+        ));
+
+        let compute_mode: compute_scheduler::weights::SchedulerMode =
+            match config.compute_scheduler.default_mode.as_str() {
+                "battery" => compute_scheduler::weights::SchedulerMode::Battery,
+                "cost" => compute_scheduler::weights::SchedulerMode::Cost,
+                _ => compute_scheduler::weights::SchedulerMode::Throughput,
+            };
+        let weights = compute_scheduler::weights::AdaptiveWeights::from_mode(compute_mode);
+
+        let intent_bus_immune = Arc::clone(&intent_bus);
+        let tcell = Arc::new(TCellAgent::new(100, 5));
+        let bcell = Arc::new(BCellAgent::new(100));
+        let macrophage = Arc::new(MacrophageAgent::new(
+            intent_bus_immune,
+            Arc::clone(&context_memory),
+            config.immune_system.tcell_check_interval_ms,
+            config.immune_system.quarantine_duration_secs,
         ));
 
         Self {
@@ -80,12 +112,16 @@ impl KernelCompanion {
             intent_bus,
             context_memory,
             capability_security,
-            compute_scheduler: Arc::new(ComputeScheduler::new()),
+            compute_scheduler: Arc::new(ComputeScheduler::with_weights(weights)),
             agent_scheduler,
+            tcell,
+            bcell,
+            macrophage,
             attachment: None,
             shutdown_tx: None,
             routing_task: None,
             supervisor_task: None,
+            immune_task: None,
         }
     }
 
@@ -166,6 +202,45 @@ impl KernelCompanion {
                     .await;
             }));
 
+            // ── Immune System Integration Tasks ──
+            let lsm = Arc::clone(&self.lsm_engine);
+            let bcell = Arc::clone(&self.bcell);
+            let macrophage = Arc::clone(&self.macrophage);
+            let immune_shutdown_rx = shutdown_tx.subscribe();
+            let immune_interval = std::time::Duration::from_secs(10);
+
+            self.immune_task = Some(tokio::spawn(async move {
+                let mut shutdown_rx = immune_shutdown_rx;
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(immune_interval) => {
+                            // 1. Drain B-Cell antibodies → push to LSM Policy Engine
+                            let antibodies = bcell.take_new_antibodies().await;
+                            for ab in &antibodies {
+                                lsm.add_blocked_syscall(&ab.blocked_syscall);
+                                warn!(
+                                    syscall = %ab.blocked_syscall,
+                                    confidence = ab.confidence,
+                                    "Immune System: applied antibody rule to LSM Policy Engine"
+                                );
+                            }
+
+                            // 2. Macrophage GC — sweep expired context entries
+                            let swept = macrophage.sweep_context().await;
+                            if swept > 0 {
+                                info!("Immune System: Macrophage cleaned {} expired context entries", swept);
+                            }
+                        }
+                        changed = shutdown_rx.changed() => {
+                            if changed.is_err() || *shutdown_rx.borrow() {
+                                info!("Immune System task shutting down");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }));
+
             let cancel = tokio_util_cancel::CancellationToken::new();
             let _ = uds::start_uds_server(
                 Arc::clone(&self.intent_bus),
@@ -220,6 +295,9 @@ impl KernelCompanion {
             let _ = task.await;
         }
         if let Some(task) = self.supervisor_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.immune_task.take() {
             let _ = task.await;
         }
         if let Some(attachment) = self.attachment.as_mut() {

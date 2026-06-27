@@ -1,0 +1,15 @@
+[package]
+name = "ank-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = { workspace = true }
+intent-bus = { path = "../crates/intent-bus" }
+capability-security = { path = "../crates/capability-security" }
+context-memory = { path = "../crates/context-memory" }

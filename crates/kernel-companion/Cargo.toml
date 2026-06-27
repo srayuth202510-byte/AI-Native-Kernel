@@ -24,6 +24,7 @@ capability-security = { path = "../capability-security" }
 compute-scheduler = { path = "../compute-scheduler" }
 context-memory = { path = "../context-memory" }
 intent-bus = { path = "../intent-bus" }
+immune-system = { path = "../immune-system" }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
