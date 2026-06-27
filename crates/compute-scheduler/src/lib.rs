@@ -14,6 +14,7 @@ use std::sync::RwLock;
 use thiserror::Error;
 
 /// ข้อผิดพลาดจากการคำนวณและการจัดสรรทรัพยากรประมวลผล
+#[must_use]
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum ComputeError {
     /// เกิดขึ้นเมื่อไม่มีฮาร์ดแวร์ประมวลผลที่เหมาะสมให้เลือกใช้งาน
