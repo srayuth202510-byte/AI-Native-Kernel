@@ -75,11 +75,20 @@ impl WarmStore {
 #[cfg(feature = "rocksdb-warm")]
 pub struct WarmStore {
     /// การเชื่อมต่อกับฐานข้อมูล RocksDB บน NVMe สำหรับ Warm tier จริง
-    db: std::sync::Arc<rocksdb::DB>,
+    db: Option<rocksdb::DB>,
+    /// พาธสำหรับจัดเก็บ RocksDB เพื่อใช้ในการลบไฟล์เมื่อ drop
+    path: std::path::PathBuf,
     /// คิวติดตามลำดับข้อมูล FIFO สำหรับการ evict ข้อมูลเก่า
     order: std::sync::Mutex<VecDeque<String>>,
     /// นับจำนวนรายการเพื่อประเมิน len() โดยไม่ต้อง scan ทั้ง DB
     count: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(feature = "rocksdb-warm")]
+impl Default for WarmStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(feature = "rocksdb-warm")]
@@ -88,14 +97,15 @@ impl WarmStore {
     /// ใน production ควรระบุพาธ NVMe จริงผ่าน config
     #[must_use]
     pub fn new() -> Self {
-        let path = std::env::temp_dir().join("ank-warm-store");
+        let path = std::env::temp_dir().join(format!("ank-warm-store-{}", uuid::Uuid::new_v4()));
         let mut opts = rocksdb::Options::default();
         opts.create_if_missing(true);
         // เปิดใช้ compression เพื่อประหยัดพื้นที่บน NVMe
         opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
-        let db = rocksdb::DB::open(&opts, path).expect("ไม่สามารถเปิด RocksDB warm store ได้");
+        let db = rocksdb::DB::open(&opts, &path).expect("ไม่สามารถเปิด RocksDB warm store ได้");
         Self {
-            db: std::sync::Arc::new(db),
+            db: Some(db),
+            path,
             order: std::sync::Mutex::new(VecDeque::new()),
             count: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -103,14 +113,9 @@ impl WarmStore {
 
     /// ใส่ข้อมูลบริบทลงใน RocksDB Warm Store
     pub fn insert(&mut self, key: String, value: Vec<u8>) {
-        let is_new = self
-            .db
-            .get(key.as_bytes())
-            .map(|v| v.is_none())
-            .unwrap_or(true);
-        self.db
-            .put(key.as_bytes(), &value)
-            .expect("RocksDB put ล้มเหลว");
+        let db = self.db.as_ref().expect("RocksDB database is closed");
+        let is_new = db.get(key.as_bytes()).map(|v| v.is_none()).unwrap_or(true);
+        db.put(key.as_bytes(), &value).expect("RocksDB put ล้มเหลว");
         if is_new {
             let mut order = self.order.lock().expect("order lock poisoned");
             order.push_back(key);
@@ -122,7 +127,8 @@ impl WarmStore {
     /// ดึงข้อมูลบริบทจาก RocksDB ตามคีย์ที่กำหนด
     #[must_use]
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        self.db.get(key.as_bytes()).ok().flatten()
+        let db = self.db.as_ref().expect("RocksDB database is closed");
+        db.get(key.as_bytes()).ok().flatten()
     }
 
     /// ส่งคืนจำนวนรายการโดยประมาณ (ใช้ atomic counter)
@@ -143,8 +149,9 @@ impl WarmStore {
             let mut order = self.order.lock().expect("order lock poisoned");
             order.pop_front()?
         };
-        let value = self.db.get(key.as_bytes()).ok().flatten()?;
-        self.db.delete(key.as_bytes()).ok();
+        let db = self.db.as_ref().expect("RocksDB database is closed");
+        let value = db.get(key.as_bytes()).ok().flatten()?;
+        db.delete(key.as_bytes()).ok();
         self.count
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         Some((key, value))
@@ -153,12 +160,23 @@ impl WarmStore {
     /// ลบข้อมูลบริบทตาม key ออกจาก RocksDB Warm Store และคืนค่า (ถ้ามี)
     /// ใช้สำหรับ tier migration (promote/demote) โดยตรง
     pub fn remove(&mut self, key: &str) -> Option<Vec<u8>> {
-        let value = self.db.get(key.as_bytes()).ok().flatten()?;
-        self.db.delete(key.as_bytes()).ok();
+        let db = self.db.as_ref().expect("RocksDB database is closed");
+        let value = db.get(key.as_bytes()).ok().flatten()?;
+        db.delete(key.as_bytes()).ok();
         let mut order = self.order.lock().expect("order lock poisoned");
         order.retain(|k| k != key);
         self.count
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         Some(value)
+    }
+}
+
+#[cfg(feature = "rocksdb-warm")]
+impl Drop for WarmStore {
+    fn drop(&mut self) {
+        // Close DB first to release the file lock
+        self.db.take();
+        // Delete the temporary database directory
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
