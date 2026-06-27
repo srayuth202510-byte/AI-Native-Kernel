@@ -1,6 +1,7 @@
 use clap::Parser;
 use kernel_companion::KernelCompanion;
 use kernel_companion::config::Config;
+use kernel_companion::observability::init_tracing;
 use std::path::PathBuf;
 
 /// AI-Native Kernel Companion Daemon
@@ -48,6 +49,10 @@ struct Cli {
     #[arg(long = "audit-log", env = "ANK_AUDIT_LOG_PATH")]
     audit_log_path: Option<String>,
 
+    /// Metrics server bind address
+    #[arg(long = "metrics-addr", env = "ANK_METRICS_ADDR")]
+    metrics_addr: Option<String>,
+
     /// Disable eBPF fallback simulation
     #[arg(long = "no-bpf-fallback")]
     no_bpf_fallback: bool,
@@ -86,9 +91,14 @@ async fn main() -> anyhow::Result<()> {
     if let Some(log) = cli.audit_log_path {
         config.capability_security.audit_log_path = log;
     }
+    if let Some(metrics_addr) = cli.metrics_addr {
+        config.kernel_companion.metrics_server_addr = metrics_addr;
+    }
     if cli.no_bpf_fallback {
         config.ebpf.enable_fallback = false;
     }
+
+    let _ = init_tracing(&config.general.log_level);
 
     println!(
         "AI-Native Kernel Companion Daemon starting... (log: {})",

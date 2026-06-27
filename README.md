@@ -88,5 +88,34 @@ rtk cargo clippy --all-targets --all-features -- -D warnings
 rtk cargo fmt
 ```
 
+## 5. ตรวจความพร้อมสำหรับ Real eBPF/LSM
+
+ก่อนคาดหวังให้ `kernel-companion` attach tracepoint และ LSM hook จริงกับ kernel ให้เช็ก environment ก่อน:
+
+```bash
+# ตรวจ prerequisite แบบตรงกับ build.rs
+./scripts/check-ebpf-prereqs.sh
+
+# ติดตั้ง dependency สำหรับ Debian/Ubuntu
+./scripts/install-ebpf-deps.sh
+
+# หรือเรียกผ่าน wrapper เดิมของโปรเจกต์
+./scripts/run.sh prereqs
+
+# ติดตั้งผ่าน wrapper
+./scripts/run.sh install-prereqs
+```
+
+สคริปต์จะตรวจ:
+1. `/sys/kernel/btf/vmlinux`
+2. linux headers ที่มี `bpf/bpf_helpers.h`
+3. `clang` และ `--target=bpf`
+4. `bpftool`
+5. compile smoke test ของ `syscall-tracer.bpf.c` และ `lsm-security.bpf.c`
+
+ถ้ายังไม่ผ่าน ระบบจะ fallback ไป simulation mode ตาม behavior ของ `crates/kernel-companion/build.rs`
+
+รายละเอียด remediation เพิ่มเติมดู [docs/ebpf_prereqs.md](docs/ebpf_prereqs.md)
+
 ---
 > **ระดับความปลอดภัย**: Zero-Trust | โค้ดทั้งหมดใช้ **Rust 2024 Edition** ร่วมกับ **Tokio Async Runtime** ปลอดจาก Unsafe blocks และไม่มีการใช้งาน `.unwrap()` ในโค้ดการรันงานหลัก

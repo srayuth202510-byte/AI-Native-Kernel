@@ -1,4 +1,5 @@
 use crate::ebpf::load_bpf_o;
+use crate::observability::kernel_metrics;
 use anyhow::Result;
 use std::sync::Arc;
 use thiserror::Error;
@@ -50,6 +51,12 @@ impl LsmPolicyEngine {
             .write()
             .expect("blocked_syscalls lock poisoned")
             .insert(syscall);
+        let blocked_count = self
+            .blocked_syscalls
+            .read()
+            .expect("blocked_syscalls lock poisoned")
+            .len();
+        kernel_metrics().set_blocked_syscalls(blocked_count);
     }
 
     /// ดึงรายการ syscall ทั้งหมดที่ถูกบล็อคโดยแอนติบอดี
@@ -69,6 +76,7 @@ impl LsmPolicyEngine {
     #[must_use]
     #[instrument(skip(self), fields(syscall = %syscall))]
     pub fn decision_for_syscall(&self, syscall: &str) -> LsmDecision {
+        let metrics = kernel_metrics();
         // ขั้นแรก: ตรวจสอบ Blocklist จาก Immune System antibodies
         if self
             .blocked_syscalls
@@ -76,6 +84,7 @@ impl LsmPolicyEngine {
             .expect("blocked_syscalls lock poisoned")
             .contains(syscall)
         {
+            metrics.record_lsm_decision("deny", "antibody");
             warn!(
                 decision = "deny (antibody)",
                 syscall, "LSM blocked syscall per Immune System antibody rule"
@@ -86,11 +95,13 @@ impl LsmPolicyEngine {
         // ขั้นสอง: ตรวจสอบ Allowlist สำหรับ syscall พื้นฐาน
         match syscall {
             "read" | "write" | "recvmsg" => {
+                metrics.record_lsm_decision("allow", "allowlist");
                 debug!(decision = "allow", "อนุญาต syscall ตามนโยบาย Zero-Trust");
                 LsmDecision::Allow
             }
             // ขั้นสาม: ปฏิเสธ syscall อื่น ๆ ทั้งหมด (fail-closed)
             _ => {
+                metrics.record_lsm_decision("deny", "default_deny");
                 warn!(decision = "deny", "ปฏิเสธ syscall ที่ไม่อยู่ใน allowlist");
                 self.default_decision
             }
@@ -173,6 +184,7 @@ impl Default for LsmAttachment {
 ///
 /// ส่งคืนข้อผิดพลาดหาก BPF .o file ไม่มี หรือ Aya โหลด/แนบไม่สำเร็จ
 fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
+    let metrics = kernel_metrics();
     let bpf_bytes = load_bpf_o("lsm-security")?;
     let mut bpf = aya::Bpf::load(&bpf_bytes)?;
 
@@ -241,6 +253,8 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
     }
 
     info!("LSM eBPF: all programs attached and maps populated");
+    metrics.record_attach_attempt("lsm", "success");
+    metrics.set_active_mode("lsm", "real");
     Ok(LsmAttachment::new_with_bpf(bpf))
 }
 
@@ -254,12 +268,15 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
 /// ส่งคืนข้อผิดพลาดหากทั้ง real mode และ simulation mode ล้มเหลว
 #[instrument(skip(engine))]
 pub fn attach_lsm_hooks(engine: Arc<LsmPolicyEngine>) -> Result<LsmAttachment> {
+    let metrics = kernel_metrics();
     match try_attach_real_lsm(&engine) {
         Ok(attachment) => {
             info!("LSM hooks: real eBPF mode — kernel-level enforcement active");
             Ok(attachment)
         }
         Err(e) => {
+            metrics.record_attach_attempt("lsm", "fallback");
+            metrics.set_active_mode("lsm", "simulation");
             warn!(error = %e, "LSM hooks: real eBPF attachment failed — falling back to simulation mode");
             info!("LSM hooks: simulation mode — policy engine running in userspace");
             Ok(LsmAttachment::new())

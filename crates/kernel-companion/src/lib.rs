@@ -4,6 +4,7 @@
 //! ทำหน้าที่เป็นตัวกลางในการเชื่อมต่อระหว่างระบบปฏิบัติการ Linux (ผ่าน LSM/eBPF) และระบบจัดการ AI Agents
 
 use crate::config::Config;
+use crate::observability::kernel_metrics;
 use agent_scheduler::AgentScheduler;
 use capability_security::CapabilitySecurityManager;
 use compute_scheduler::ComputeProfile;
@@ -20,6 +21,7 @@ pub mod config;
 pub mod ebpf;
 pub mod lsm;
 pub mod metrics_server;
+pub mod observability;
 pub mod uds;
 
 pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
@@ -59,10 +61,14 @@ pub struct KernelCompanion {
     immune_task: Option<JoinHandle<()>>,
     /// handle ของ tracer task
     tracer_task: Option<JoinHandle<()>>,
+    /// cancellation token ของ tracer task
+    tracer_cancel: Option<tokio_util_cancel::CancellationToken>,
     /// handle ของ tcell event receiver task
     tcell_task: Option<JoinHandle<()>>,
     /// handle ของ prometheus metrics server task
     metrics_task: Option<JoinHandle<()>>,
+    /// cancellation token ของ metrics server task
+    metrics_cancel: Option<tokio_util_cancel::CancellationToken>,
 }
 
 impl KernelCompanion {
@@ -77,6 +83,7 @@ impl KernelCompanion {
     /// ใช้ค่าจาก config/default.toml หรือ CLI/env overrides
     #[must_use]
     pub fn with_config(config: &Config) -> Self {
+        let _ = kernel_metrics();
         let intent_bus = Arc::new(IntentBus::new(config.kernel_companion.intent_bus_capacity));
         let context_memory = Arc::new(ContextMemoryManager::with_capacity(
             config.context_memory.hot_capacity,
@@ -129,8 +136,10 @@ impl KernelCompanion {
             supervisor_task: None,
             immune_task: None,
             tracer_task: None,
+            tracer_cancel: None,
             tcell_task: None,
             metrics_task: None,
+            metrics_cancel: None,
         }
     }
 
@@ -215,6 +224,7 @@ impl KernelCompanion {
             // เริ่มต้น SyscallTracer เพื่อดักฟัง syscall และส่งต่อให้ TCellAgent
             let (tracer, mut event_rx) = SyscallTracer::new(Arc::clone(&self.lsm_engine));
             let cancel = tokio_util_cancel::CancellationToken::new();
+            self.tracer_cancel = Some(cancel.clone());
             self.tracer_task = Some(tokio::spawn(async move {
                 let _ = tracer.run(cancel).await;
             }));
@@ -351,6 +361,7 @@ impl KernelCompanion {
 
             let metrics_addr = self.config.kernel_companion.metrics_server_addr.clone();
             let cancel_metrics = tokio_util_cancel::CancellationToken::new();
+            self.metrics_cancel = Some(cancel_metrics.clone());
             self.metrics_task = Some(tokio::spawn(async move {
                 let _ = metrics_server::start_metrics_server(&metrics_addr, cancel_metrics).await;
             }));
@@ -396,6 +407,12 @@ impl KernelCompanion {
         warn!("KernelCompanion กำลัง shutdown — ถอน LSM hooks");
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(true);
+        }
+        if let Some(cancel) = self.tracer_cancel.take() {
+            cancel.cancel();
+        }
+        if let Some(cancel) = self.metrics_cancel.take() {
+            cancel.cancel();
         }
         if let Some(task) = self.routing_task.take() {
             let _ = task.await;

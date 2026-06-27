@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, instrument, warn};
 
 use crate::lsm::{LsmDecision, LsmPolicyEngine};
+use crate::observability::kernel_metrics;
 
 // ---- Types ----
 
@@ -67,10 +68,14 @@ impl SyscallTracer {
 
         match self.try_run_bpf(cancel.clone()).await {
             Ok(()) => {
+                kernel_metrics().set_active_mode("tracer", "real");
                 info!("SyscallTracer running on real eBPF");
                 Ok(())
             }
             Err(e) => {
+                let metrics = kernel_metrics();
+                metrics.record_attach_attempt("tracer", "fallback");
+                metrics.set_active_mode("tracer", "simulation");
                 warn!(error = %e, "real eBPF load failed — falling back to simulation mode");
                 self.run_simulation_loop(cancel).await
             }
@@ -79,6 +84,7 @@ impl SyscallTracer {
 
     #[instrument(skip(self, cancel))]
     async fn try_run_bpf(&self, cancel: CancellationToken) -> Result<(), TracerError> {
+        let metrics = kernel_metrics();
         let bpf_bytes = load_bpf_program_bytes()
             .map_err(|e| TracerError::LoadFailed(format!("cannot load BPF .o bytes: {e}")))?;
 
@@ -101,6 +107,8 @@ impl SyscallTracer {
             .attach("raw_syscalls", "sys_enter")
             .map_err(|e| TracerError::AttachFailed(e.to_string()))?;
 
+        metrics.record_attach_attempt("tracer", "success");
+        metrics.set_active_mode("tracer", "real");
         info!("eBPF tracepoint sys_enter attached — polling ring buffer");
 
         let map = bpf
@@ -137,6 +145,7 @@ impl SyscallTracer {
                                 let event =
                                     self.process_syscall_event(raw.syscall_nr, raw.pid, raw.uid);
                                 if self.event_tx.try_send(event).is_err() {
+                                    metrics.record_syscall_drop("channel_full");
                                     debug!("event channel full — dropping syscall event");
                                 }
                             }
@@ -200,11 +209,16 @@ impl SyscallTracer {
             .get(&syscall_nr)
             .copied()
             .unwrap_or("unknown");
+        let metrics = kernel_metrics();
 
         let lsm_decision = self.policy.decision_for_syscall(syscall_name);
         let decision = match lsm_decision {
-            LsmDecision::Allow => PolicyDecision::Allow,
+            LsmDecision::Allow => {
+                metrics.record_syscall_event("allow", syscall_name);
+                PolicyDecision::Allow
+            }
             LsmDecision::Deny => {
+                metrics.record_syscall_event("deny", syscall_name);
                 warn!(
                     syscall = syscall_name,
                     pid, uid, "LSM denied syscall per Zero-Trust policy"
