@@ -3,6 +3,9 @@ use intent_bus::{Intent, IntentPriority, IntentType};
 use std::env;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use compute_scheduler::{ComputeScheduler, ComputeTarget, ComputeProfile};
+use compute_scheduler::placement::WorkloadClass;
+use compute_scheduler::placement::PlacementPolicy;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -52,6 +55,31 @@ async fn main() -> Result<()> {
             intent
                 .metadata
                 .insert("deny".to_string(), args[3].to_string());
+        }
+        "place" => {
+            // คำสั่งวางงานบนอุปกรณ์ที่เหมาะสมตามสถิติจริง
+            if args.len() < 3 {
+                println!("Usage: ank-cli place <workload>");
+                println!("workload: kernel|small|large|vector");
+                return Ok(());
+            }
+            let wl = match args[2].as_str() {
+                "kernel" => WorkloadClass::KernelLogic,
+                "small" => WorkloadClass::SmallLlm,
+                "large" => WorkloadClass::LargeLlm,
+                "vector" => WorkloadClass::VectorIndexing,
+                _ => {
+                    println!("Unknown workload: {}", args[2]);
+                    return Ok(());
+                }
+            };
+            let scheduler = ComputeScheduler::new();
+            let policy = PlacementPolicy::new(scheduler.clone());
+            let profiles = scheduler.scan_real_hardware();
+            match policy.place(wl, &profiles) {
+                Ok(target) => println!("เลือกอุปกรณ์สำหรับงาน {}: {:?}", args[2], target),
+                Err(e) => println!("ไม่สามารถวางงานได้: {:?}", e),
+            }
         }
         _ => {
             // คำสั่งอื่นๆ นอกเหนือจากนี้ ให้ส่งเป็น payload ทั่วไป
@@ -113,6 +141,22 @@ async fn main() -> Result<()> {
                         })
                         .unwrap_or_default();
                     println!("Blocked Syscalls : {:?}", blocked);
+
+                    if let Some(hardware) = json_resp["hardware_targets"].as_array() {
+                        println!("-----------------------------------------");
+                        println!("          อุปกรณ์ฮาร์ดแวร์จริงที่ตรวจพบ");
+                        println!("-----------------------------------------");
+                        for hw in hardware {
+                            let target = hw["target"].as_str().unwrap_or("Unknown");
+                            let latency = hw["latency_ms"].as_f64().unwrap_or(0.0);
+                            let power = hw["power_watts"].as_f64().unwrap_or(0.0);
+                            let cost = hw["cost_units"].as_f64().unwrap_or(0.0);
+                            println!(
+                                "  Device: {:<6} | Latency: {:>5.1}ms | Power: {:>5.1}W | Cost: {:>5.1}",
+                                target, latency, power, cost
+                            );
+                        }
+                    }
                     println!("=========================================");
                 } else if cmd == "list-quarantine" {
                     let pids = json_resp["quarantined_pids"]

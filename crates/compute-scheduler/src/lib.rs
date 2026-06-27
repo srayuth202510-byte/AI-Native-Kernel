@@ -12,6 +12,7 @@ use crate::cost::score_target;
 use crate::weights::AdaptiveWeights;
 use std::sync::RwLock;
 use thiserror::Error;
+use crate::placement::{PlacementPolicy, WorkloadClass};
 
 /// ข้อผิดพลาดจากการคำนวณและการจัดสรรทรัพยากรประมวลผล
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -98,6 +99,12 @@ impl ComputeScheduler {
     pub fn update_weights(&self, sample: ComputeProfile) {
         let mut weights = self.weights.write().expect("compute weights lock poisoned");
         weights.observe(sample);
+    }
+
+    /// สแกนหาฮาร์ดแวร์จริงในเครื่องระบบ และส่งคืนรายการพร้อม ComputeProfile ที่วัดได้จริง
+    pub fn scan_real_hardware(&self) -> Vec<(ComputeTarget, ComputeProfile)> {
+        let mut prober = hardware::HardwareProber::new();
+        prober.scan_hardware()
     }
 }
 
@@ -290,6 +297,19 @@ mod tests {
         assert_eq!(
             scheduler.choose_best(&candidates).expect("should pick NPU"),
             ComputeTarget::Npu
+        );
+    }
+
+    #[test]
+    fn scan_real_hardware_returns_at_least_cpu() {
+        let scheduler = ComputeScheduler::new();
+        let profiles = scheduler.scan_real_hardware();
+        assert!(!profiles.is_empty(), "ควรพบฮาร์ดแวร์จริงอย่างน้อย 1 ประเภท");
+        assert!(
+            profiles
+                .iter()
+                .any(|(target, _)| *target == ComputeTarget::Cpu),
+            "ต้องมีผลลัพธ์ของ CPU อยู่ในรายการวัดผล"
         );
     }
 }

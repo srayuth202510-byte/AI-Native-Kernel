@@ -2,6 +2,7 @@ use crate::lsm::LsmPolicyEngine;
 use crate::tokio_util_cancel::CancellationToken;
 use agent_scheduler::AgentScheduler;
 use anyhow::Result;
+use compute_scheduler::ComputeScheduler;
 use immune_system::TCellAgent;
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
@@ -16,6 +17,7 @@ pub async fn start_uds_server(
     tcell: Option<Arc<TCellAgent>>,
     lsm: Option<Arc<LsmPolicyEngine>>,
     agent_scheduler: Option<Arc<AgentScheduler>>,
+    compute_scheduler: Option<Arc<ComputeScheduler>>,
     socket_path: &str,
     cancel: CancellationToken,
 ) -> Result<()> {
@@ -28,6 +30,7 @@ pub async fn start_uds_server(
     let tcell = tcell.clone();
     let lsm = lsm.clone();
     let agent_scheduler = agent_scheduler.clone();
+    let compute_scheduler = compute_scheduler.clone();
 
     tokio::spawn(async move {
         loop {
@@ -45,6 +48,7 @@ pub async fn start_uds_server(
                             let tcell = tcell.clone();
                             let lsm = lsm.clone();
                             let agent_scheduler = agent_scheduler.clone();
+                            let compute_scheduler = compute_scheduler.clone();
 
                             tokio::spawn(async move {
                                 let (reader, mut writer) = socket.split();
@@ -63,10 +67,11 @@ pub async fn start_uds_server(
                                                 if intent.intent_type == IntentType::Command {
                                                     let cmd = intent.payload.as_str();
                                                     // กรณีคำสั่งดึงสถานะโดยรวม
-                                                    if cmd == "status" {
+                                                     if cmd == "status" {
                                                         let mut running_agents = 0;
                                                         let mut quarantined_pids = Vec::new();
                                                         let mut blocked_syscalls = Vec::new();
+                                                        let mut hardware_targets = Vec::new();
 
                                                         if let Some(ref sched) = agent_scheduler {
                                                             running_agents = sched.get_running_agents().await.len();
@@ -77,12 +82,23 @@ pub async fn start_uds_server(
                                                         if let Some(ref l) = lsm {
                                                             blocked_syscalls = l.get_blocked_syscalls();
                                                         }
+                                                        if let Some(ref cs) = compute_scheduler {
+                                                            for (target, profile) in cs.scan_real_hardware() {
+                                                                hardware_targets.push(serde_json::json!({
+                                                                    "target": format!("{:?}", target),
+                                                                    "latency_ms": profile.latency_ms,
+                                                                    "power_watts": profile.power_watts,
+                                                                    "cost_units": profile.cost_units,
+                                                                }));
+                                                            }
+                                                        }
 
                                                         let response = serde_json::json!({
                                                             "status": "online",
                                                             "running_agents": running_agents,
                                                             "quarantined_pids": quarantined_pids,
                                                             "blocked_syscalls": blocked_syscalls,
+                                                            "hardware_targets": hardware_targets,
                                                         });
                                                         let resp_json = format!("{}\n", response);
                                                         let _ = writer.write_all(resp_json.as_bytes()).await;
@@ -170,6 +186,7 @@ mod tests {
         // Start UDS Server
         start_uds_server(
             Arc::clone(&intent_bus),
+            None,
             None,
             None,
             None,

@@ -343,6 +343,7 @@ impl KernelCompanion {
                 Some(Arc::clone(&self.tcell)),
                 Some(Arc::clone(&self.lsm_engine)),
                 Some(Arc::clone(&self.agent_scheduler)),
+                Some(Arc::clone(&self.compute_scheduler)),
                 &self.config.kernel_companion.uds_socket_path,
                 cancel_uds,
             )
