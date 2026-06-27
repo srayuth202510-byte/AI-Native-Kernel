@@ -1,5 +1,5 @@
 use crate::priority::Priority;
-use capability_security::CapabilityToken;
+use capability_security::{CapabilityToken, Scope};
 use std::time::Instant;
 
 /// ข้อมูลควบคุมและสถานะของ Agent (Agent Control Block หรือ ACB)
@@ -52,5 +52,86 @@ impl AgentControlBlock {
             restart_attempts: 0,
             last_restart: Instant::now(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_agent_control_block_creation() {
+        let acb = AgentControlBlock::new(42);
+        assert_eq!(acb.id, 42);
+        assert_eq!(acb.state, AgentState::Creating);
+        assert_eq!(acb.priority, Priority::Batch);
+        assert!(acb.context_key.is_none());
+        assert!(acb.capabilities.is_empty());
+        assert_eq!(acb.restart_attempts, 0);
+        assert!(acb.last_restart.elapsed().as_nanos() > 0);
+    }
+
+    #[test]
+    fn test_agent_control_block_with_custom_state() {
+        let mut acb = AgentControlBlock::new(100);
+        acb.state = AgentState::Running;
+        acb.priority = Priority::Interactive;
+        acb.context_key = Some("ctx123".to_string());
+        acb.capabilities = vec![CapabilityToken::new(
+            1,
+            Scope::Global,
+            vec!["read".to_string()],
+            std::time::Duration::from_secs(60),
+            [0x42u8; 32],
+        )];
+        acb.restart_attempts = 2;
+        acb.last_restart = Instant::now() - std::time::Duration::from_secs(10);
+
+        assert_eq!(acb.id, 100);
+        assert_eq!(acb.state, AgentState::Running);
+        assert_eq!(acb.priority, Priority::Interactive);
+        assert_eq!(acb.context_key, Some("ctx123".to_string()));
+        assert_eq!(acb.capabilities.len(), 1);
+        assert_eq!(acb.restart_attempts, 2);
+        assert!(acb.last_restart.elapsed().as_secs() >= 10);
+    }
+
+    #[test]
+    fn test_agent_state_enum_all_variants() {
+        let states = vec![
+            AgentState::Creating,
+            AgentState::Running,
+            AgentState::Paused,
+            AgentState::Terminating,
+            AgentState::Failed,
+            AgentState::Restarting,
+        ];
+
+        for state in states.iter().cloned() {
+            let mut acb = AgentControlBlock::new(0);
+            acb.state = state.clone();
+            assert_eq!(acb.state, state);
+        }
+    }
+
+    #[test]
+    fn test_agent_control_block_clone() {
+        let acb1 = AgentControlBlock::new(42);
+        let acb2 = acb1.clone();
+
+        assert_eq!(acb1.id, acb2.id);
+        assert_eq!(acb1.state, acb2.state);
+        assert_eq!(acb1.priority, acb2.priority);
+        assert_eq!(acb1.context_key, acb2.context_key);
+        assert_eq!(acb1.capabilities, acb2.capabilities);
+        assert_eq!(acb1.restart_attempts, acb2.restart_attempts);
+    }
+
+    #[test]
+    fn test_agent_control_block_debug() {
+        let acb = AgentControlBlock::new(42);
+        let debug_str = format!("{:?}", acb);
+        assert!(debug_str.contains("AgentControlBlock"));
+        assert!(debug_str.contains("id: 42"));
     }
 }

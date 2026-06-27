@@ -82,3 +82,132 @@ impl PriorityQueue {
         self.heap.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_priority_agent_creation() {
+        let agent = PriorityAgent::new(42, Priority::Interactive);
+        assert_eq!(agent.id, 42);
+        assert_eq!(agent.priority, Priority::Interactive);
+    }
+
+    #[test]
+    fn test_priority_ordering() {
+        let agents = vec![
+            PriorityAgent::new(1, Priority::Eco),
+            PriorityAgent::new(2, Priority::Batch),
+            PriorityAgent::new(3, Priority::Interactive),
+            PriorityAgent::new(4, Priority::RealTime),
+        ];
+
+        let mut heap = BinaryHeap::new();
+        for agent in agents {
+            heap.push(agent);
+        }
+
+        assert_eq!(heap.pop().unwrap().priority, Priority::RealTime);
+        assert_eq!(heap.pop().unwrap().priority, Priority::Interactive);
+        assert_eq!(heap.pop().unwrap().priority, Priority::Batch);
+        assert_eq!(heap.pop().unwrap().priority, Priority::Eco);
+    }
+
+    #[test]
+    fn test_priority_agent_with_same_priority() {
+        let agent1 = PriorityAgent::new(5, Priority::Batch);
+        let agent2 = PriorityAgent::new(3, Priority::Batch);
+
+        let mut heap = BinaryHeap::new();
+        heap.push(agent1);
+        heap.push(agent2);
+
+        assert_eq!(heap.pop().unwrap().id, 5);
+        assert_eq!(heap.pop().unwrap().id, 3);
+    }
+
+    #[test]
+    fn test_priority_queue_basic_operations() {
+        let mut queue = PriorityQueue::new();
+
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+
+        queue.push(PriorityAgent::new(1, Priority::Batch));
+        queue.push(PriorityAgent::new(2, Priority::Eco));
+        queue.push(PriorityAgent::new(3, Priority::Interactive));
+
+        assert!(!queue.is_empty());
+        assert_eq!(queue.len(), 3);
+
+        let popped = queue.pop().unwrap();
+        assert_eq!(popped.priority, Priority::Interactive);
+        assert_eq!(popped.id, 3);
+
+        assert_eq!(queue.len(), 2);
+        assert!(queue.pop().unwrap().priority == Priority::Batch);
+        assert!(queue.pop().unwrap().priority == Priority::Eco);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_priority_enum_derived_traits() {
+        let priorities = vec![Priority::Eco, Priority::Batch, Priority::Interactive, Priority::RealTime];
+
+        for (i, p1) in priorities.iter().enumerate() {
+            for (j, p2) in priorities.iter().enumerate() {
+                let cmp = p1.cmp(p2);
+                let partial_cmp = p1.partial_cmp(p2);
+                assert_eq!(Some(cmp), partial_cmp);
+
+                if i <= j {
+                    assert!(p1 <= p2);
+                }
+                if i >= j {
+                    assert!(p1 >= p2);
+                }
+                assert_eq!(p1 == p2, i == j);
+                assert_eq!(p1 != p2, i != j);
+            }
+        }
+    }
+
+    #[test]
+    fn test_priority_enum_hash() {
+        use std::collections::HashMap;
+
+        let mut map = HashMap::new();
+        map.insert(Priority::Eco, "eco");
+        map.insert(Priority::Batch, "batch");
+        map.insert(Priority::Interactive, "interactive");
+        map.insert(Priority::RealTime, "realtime");
+
+        assert_eq!(map[&Priority::Eco], "eco");
+        assert_eq!(map[&Priority::Batch], "batch");
+        assert_eq!(map[&Priority::Interactive], "interactive");
+        assert_eq!(map[&Priority::RealTime], "realtime");
+    }
+
+    #[test]
+    fn test_priority_queue_clear() {
+        let mut queue = PriorityQueue::new();
+        queue.push(PriorityAgent::new(1, Priority::Batch));
+        queue.push(PriorityAgent::new(2, Priority::Eco));
+
+        assert_eq!(queue.len(), 2);
+
+        queue = PriorityQueue::new();
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn test_priority_agent_debug() {
+        let agent = PriorityAgent::new(42, Priority::Interactive);
+        let debug_str = format!("{:?}", agent);
+        assert!(debug_str.contains("PriorityAgent"));
+        assert!(debug_str.contains("id: 42"));
+        assert!(debug_str.contains("Interactive"));
+    }
+}
