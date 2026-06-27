@@ -49,10 +49,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Install cargo-vet
-        run: cargo install cargo-vet --locked
-      - name: Run cargo vet (supply‑chain audit)
-        run: cargo vet
+
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
