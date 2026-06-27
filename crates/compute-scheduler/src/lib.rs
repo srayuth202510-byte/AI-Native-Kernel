@@ -12,7 +12,9 @@ use crate::cost::score_target;
 use crate::weights::AdaptiveWeights;
 use std::sync::RwLock;
 use thiserror::Error;
-use crate::placement::{PlacementPolicy, WorkloadClass};
+
+/// ข้อผิดพลาดจากการคำนวณและการจัดสรรทรัพยากรประมวลผล
+
 
 /// ข้อผิดพลาดจากการคำนวณและการจัดสรรทรัพยากรประมวลผล
 #[derive(Debug, Error, Clone, PartialEq)]

@@ -3,7 +3,7 @@ use intent_bus::{Intent, IntentPriority, IntentType};
 use std::env;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use compute_scheduler::{ComputeScheduler, ComputeTarget, ComputeProfile};
+use compute_scheduler::ComputeScheduler;
 use compute_scheduler::placement::WorkloadClass;
 use compute_scheduler::placement::PlacementPolicy;
 
