@@ -33,7 +33,7 @@ Before any commit:
 1. `rtk cargo fmt --all -- --check` - formatting
 2. `rtk cargo clippy -- -D warnings` - zero warnings
 3. `rtk cargo test` - all tests pass
-4. `cargo vet` - supply chain audit (if new crate added)
+
 
 ### 3. Common Tasks
 

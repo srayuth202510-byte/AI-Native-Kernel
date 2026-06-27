@@ -155,7 +155,7 @@ rtk cargo test --test '*'          # Integration tests only
 cargo fuzz run <target>            # Fuzz testing (see tests/fuzz/)
 
 # Audit
-cargo vet                          # Supply chain audit
+
 cargo audit                        # Security vulnerability scan
 ```
 

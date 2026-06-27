@@ -1,8 +1,0 @@
-# cargo-vet audits file
-
-[[wildcard-audits]]
-crate = "*"
-who = "placeholder"
-criteria = ["safe-to-deploy"]
-start = "2026-01-01"
-end = "2030-01-01"
