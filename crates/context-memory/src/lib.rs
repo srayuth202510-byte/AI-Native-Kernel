@@ -7,7 +7,9 @@ pub mod cold;
 pub mod hot;
 pub mod warm;
 pub mod semantic;
+pub mod fs;
 
+pub use fs::{SemanticFile, SemanticFileSystem};
 use crate::cold::ColdStore;
 use crate::hot::HotStore;
 use crate::warm::WarmStore;

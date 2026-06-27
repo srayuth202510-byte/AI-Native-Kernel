@@ -76,6 +76,53 @@ impl SemanticStore {
         }).await?;
         Ok(result.result)
     }
+
+    /// ค้นหาบริบทและส่งคืนเฉพาะ ID และ Metadata เป็น String Map เพื่อลดความซับซ้อนของโครงสร้างข้อมูล
+    pub async fn search_metadata(
+        &self,
+        vector: Vec<f32>,
+        limit: u64,
+    ) -> Result<Vec<(String, HashMap<String, String>)>> {
+        let results = self.search(vector, limit).await?;
+        let mut extracted = Vec::new();
+
+        for point in results {
+            let id = match point.id.as_ref().and_then(|id| id.point_id_options.as_ref()) {
+                Some(qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u)) => u.clone(),
+                Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)) => n.to_string(),
+                None => continue,
+            };
+
+            let mut metadata = HashMap::new();
+            for (key, val) in point.payload {
+                if let Some(qdrant_client::qdrant::value::Kind::StringValue(s)) = val.kind {
+                    metadata.insert(key, s);
+                } else if let Some(qdrant_client::qdrant::value::Kind::IntegerValue(i)) = val.kind {
+                    metadata.insert(key, i.to_string());
+                }
+            }
+            extracted.push((id, metadata));
+        }
+
+        Ok(extracted)
+    }
+
+    /// ลบข้อมูลบริบท (Context) ออกจากระบบ Qdrant ด้วย ID
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        use qdrant_client::qdrant::{DeletePoints, PointsIdsList, PointsSelector, points_selector::PointsSelectorOneOf};
+
+        self.client.delete_points(DeletePoints {
+            collection_name: self.collection_name.clone(),
+            wait: Some(true),
+            points: Some(PointsSelector {
+                points_selector_one_of: Some(PointsSelectorOneOf::Points(PointsIdsList {
+                    ids: vec![id.to_string().into()],
+                })),
+            }),
+            ..Default::default()
+        }).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -18,12 +18,12 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 rocksdb = { workspace = true, optional = true }
 qdrant-client = "1.18.0"
-uuid = { workspace = true, features = ["v4"] }
+uuid = { workspace = true, features = ["v4", "v5"] }
 ndarray = "0.17.2"
+tokio = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
 
 [[bench]]
 name = "rocksdb_bench"
