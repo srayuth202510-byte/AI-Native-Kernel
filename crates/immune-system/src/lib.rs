@@ -21,7 +21,7 @@ pub mod tcell;
 pub use bcell::BCellAgent;
 pub use cytokine::CytokineSignal;
 pub use macrophage::MacrophageAgent;
-pub use tcell::TCellAgent;
+pub use tcell::{TCellAgent, ThreatDecision};
 
 use thiserror::Error;
 

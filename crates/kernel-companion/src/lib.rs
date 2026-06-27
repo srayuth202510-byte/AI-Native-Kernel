@@ -9,7 +9,7 @@ use capability_security::CapabilitySecurityManager;
 use compute_scheduler::ComputeProfile;
 use compute_scheduler::ComputeScheduler;
 use context_memory::ContextMemoryManager;
-use immune_system::{BCellAgent, MacrophageAgent, TCellAgent};
+use immune_system::{BCellAgent, MacrophageAgent, TCellAgent, ThreatDecision};
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -39,7 +39,6 @@ pub struct KernelCompanion {
     /// ตัวจัดตารางการทำงานของ Agent (Agent Scheduler) ควบคุมวงจรชีวิตของ Agent
     agent_scheduler: Arc<AgentScheduler>,
     /// T-Cell Agent — ตรวจจับ Anomaly (reserved for syscall event feed)
-    #[allow(dead_code)]
     tcell: Arc<TCellAgent>,
     /// B-Cell Agent — เรียนรู้และสร้าง Antibody Rules
     bcell: Arc<BCellAgent>,
@@ -57,6 +56,10 @@ pub struct KernelCompanion {
     supervisor_task: Option<JoinHandle<()>>,
     /// handle ของ immune system antibody sync task
     immune_task: Option<JoinHandle<()>>,
+    /// handle ของ tracer task
+    tracer_task: Option<JoinHandle<()>>,
+    /// handle ของ tcell event receiver task
+    tcell_task: Option<JoinHandle<()>>,
 }
 
 impl KernelCompanion {
@@ -122,6 +125,8 @@ impl KernelCompanion {
             routing_task: None,
             supervisor_task: None,
             immune_task: None,
+            tracer_task: None,
+            tcell_task: None,
         }
     }
 
@@ -202,10 +207,60 @@ impl KernelCompanion {
                     .await;
             }));
 
+            // ── Syscall Tracer & T-Cell Integration ──
+            // เริ่มต้น SyscallTracer เพื่อดักฟัง syscall และส่งต่อให้ TCellAgent
+            let (tracer, mut event_rx) = SyscallTracer::new(Arc::clone(&self.lsm_engine));
+            let cancel = tokio_util_cancel::CancellationToken::new();
+            self.tracer_task = Some(tokio::spawn(async move {
+                let _ = tracer.run(cancel).await;
+            }));
+
+            let tcell = Arc::clone(&self.tcell);
+            let intent_bus_for_tcell = Arc::clone(&self.intent_bus);
+            let mut tcell_shutdown_rx = shutdown_tx.subscribe();
+            self.tcell_task = Some(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        Some(event) = event_rx.recv() => {
+                            let denied = matches!(event.decision, PolicyDecision::Deny);
+                            let decision = tcell.observe_syscall(event.pid, &event.syscall_name, denied).await;
+
+                            if decision == ThreatDecision::Quarantine || decision == ThreatDecision::Kill {
+                                if decision == ThreatDecision::Quarantine {
+                                    tcell.quarantine(event.pid).await;
+                                }
+
+                                let payload = serde_json::json!({
+                                    "pid": event.pid,
+                                    "syscall": event.syscall_name,
+                                    "decision": format!("{:?}", decision),
+                                }).to_string();
+
+                                let threat_intent = Intent::new(
+                                    uuid::Uuid::new_v4().to_string(),
+                                    IntentType::Event,
+                                    payload,
+                                    intent_bus::IntentPriority::Critical,
+                                    "tcell",
+                                );
+                                let _ = intent_bus_for_tcell.publish(threat_intent).await;
+                            }
+                        }
+                        changed = tcell_shutdown_rx.changed() => {
+                            if changed.is_err() || *tcell_shutdown_rx.borrow() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }));
+
             // ── Immune System Integration Tasks ──
             let lsm = Arc::clone(&self.lsm_engine);
             let bcell = Arc::clone(&self.bcell);
+            let tcell_for_immune = Arc::clone(&self.tcell);
             let macrophage = Arc::clone(&self.macrophage);
+            let mut immune_intent_subscriber = self.intent_bus.subscribe();
             let immune_shutdown_rx = shutdown_tx.subscribe();
             let immune_interval = std::time::Duration::from_secs(10);
 
@@ -213,8 +268,39 @@ impl KernelCompanion {
                 let mut shutdown_rx = immune_shutdown_rx;
                 loop {
                     tokio::select! {
+                        // 1. ดักรับ Threat Event จาก T-Cell เข้าบัส แล้วนำไปป้อนให้ B-Cell เรียนรู้แบบ Closed-loop
+                        Some(intent) = immune_intent_subscriber.receive() => {
+                            if intent.intent_type == IntentType::Event && intent.source == "tcell" {
+                                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
+                                    if let Some(pid) = data.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) {
+                                        let severity = match data.get("decision").and_then(|v| v.as_str()) {
+                                            Some("Kill") => 10,
+                                            Some("Quarantine") => 8,
+                                            _ => 5,
+                                        };
+                                        if let Some(stats) = tcell_for_immune.get_stats(pid).await {
+                                            let syscalls: Vec<String> = stats.syscall_history.into_iter().collect();
+                                            if !syscalls.is_empty() {
+                                                bcell.learn_threat(syscalls, severity).await;
+
+                                                // สั่งให้ B-Cell สร้าง Antibody ทันทีหลังเรียนรู้
+                                                if let Some(antibody) = bcell.generate_antibody().await {
+                                                    lsm.add_blocked_syscall(&antibody.blocked_syscall);
+                                                    warn!(
+                                                        syscall = %antibody.blocked_syscall,
+                                                        confidence = antibody.confidence,
+                                                        "Immune System: auto-generated and applied antibody rule to LSM Policy Engine"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // 2. งานประจำช่วงเวลา (Periodic Tasks)
                         _ = tokio::time::sleep(immune_interval) => {
-                            // 1. Drain B-Cell antibodies → push to LSM Policy Engine
+                            // สั่งดึงและอัปเดต Antibody ที่เหลือ
                             let antibodies = bcell.take_new_antibodies().await;
                             for ab in &antibodies {
                                 lsm.add_blocked_syscall(&ab.blocked_syscall);
@@ -225,10 +311,16 @@ impl KernelCompanion {
                                 );
                             }
 
-                            // 2. Macrophage GC — sweep expired context entries
+                            // ล้างข้อมูลหน้า context ที่หมดอายุ
                             let swept = macrophage.sweep_context().await;
                             if swept > 0 {
                                 info!("Immune System: Macrophage cleaned {} expired context entries", swept);
+                            }
+
+                            // ปลดกักกัน process ที่หมดอายุของ T-Cell
+                            let released = tcell_for_immune.release_expired_quarantine(std::time::Duration::from_secs(300)).await;
+                            if !released.is_empty() {
+                                info!("Immune System: auto-released {} processes from T-Cell quarantine", released.len());
                             }
                         }
                         changed = shutdown_rx.changed() => {
@@ -241,11 +333,11 @@ impl KernelCompanion {
                 }
             }));
 
-            let cancel = tokio_util_cancel::CancellationToken::new();
+            let cancel_uds = tokio_util_cancel::CancellationToken::new();
             let _ = uds::start_uds_server(
                 Arc::clone(&self.intent_bus),
                 &self.config.kernel_companion.uds_socket_path,
-                cancel,
+                cancel_uds,
             )
             .await;
 
@@ -298,6 +390,12 @@ impl KernelCompanion {
             let _ = task.await;
         }
         if let Some(task) = self.immune_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.tracer_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.tcell_task.take() {
             let _ = task.await;
         }
         if let Some(attachment) = self.attachment.as_mut() {
