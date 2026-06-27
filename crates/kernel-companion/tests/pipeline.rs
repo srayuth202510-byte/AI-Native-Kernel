@@ -608,9 +608,9 @@ async fn int_context_tier_migration_with_agent() {
     // All 5 entries should exist (some in warm/cold)
     for i in 0..5 {
         let key = format!("ctx-{}", i);
-        let val = ctx_mgr_small.get(&key).unwrap_or_else(|_| {
-            panic!("{} should exist", key)
-        });
+        let val = ctx_mgr_small
+            .get(&key)
+            .unwrap_or_else(|_| panic!("{} should exist", key));
         assert_eq!(val, format!("value-{}", i).into_bytes());
     }
 

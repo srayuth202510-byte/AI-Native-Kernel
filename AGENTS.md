@@ -176,6 +176,7 @@ cargo audit                        # Security vulnerability scan
 - **Branch naming:** `feat/`, `fix/`, `chore/`, `docs/`
 - **Commit messages:** `<type>: <description>` (e.g., `feat: implement eBPF syscall tracer`)
 - Never commit secrets, keys, or PII
+- Pre-commit hook runs `cargo fmt --all -- --check` automatically; fix with `cargo fmt --all` if it fails
 - Run `rtk cargo clippy` and `rtk cargo test` before pushing
 - PR description must reference issue/task number
 

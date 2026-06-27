@@ -3,6 +3,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use intent_bus::{Intent, IntentPriority, IntentType};
 use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, Layout},
@@ -10,7 +11,6 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
 };
-use intent_bus::{Intent, IntentPriority, IntentType};
 use serde_json::Value;
 use std::io::stdout;
 use std::time::Duration;
