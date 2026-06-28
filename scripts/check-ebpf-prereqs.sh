@@ -43,6 +43,7 @@ WARN_COUNT=0
 TMP_DIR=""
 CLANG_BIN=""
 BPFTOOL_BIN=""
+LIBCLANG_PATH=""
 
 cleanup() {
     if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
@@ -120,6 +121,23 @@ check_clang_bpf_target() {
         pass "$CLANG_BIN supports --target=bpf"
     else
         fail "$CLANG_BIN found but does not support --target=bpf"
+    fi
+}
+
+check_libclang() {
+    if [[ -n "${LIBCLANG_PATH:-}" ]]; then
+        if [[ -e "${LIBCLANG_PATH}/libclang.so" || -e "${LIBCLANG_PATH}/libclang.so.1" || -e "${LIBCLANG_PATH}/libclang.dylib" ]]; then
+            pass "LIBCLANG_PATH points to libclang: ${LIBCLANG_PATH}"
+        else
+            fail "LIBCLANG_PATH is set but does not contain libclang: ${LIBCLANG_PATH}"
+        fi
+        return
+    fi
+
+    if command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -q 'libclang\.so'; then
+        pass "libclang is visible to the system linker cache"
+    else
+        warn "libclang not found; cargo clippy --all-features will require LIBCLANG_PATH or libclang-dev"
     fi
 }
 
@@ -232,6 +250,7 @@ fi
 
 check_file "$VMLINUX_BTF" "kernel BTF"
 check_file "$BPF_HELPERS_H" "libbpf helper headers"
+check_libclang
 check_clang_bpf_target
 check_lsm_state
 check_privileges

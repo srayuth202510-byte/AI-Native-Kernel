@@ -8,6 +8,7 @@ use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
+use tokio::task;
 use tracing::{debug, error, info};
 
 /// เริ่มต้น Unix Domain Socket Server สำหรับรับ Intent จากภายนอก
@@ -87,7 +88,11 @@ pub async fn start_uds_server(
                                                             allowed_syscalls_count = l.get_allowed_syscalls().len();
                                                         }
                                                         if let Some(ref cs) = compute_scheduler {
-                                                            for (target, profile) in cs.scan_real_hardware() {
+                                                            let cs = Arc::clone(cs);
+                                                            let hardware_profiles = task::spawn_blocking(move || cs.scan_real_hardware())
+                                                                .await
+                                                                .unwrap_or_default();
+                                                            for (target, profile) in hardware_profiles {
                                                                 hardware_targets.push(serde_json::json!({
                                                                     "target": format!("{:?}", target),
                                                                     "latency_ms": profile.latency_ms,

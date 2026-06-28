@@ -120,7 +120,7 @@ impl AuditEntry {
 }
 
 /// ตัวบันทึกข้อมูลการตรวจสอบการทำงานและความปลอดภัยลงในระบบจัดเก็บไฟล์ถาวร (Audit Logger)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AuditLogger {
     /// พาธสำหรับจัดเก็บไฟล์บันทึกประวัติ (Log File)
     log_path: PathBuf,

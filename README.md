@@ -91,6 +91,10 @@ rtk cargo clippy --all-targets --all-features -- -D warnings
 rtk cargo fmt
 ```
 
+ถ้าจะรัน `clippy --all-features` ด้วย `context-memory/rocksdb-warm`, ต้องมี `libclang` ให้ `bindgen` หาเจอ
+ผ่าน `LIBCLANG_PATH` หรือผ่าน `scripts/use-local-toolchain.sh` ที่จะพยายามตั้งค่าให้เองจาก LLVM ที่ติดตั้งไว้
+และ `scripts/install-ebpf-deps.sh` จะติดตั้ง `libclang-dev` เพิ่มให้ในชุด dependency ของ eBPF
+
 หมายเหตุ: backend ของ Warm tier ไม่ได้สลับผ่าน `config/default.toml` ตอน runtime
 แต่เลือกตอน build ด้วย feature `context-memory/rocksdb-warm`
 

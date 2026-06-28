@@ -5,6 +5,7 @@ KERNEL_RELEASE="$(uname -r)"
 PACKAGES=(
     "clang"
     "llvm"
+    "libclang-dev"
     "bpftool"
     "linux-headers-${KERNEL_RELEASE}"
 )

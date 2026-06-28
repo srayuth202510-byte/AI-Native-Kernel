@@ -15,6 +15,7 @@ use immune_system::{BCellAgent, MacrophageAgent, TCellAgent, ThreatDecision};
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
 use tokio::sync::watch;
+use tokio::task;
 use tokio::task::JoinHandle;
 use tracing::{info, instrument, warn};
 
@@ -267,7 +268,8 @@ impl KernelCompanion {
                                         event.pid, event.uid, anomaly_score, &reason,
                                     ),
                                 };
-                                let _ = audit_logger.record(entry);
+                                let audit_logger = audit_logger.clone();
+                                let _ = task::spawn_blocking(move || audit_logger.record(entry)).await;
 
                                 let payload = serde_json::json!({
                                     "pid": event.pid,
