@@ -46,16 +46,23 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BPFTOOL_BIN");
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let prebuilt_bpf_dir = Path::new(&manifest_dir).join("target").join("bpf");
-    let prebuilt_syscall = prebuilt_bpf_dir.join("syscall-tracer.bpf.o");
-    let prebuilt_lsm = prebuilt_bpf_dir.join("lsm-security.bpf.o");
-    if prebuilt_syscall.exists() && prebuilt_lsm.exists() {
-        println!(
-            "cargo:warning=using prebuilt eBPF objects from {}",
-            prebuilt_bpf_dir.display()
-        );
-        println!("cargo:rustc-env=BPF_OUT_DIR={}", prebuilt_bpf_dir.display());
-        return;
+
+    // ตรวจสอบ prebuilt objects จากหลายตำแหน่ง
+    let prebuilt_dirs = [
+        Path::new(&manifest_dir).join("prebuilt-bpf"), // committed
+        Path::new(&manifest_dir).join("target").join("bpf"), // generated
+    ];
+    for dir in &prebuilt_dirs {
+        let prebuilt_syscall = dir.join("syscall-tracer.bpf.o");
+        let prebuilt_lsm = dir.join("lsm-security.bpf.o");
+        if prebuilt_syscall.exists() && prebuilt_lsm.exists() {
+            println!(
+                "cargo:warning=using prebuilt eBPF objects from {}",
+                dir.display()
+            );
+            println!("cargo:rustc-env=BPF_OUT_DIR={}", dir.display());
+            return;
+        }
     }
 
     let kernel_release = std::fs::read_to_string("/proc/sys/kernel/osrelease")

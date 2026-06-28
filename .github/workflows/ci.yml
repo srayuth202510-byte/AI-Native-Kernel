@@ -7,8 +7,8 @@ on:
     branches: ["**"]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  check:
+    runs-on: ubuntu-24.04
     env:
       CARGO_TERM_COLOR: always
     steps:
@@ -22,8 +22,8 @@ jobs:
           components: rustfmt, clippy
           override: true
 
-      - name: Cache Cargo registry and binaries
-        uses: actions/cache@v3
+      - name: Cache Cargo
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -33,9 +33,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # Install clang for eBPF compilation
-      - name: Install clang & llvm
-        run: sudo apt-get update && sudo apt-get install -y clang llvm libelf-dev
+      - name: Install eBPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev linux-tools-common linux-tools-$(uname -r) bpftool
+
+      - name: Generate eBPF prebuilt objects (if BTF available)
+        run: |
+          if [ -f /sys/kernel/btf/vmlinux ]; then
+            bash scripts/build-ebpf-objects.sh
+          else
+            echo "BTF not available — using committed prebuilt objects"
+            ls -la crates/kernel-companion/prebuilt-bpf/
+          fi
 
       - name: Verify formatting
         run: cargo fmt --all -- --check
@@ -49,9 +59,27 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      - name: Verify prebuilt objects present
+        run: |
+          echo "BPF objects in prebuilt-bpf/:"
+          ls -la crates/kernel-companion/prebuilt-bpf/
+          echo "BPF objects in target/bpf/:"
+          ls -la crates/kernel-companion/target/bpf/ 2>/dev/null || echo "(none — runtime generation not available)"
 
+  security-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          override: true
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
-      - name: Run cargo audit (security scan)
+
+      - name: Run cargo audit
         run: cargo audit
