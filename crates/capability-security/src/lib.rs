@@ -10,8 +10,9 @@ pub use metrics::{SecurityMetrics, render_metrics};
 use crate::audit::{AuditEntry, AuditLogger};
 use crate::policy::{PolicyDecision, PolicyEngine};
 pub use crate::token::{CapabilityToken, Scope};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::RwLock;
+use std::time::Instant;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, CapabilityError>;
@@ -37,6 +38,9 @@ pub enum CapabilityError {
     /// โทเค็นถูกเพิกถอนแล้ว
     #[error("token has been revoked")]
     TokenRevoked,
+    /// ออกโทเค็นเกินอัตราที่กำหนด (rate limit exceeded)
+    #[error("token issuance rate limited")]
+    RateLimited,
 }
 
 /// ตัวจัดการความปลอดภัยอิงความสามารถ (Capability-based Security Manager)
@@ -53,6 +57,8 @@ pub struct CapabilitySecurityManager {
     audit_logger: AuditLogger,
     /// ตัววัดผลความปลอดภัย (Prometheus Metrics)
     metrics: Option<std::sync::Arc<SecurityMetrics>>,
+    /// ประวัติเวลาที่ออกโทเค็นล่าสุด (rate limiting)
+    issue_rate: RwLock<VecDeque<Instant>>,
 }
 
 /// ฟังก์ชันเปรียบเทียบข้อมูลไบต์อาร์เรย์ขนาด 32 ไบต์แบบคงเวลา (Constant-time comparison)
@@ -77,6 +83,7 @@ impl CapabilitySecurityManager {
             policy_engine: PolicyEngine::default(),
             audit_logger: AuditLogger::default(),
             metrics,
+            issue_rate: RwLock::new(VecDeque::new()),
         }
     }
 
@@ -90,11 +97,30 @@ impl CapabilitySecurityManager {
             policy_engine: PolicyEngine::default(),
             audit_logger: AuditLogger::new(log_path),
             metrics,
+            issue_rate: RwLock::new(VecDeque::new()),
         }
     }
 
     /// ออกโทเค็นความสามารถ (Capability Token) ใหม่ บันทึกลงในระบบเพื่อใช้งาน และบันทึกประวัติ (Audit Log)
+    ///
+    /// Rate limit: สูงสุด 100 โทเค็นต่อวินาที เพื่อป้องกัน audit log flooding
     pub fn issue_token(&self, token: CapabilityToken) -> Result<()> {
+        // Rate limiting check
+        let now = Instant::now();
+        let mut rate_queue = self.issue_rate.write().expect("issue rate lock poisoned");
+        const MAX_RATE_PER_SEC: usize = 100;
+        rate_queue.push_back(now);
+        while rate_queue
+            .front()
+            .is_some_and(|t| now.duration_since(*t).as_secs_f64() > 1.0)
+        {
+            rate_queue.pop_front();
+        }
+        if rate_queue.len() > MAX_RATE_PER_SEC {
+            return Err(CapabilityError::RateLimited);
+        }
+        drop(rate_queue);
+
         self.audit_logger
             .record(AuditEntry::issued(token.id))
             .map_err(|_| CapabilityError::AuditWriteFailed)?;

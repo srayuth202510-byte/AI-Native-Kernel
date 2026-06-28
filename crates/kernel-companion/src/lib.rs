@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::observability::kernel_metrics;
 use agent_scheduler::AgentScheduler;
 use capability_security::CapabilitySecurityManager;
+use capability_security::audit::{AuditEntry, AuditLogger};
 use compute_scheduler::ComputeProfile;
 use compute_scheduler::ComputeScheduler;
 use context_memory::ContextMemoryManager;
@@ -232,6 +233,9 @@ impl KernelCompanion {
 
             let tcell = Arc::clone(&self.tcell);
             let intent_bus_for_tcell = Arc::clone(&self.intent_bus);
+            let audit_logger = AuditLogger::new(std::path::PathBuf::from(
+                &self.config.capability_security.audit_log_path,
+            ));
             let mut tcell_shutdown_rx = shutdown_tx.subscribe();
             self.tcell_task = Some(tokio::spawn(async move {
                 loop {
@@ -245,10 +249,26 @@ impl KernelCompanion {
                                     tcell.quarantine(event.pid).await;
                                 }
 
+                                // Audit logging with full context
+                                let reason = format!("{:?}", decision);
+                                let anomaly_score = tcell.get_stats(event.pid).await
+                                    .map(|s| s.anomaly_score)
+                                    .unwrap_or(0.0);
+                                let entry = match decision {
+                                    ThreatDecision::Kill => AuditEntry::process_killed(
+                                        event.pid, event.uid, anomaly_score, &reason,
+                                    ),
+                                    _ => AuditEntry::process_quarantined(
+                                        event.pid, event.uid, anomaly_score, &reason,
+                                    ),
+                                };
+                                let _ = audit_logger.record(entry);
+
                                 let payload = serde_json::json!({
                                     "pid": event.pid,
                                     "syscall": event.syscall_name,
-                                    "decision": format!("{:?}", decision),
+                                    "decision": reason,
+                                    "anomaly_score": anomaly_score,
                                 }).to_string();
 
                                 let threat_intent = Intent::new(

@@ -143,7 +143,9 @@ impl TCellAgent {
         }
 
         // 2. ผลกระทบจากการเรียกปฏิเสธ (Deny count contribution)
-        score += entry.deny_count as f64 * 2.0;
+        // Capped at deny_limit to prevent unbounded score growth
+        let capped_deny = entry.deny_count.min(deny_limit as u64);
+        score += capped_deny as f64 * 2.0;
 
         // 3. ผลกระทบจากลำดับการเรียกที่น่าสงสัย (Suspicious sequence contribution)
         if has_suspicious_sequence(&entry.syscall_history) {
