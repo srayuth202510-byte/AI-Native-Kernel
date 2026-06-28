@@ -26,6 +26,7 @@ warm_capacity = 1024
 p2p_enabled = false
 p2p_listen_addr = "127.0.0.1:9091"
 p2p_bootstrap_nodes = []
+warm_store_path = "/tmp/ank-warm-store"
 
 [compute_scheduler]
 default_mode = "throughput"

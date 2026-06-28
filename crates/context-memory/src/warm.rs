@@ -84,6 +84,8 @@ pub struct WarmStore {
     order: Mutex<VecDeque<String>>,
     /// นับจำนวนรายการเพื่อประเมิน len() โดยไม่ต้อง scan ทั้ง DB
     count: std::sync::atomic::AtomicUsize,
+    /// บ่งชี้ว่าเป็น path ชั่วคราว (สำหรับ testing) หรือไม่ เพื่อลบเมื่อ drop
+    is_temp: bool,
 }
 
 #[cfg(feature = "rocksdb-warm")]
@@ -100,16 +102,39 @@ impl WarmStore {
     #[must_use]
     pub fn new() -> Self {
         let path = std::env::temp_dir().join(format!("ank-warm-store-{}", uuid::Uuid::new_v4()));
+        Self::new_with_path_internal(path, true)
+    }
+
+    /// สร้าง WarmStore ที่ใช้ RocksDB ในพาธที่กำหนด
+    #[must_use]
+    pub fn new_with_path<P: AsRef<std::path::Path>>(path: P) -> Self {
+        Self::new_with_path_internal(path.as_ref().to_path_buf(), false)
+    }
+
+    fn new_with_path_internal(path: std::path::PathBuf, is_temp: bool) -> Self {
         let mut opts = rocksdb::Options::default();
         opts.create_if_missing(true);
         // เปิดใช้ compression เพื่อประหยัดพื้นที่บน NVMe
         opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
         let db = rocksdb::DB::open(&opts, &path).expect("ไม่สามารถเปิด RocksDB warm store ได้");
+
+        // Scan the existing keys to populate the FIFO order queue and count
+        let mut order_list = VecDeque::new();
+        let mut count_val = 0;
+        let iter = db.iterator(rocksdb::IteratorMode::Start);
+        for (key_bytes, _) in iter.flatten() {
+            if let Ok(key_str) = std::str::from_utf8(&key_bytes) {
+                order_list.push_back(key_str.to_string());
+                count_val += 1;
+            }
+        }
+
         Self {
             db: Some(db),
             path,
-            order: Mutex::new(VecDeque::new()),
-            count: std::sync::atomic::AtomicUsize::new(0),
+            order: Mutex::new(order_list),
+            count: std::sync::atomic::AtomicUsize::new(count_val),
+            is_temp,
         }
     }
 
@@ -178,7 +203,57 @@ impl Drop for WarmStore {
     fn drop(&mut self) {
         // Close DB first to release the file lock
         self.db.take();
-        // Delete the temporary database directory
-        let _ = std::fs::remove_dir_all(&self.path);
+        if self.is_temp {
+            // Delete the temporary database directory
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "rocksdb-warm"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rocksdb_warm_store_true_persistence() {
+        let path =
+            std::env::temp_dir().join(format!("ank-test-persistent-{}", uuid::Uuid::new_v4()));
+
+        // 1. Create a store, write data, and verify
+        {
+            let mut store = WarmStore::new_with_path(&path);
+            store.insert("key1".to_string(), b"value1".to_vec());
+            store.insert("key2".to_string(), b"value2".to_vec());
+            assert_eq!(store.len(), 2);
+            assert_eq!(store.get("key1"), Some(b"value1".to_vec()));
+            assert_eq!(store.get("key2"), Some(b"value2".to_vec()));
+            // Dropped here, closes DB, should NOT delete the directory because is_temp is false
+        }
+
+        // 2. Open it again with the same path, and verify that the data, count, and FIFO order are restored!
+        {
+            let mut store = WarmStore::new_with_path(&path);
+            assert_eq!(store.len(), 2);
+            assert_eq!(store.get("key1"), Some(b"value1".to_vec()));
+            assert_eq!(store.get("key2"), Some(b"value2".to_vec()));
+
+            // Verify order queue by evicting oldest (FIFO)
+            let evicted1 = store.evict_oldest();
+            assert!(evicted1.is_some());
+            let (k1, v1) = evicted1.unwrap();
+            assert_eq!(k1, "key1");
+            assert_eq!(v1, b"value1".to_vec());
+
+            let evicted2 = store.evict_oldest();
+            assert!(evicted2.is_some());
+            let (k2, v2) = evicted2.unwrap();
+            assert_eq!(k2, "key2");
+            assert_eq!(v2, b"value2".to_vec());
+
+            assert_eq!(store.len(), 0);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&path);
     }
 }

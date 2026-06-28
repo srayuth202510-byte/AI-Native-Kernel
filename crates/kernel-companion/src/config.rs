@@ -113,6 +113,9 @@ impl Config {
                 self.context_memory.warm_capacity = n;
             }
         }
+        if let Ok(v) = std::env::var("ANK_WARM_STORE_PATH") {
+            self.context_memory.warm_store_path = v;
+        }
         if let Ok(v) = std::env::var("ANK_P2P_ENABLED") {
             if let Ok(b) = v.parse::<bool>() {
                 self.context_memory.p2p_enabled = b;
@@ -261,6 +264,8 @@ pub struct ContextMemoryConfig {
     pub p2p_listen_addr: String,
     #[serde(default = "default_p2p_bootstrap")]
     pub p2p_bootstrap_nodes: Vec<String>,
+    #[serde(default = "default_warm_store_path")]
+    pub warm_store_path: String,
 }
 
 impl Default for ContextMemoryConfig {
@@ -271,6 +276,7 @@ impl Default for ContextMemoryConfig {
             p2p_enabled: default_p2p_enabled(),
             p2p_listen_addr: default_p2p_listen_addr(),
             p2p_bootstrap_nodes: default_p2p_bootstrap(),
+            warm_store_path: default_warm_store_path(),
         }
     }
 }
@@ -289,6 +295,17 @@ fn default_p2p_listen_addr() -> String {
 }
 fn default_p2p_bootstrap() -> Vec<String> {
     Vec::new()
+}
+fn default_warm_store_path() -> String {
+    if std::env::var("CARGO_MANIFEST_DIR").is_ok() {
+        format!(
+            "{}/ank-warm-store-{}",
+            std::env::temp_dir().to_string_lossy(),
+            uuid::Uuid::new_v4()
+        )
+    } else {
+        "/tmp/ank-warm-store".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

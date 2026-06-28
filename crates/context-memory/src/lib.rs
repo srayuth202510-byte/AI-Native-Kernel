@@ -79,10 +79,37 @@ impl ContextMemoryManager {
         hot_capacity: usize,
         warm_capacity: usize,
     ) -> Self {
+        Self::with_vram_path_and_capacity(vram_capacity_bytes, hot_capacity, warm_capacity, None)
+    }
+
+    /// สร้าง ContextMemoryManager ด้วยค่าความจุ VRAM, RAM/RocksDB และพาธจัดเก็บ NVMe/RocksDB ที่กำหนดเอง
+    #[must_use]
+    pub fn with_vram_path_and_capacity(
+        vram_capacity_bytes: usize,
+        hot_capacity: usize,
+        warm_capacity: usize,
+        warm_store_path: Option<std::path::PathBuf>,
+    ) -> Self {
+        let warm_store = {
+            #[cfg(feature = "rocksdb-warm")]
+            {
+                if let Some(path) = warm_store_path {
+                    WarmStore::new_with_path(path)
+                } else {
+                    WarmStore::new()
+                }
+            }
+            #[cfg(not(feature = "rocksdb-warm"))]
+            {
+                let _ = warm_store_path;
+                WarmStore::new()
+            }
+        };
+
         Self {
             vram: Arc::new(RwLock::new(VramStore::new(vram_capacity_bytes))),
             hot: Arc::new(RwLock::new(HotStore::new())),
-            warm: Arc::new(RwLock::new(WarmStore::new())),
+            warm: Arc::new(RwLock::new(warm_store)),
             cold: Arc::new(RwLock::new(ColdStore::new())),
             vram_capacity_bytes,
             hot_capacity,

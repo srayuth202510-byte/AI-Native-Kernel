@@ -98,9 +98,13 @@ impl KernelCompanion {
     pub fn with_config(config: &Config) -> Self {
         let _ = kernel_metrics();
         let intent_bus = Arc::new(IntentBus::new(config.kernel_companion.intent_bus_capacity));
-        let context_memory = Arc::new(ContextMemoryManager::with_capacity(
+        let context_memory = Arc::new(ContextMemoryManager::with_vram_path_and_capacity(
+            32 * 1024 * 1024,
             config.context_memory.hot_capacity,
             config.context_memory.warm_capacity,
+            Some(std::path::PathBuf::from(
+                &config.context_memory.warm_store_path,
+            )),
         ));
         let capability_security = Arc::new(CapabilitySecurityManager::new_with_log_path_and_rate(
             std::path::PathBuf::from(&config.capability_security.audit_log_path),
