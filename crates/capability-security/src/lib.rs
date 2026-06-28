@@ -128,7 +128,7 @@ impl CapabilitySecurityManager {
         {
             rate_queue.pop_front();
         }
-        if rate_queue.len() > self.max_issue_rate {
+        if self.max_issue_rate > 0 && rate_queue.len() > self.max_issue_rate {
             return Err(CapabilityError::RateLimited);
         }
         drop(rate_queue);

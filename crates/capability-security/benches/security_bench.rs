@@ -3,7 +3,7 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 fn bench_issue_token(c: &mut Criterion) {
-    let manager = CapabilitySecurityManager::new();
+    let manager = CapabilitySecurityManager::with_rate_limit(0);
     let token = CapabilityToken::new(
         1,
         Scope::Global,
