@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{RwLock, mpsc};
-use tokio::time::{Duration, sleep};
+use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::time::{Duration, sleep, timeout};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -43,7 +43,31 @@ pub enum MessageType {
     Handshake,
     NeighborList,
     RecordSync,
+    RecordFetchRequest,
+    RecordFetchResponse,
     IdentityMap,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecordSyncPayload {
+    pub key: String,
+    pub value: Vec<u8>,
+    pub owner_node: String,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecordFetchRequest {
+    pub request_id: String,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecordFetchResponse {
+    pub request_id: String,
+    pub key: String,
+    pub value: Option<Vec<u8>>,
+    pub owner_node: String,
 }
 
 pub struct P2PMeshManager {
@@ -53,6 +77,8 @@ pub struct P2PMeshManager {
     pub message_tx: mpsc::Sender<P2PMessage>,
     pub message_rx: Option<mpsc::Receiver<P2PMessage>>,
     peers: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    records: Arc<RwLock<HashMap<String, RecordSyncPayload>>>,
+    pending_fetches: Arc<RwLock<HashMap<String, oneshot::Sender<Option<Vec<u8>>>>>>,
 }
 
 fn is_alive(node: &NodeInfo) -> bool {
@@ -78,6 +104,8 @@ impl P2PMeshManager {
             message_tx: tx,
             message_rx: Some(rx),
             peers: Arc::new(RwLock::new(HashMap::new())),
+            records: Arc::new(RwLock::new(HashMap::new())),
+            pending_fetches: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -188,23 +216,111 @@ impl P2PMeshManager {
             }
         }
     }
+
+    pub async fn sync_record(&self, key: impl Into<String>, value: Vec<u8>) -> Result<()> {
+        let key = key.into();
+        let version = now_millis();
+        let payload = RecordSyncPayload {
+            key: key.clone(),
+            value,
+            owner_node: self.local_node.id.clone(),
+            version,
+        };
+
+        self.records
+            .write()
+            .await
+            .insert(key.clone(), payload.clone());
+
+        let message = P2PMessage {
+            from: self.local_node.id.clone(),
+            from_addr: self.local_node.addr,
+            to: None,
+            msg_type: MessageType::RecordSync,
+            data: serde_json::to_vec(&payload)?,
+            timestamp_millis: now_millis(),
+        };
+        self.broadcast_message(message).await
+    }
+
+    pub async fn get_cached_record(&self, key: &str) -> Option<Vec<u8>> {
+        self.records
+            .read()
+            .await
+            .get(key)
+            .map(|record| record.value.clone())
+    }
+
+    pub async fn fetch_record(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(value) = self.get_cached_record(key).await {
+            return Ok(Some(value));
+        }
+
+        let request = RecordFetchRequest {
+            request_id: Uuid::new_v4().to_string(),
+            key: key.to_string(),
+        };
+        let (tx, rx) = oneshot::channel();
+        self.pending_fetches
+            .write()
+            .await
+            .insert(request.request_id.clone(), tx);
+
+        let message = P2PMessage {
+            from: self.local_node.id.clone(),
+            from_addr: self.local_node.addr,
+            to: None,
+            msg_type: MessageType::RecordFetchRequest,
+            data: serde_json::to_vec(&request)?,
+            timestamp_millis: now_millis(),
+        };
+
+        if let Err(error) = self.broadcast_message(message).await {
+            self.pending_fetches
+                .write()
+                .await
+                .remove(&request.request_id);
+            return Err(error);
+        }
+
+        match timeout(Duration::from_secs(2), rx).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(_)) | Err(_) => {
+                self.pending_fetches
+                    .write()
+                    .await
+                    .remove(&request.request_id);
+                Ok(None)
+            }
+        }
+    }
+
+    async fn broadcast_message(&self, message: P2PMessage) -> Result<()> {
+        let payload = serde_json::to_string(&message)?;
+        let peers = self.peers.read().await;
+        for (node_id, tx) in peers.iter() {
+            if *node_id != self.local_node.id {
+                let _ = tx.send(payload.clone());
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
 struct SharedState {
     known_nodes: Arc<RwLock<HashMap<String, NodeInfo>>>,
     peers: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    records: Arc<RwLock<HashMap<String, RecordSyncPayload>>>,
+    pending_fetches: Arc<RwLock<HashMap<String, oneshot::Sender<Option<Vec<u8>>>>>>,
     local_id: String,
     local_addr: SocketAddr,
 }
 
-async fn on_message(
-    line: &str,
-    node_id: &str,
-    known_nodes: &Arc<RwLock<HashMap<String, NodeInfo>>>,
-) {
+async fn on_message(line: &str, node_id: &str, state: &SharedState) {
     if let Ok(msg) = serde_json::from_str::<P2PMessage>(line.trim()) {
-        known_nodes
+        state
+            .known_nodes
             .write()
             .await
             .entry(node_id.to_string())
@@ -213,12 +329,82 @@ async fn on_message(
             });
         if msg.msg_type == MessageType::NeighborList {
             if let Ok(neighbors) = serde_json::from_slice::<Vec<NodeInfo>>(&msg.data) {
-                let mut nodes = known_nodes.write().await;
+                let mut nodes = state.known_nodes.write().await;
                 for n in neighbors {
                     nodes.entry(n.id.clone()).or_insert_with(|| NodeInfo {
                         last_seen_millis: now_millis(),
                         ..n
                     });
+                }
+            }
+            return;
+        }
+
+        if msg.msg_type == MessageType::RecordSync {
+            if let Ok(record) = serde_json::from_slice::<RecordSyncPayload>(&msg.data) {
+                let mut records = state.records.write().await;
+                let should_update = records
+                    .get(&record.key)
+                    .is_none_or(|existing| existing.version <= record.version);
+                if should_update {
+                    records.insert(record.key.clone(), record);
+                }
+            }
+            return;
+        }
+
+        if msg.msg_type == MessageType::RecordFetchRequest {
+            if let Ok(request) = serde_json::from_slice::<RecordFetchRequest>(&msg.data) {
+                let value = state
+                    .records
+                    .read()
+                    .await
+                    .get(&request.key)
+                    .map(|record| record.value.clone());
+                let response = RecordFetchResponse {
+                    request_id: request.request_id,
+                    key: request.key,
+                    value,
+                    owner_node: state.local_id.clone(),
+                };
+                let envelope = P2PMessage {
+                    from: state.local_id.clone(),
+                    from_addr: state.local_addr,
+                    to: Some(msg.from.clone()),
+                    msg_type: MessageType::RecordFetchResponse,
+                    data: serde_json::to_vec(&response).unwrap_or_default(),
+                    timestamp_millis: now_millis(),
+                };
+                if let Ok(payload) = serde_json::to_string(&envelope) {
+                    if let Some(peer_tx) = state.peers.read().await.get(&msg.from).cloned() {
+                        let _ = peer_tx.send(payload);
+                    }
+                }
+            }
+            return;
+        }
+
+        if msg.msg_type == MessageType::RecordFetchResponse {
+            if let Ok(response) = serde_json::from_slice::<RecordFetchResponse>(&msg.data) {
+                if let Some(value) = response.value.clone() {
+                    state.records.write().await.insert(
+                        response.key.clone(),
+                        RecordSyncPayload {
+                            key: response.key,
+                            value: value.clone(),
+                            owner_node: response.owner_node,
+                            version: now_millis(),
+                        },
+                    );
+                }
+
+                if let Some(tx) = state
+                    .pending_fetches
+                    .write()
+                    .await
+                    .remove(&response.request_id)
+                {
+                    let _ = tx.send(response.value);
                 }
             }
         }
@@ -237,6 +423,8 @@ async fn handle_connection(
     let state = SharedState {
         known_nodes: Arc::clone(&mgr.known_nodes),
         peers: Arc::clone(&mgr.peers),
+        records: Arc::clone(&mgr.records),
+        pending_fetches: Arc::clone(&mgr.pending_fetches),
         local_id: mgr.local_node.id.clone(),
         local_addr: mgr.local_node.addr,
     };
@@ -283,7 +471,7 @@ async fn handle_connection(
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         state.peers.write().await.insert(hs.from.clone(), tx);
         let node_id = hs.from.clone();
-        let known_nodes = Arc::clone(&state.known_nodes);
+        let read_state = state.clone();
         let peers = Arc::clone(&state.peers);
 
         let read_task = tokio::spawn(async move {
@@ -293,7 +481,7 @@ async fn handle_connection(
                 buf.clear();
                 match reader.read_line(&mut buf).await {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => on_message(&buf, &node_id, &known_nodes).await,
+                    Ok(_) => on_message(&buf, &node_id, &read_state).await,
                 }
             }
             peers.write().await.remove(&node_id);
@@ -354,7 +542,7 @@ async fn handle_connection(
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         state.peers.write().await.insert(hs_resp.from.clone(), tx);
         let node_id = hs_resp.from.clone();
-        let known_nodes = Arc::clone(&state.known_nodes);
+        let read_state = state.clone();
         let peers = Arc::clone(&state.peers);
 
         let read_task = tokio::spawn(async move {
@@ -364,7 +552,7 @@ async fn handle_connection(
                 buf.clear();
                 match reader.read_line(&mut buf).await {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => on_message(&buf, &node_id, &known_nodes).await,
+                    Ok(_) => on_message(&buf, &node_id, &read_state).await,
                 }
             }
             peers.write().await.remove(&node_id);
@@ -516,6 +704,14 @@ mod tests {
     async fn on_message_updates_last_seen() {
         let known_nodes: Arc<RwLock<HashMap<String, NodeInfo>>> =
             Arc::new(RwLock::new(HashMap::new()));
+        let state = SharedState {
+            known_nodes: Arc::clone(&known_nodes),
+            peers: Arc::new(RwLock::new(HashMap::new())),
+            records: Arc::new(RwLock::new(HashMap::new())),
+            pending_fetches: Arc::new(RwLock::new(HashMap::new())),
+            local_id: "local".to_string(),
+            local_addr: test_addr(9059),
+        };
         let node = make_node("target", 9060);
         known_nodes
             .write()
@@ -534,7 +730,7 @@ mod tests {
 
         let old_seen = node.last_seen_millis;
         tokio::time::sleep(Duration::from_millis(1)).await;
-        on_message(&line, "target", &known_nodes).await;
+        on_message(&line, "target", &state).await;
         let updated = known_nodes
             .read()
             .await
@@ -548,6 +744,14 @@ mod tests {
     async fn on_message_with_neighborlist_merges_nodes() {
         let known_nodes: Arc<RwLock<HashMap<String, NodeInfo>>> =
             Arc::new(RwLock::new(HashMap::new()));
+        let state = SharedState {
+            known_nodes: Arc::clone(&known_nodes),
+            peers: Arc::new(RwLock::new(HashMap::new())),
+            records: Arc::new(RwLock::new(HashMap::new())),
+            pending_fetches: Arc::new(RwLock::new(HashMap::new())),
+            local_id: "local".to_string(),
+            local_addr: test_addr(9069),
+        };
         known_nodes
             .write()
             .await
@@ -565,7 +769,7 @@ mod tests {
         };
         let line = serde_json::to_string(&msg).unwrap();
 
-        on_message(&line, "local", &known_nodes).await;
+        on_message(&line, "local", &state).await;
         let nodes = known_nodes.read().await;
         assert_eq!(nodes.len(), 3);
         assert!(nodes.contains_key("remote-a"));
@@ -691,5 +895,101 @@ mod tests {
         assert_eq!(back.id, "serde-test");
         assert_eq!(back.addr.port(), 9090);
         assert_eq!(back.capabilities, vec!["test"]);
+    }
+
+    #[tokio::test]
+    async fn record_sync_replication_updates_peer_cache() {
+        let a = Arc::new(P2PMeshManager::new(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )));
+        let listener_a = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port_a = listener_a.local_addr().unwrap().port();
+        let a_ref = a.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, peer_addr) = listener_a.accept().await.unwrap();
+                let mgr = a_ref.clone();
+                tokio::spawn(async move {
+                    let _ = handle_connection(stream, peer_addr, &mgr, true).await;
+                });
+            }
+        });
+
+        let b = Arc::new(P2PMeshManager::new(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )));
+        timeout(
+            Duration::from_secs(5),
+            b.clone().connect_to_peer(test_addr(port_a)),
+        )
+        .await
+        .expect("connect timeout")
+        .expect("connect result");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        a.sync_record("shared-key", b"shared-value".to_vec())
+            .await
+            .expect("sync should succeed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert_eq!(
+            b.get_cached_record("shared-key").await,
+            Some(b"shared-value".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_record_returns_peer_value() {
+        let a = Arc::new(P2PMeshManager::new(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )));
+        let listener_a = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port_a = listener_a.local_addr().unwrap().port();
+        let a_ref = a.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, peer_addr) = listener_a.accept().await.unwrap();
+                let mgr = a_ref.clone();
+                tokio::spawn(async move {
+                    let _ = handle_connection(stream, peer_addr, &mgr, true).await;
+                });
+            }
+        });
+
+        let b = Arc::new(P2PMeshManager::new(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )));
+        timeout(
+            Duration::from_secs(5),
+            b.clone().connect_to_peer(test_addr(port_a)),
+        )
+        .await
+        .expect("connect timeout")
+        .expect("connect result");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        a.records.write().await.insert(
+            "fetch-key".to_string(),
+            RecordSyncPayload {
+                key: "fetch-key".to_string(),
+                value: b"fetch-value".to_vec(),
+                owner_node: a.local_node.id.clone(),
+                version: now_millis(),
+            },
+        );
+
+        let fetched = b
+            .fetch_record("fetch-key")
+            .await
+            .expect("fetch should work");
+        assert_eq!(fetched, Some(b"fetch-value".to_vec()));
+        assert_eq!(
+            b.get_cached_record("fetch-key").await,
+            Some(b"fetch-value".to_vec())
+        );
     }
 }

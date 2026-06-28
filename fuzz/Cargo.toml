@@ -13,3 +13,4 @@ serde_json = { workspace = true }
 intent-bus = { path = "../crates/intent-bus" }
 capability-security = { path = "../crates/capability-security" }
 context-memory = { path = "../crates/context-memory" }
+kernel-companion = { path = "../crates/kernel-companion" }

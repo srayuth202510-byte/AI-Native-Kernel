@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::observability::kernel_metrics;
 use agent_scheduler::AgentScheduler;
 use capability_security::CapabilitySecurityManager;
+use capability_security::Scope;
 use capability_security::audit::{AuditEntry, AuditLogger};
 use compute_scheduler::placement::{PlacementPolicy, WorkloadClass};
 use compute_scheduler::{ComputeProfile, ComputeScheduler, ComputeTarget};
@@ -501,6 +502,7 @@ impl KernelCompanion {
                     });
 
                     self.p2p_mesh = Some(Arc::clone(&p2p_mgr));
+                    self.context_memory.attach_mesh(Arc::clone(&p2p_mgr));
                     p2p_mgr_opt = Some(p2p_mgr);
                     info!("P2P Mesh: initialized on addr {}", addr);
                 } else {
@@ -638,6 +640,38 @@ impl KernelCompanion {
     #[must_use]
     pub fn capability_security(&self) -> Arc<CapabilitySecurityManager> {
         Arc::clone(&self.capability_security)
+    }
+
+    pub fn authorize_process_token(
+        &mut self,
+        pid: u32,
+        token_id: u64,
+        secret: &[u8; 32],
+        capability: &str,
+    ) -> anyhow::Result<bool> {
+        let allowed = self.capability_security.validate(
+            token_id,
+            secret,
+            &Scope::Process(pid),
+            capability,
+        )?;
+
+        if let Some(attachment) = self.attachment.as_mut() {
+            if allowed {
+                attachment.allow_pid(pid)?;
+            } else {
+                attachment.deny_pid(pid)?;
+            }
+        }
+
+        Ok(allowed)
+    }
+
+    #[must_use]
+    pub fn is_pid_authorized(&self, pid: u32) -> bool {
+        self.attachment
+            .as_ref()
+            .is_some_and(|attachment| attachment.allows_pid(pid))
     }
 
     /// ตรวจสอบว่า LSM Hooks ถูกแนบเข้ากับระบบแล้วหรือไม่

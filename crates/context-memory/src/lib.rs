@@ -13,6 +13,7 @@ pub mod warm;
 
 use crate::cold::ColdStore;
 use crate::hot::HotStore;
+use crate::p2p_mesh::P2PMeshManager;
 use crate::vram::VramStore;
 use crate::warm::WarmStore;
 pub use fs::{SemanticFile, SemanticFileSystem};
@@ -53,6 +54,8 @@ pub struct ContextMemoryManager {
     warm_capacity: usize,
     /// บันทึกเวลาในการป้อนข้อมูล (สำหรับ GC / TTL-based clean)
     timestamps: RwLock<HashMap<String, Instant>>,
+    /// P2P mesh integration สำหรับ distributed context sync/fetch
+    mesh: RwLock<Option<Arc<P2PMeshManager>>>,
 }
 
 impl ContextMemoryManager {
@@ -85,6 +88,7 @@ impl ContextMemoryManager {
             hot_capacity,
             warm_capacity,
             timestamps: RwLock::new(HashMap::new()),
+            mesh: RwLock::new(None),
         }
     }
 
@@ -326,6 +330,57 @@ impl ContextMemoryManager {
 
         debug!(count, "ContextMemory: cleaned expired entries");
         count
+    }
+
+    pub fn attach_mesh(&self, mesh: Arc<P2PMeshManager>) {
+        *self.mesh.write() = Some(mesh);
+    }
+
+    pub fn detach_mesh(&self) {
+        *self.mesh.write() = None;
+    }
+
+    #[must_use]
+    pub fn mesh_enabled(&self) -> bool {
+        self.mesh.read().is_some()
+    }
+
+    pub async fn put_distributed(
+        &self,
+        key: impl Into<String> + AsRef<str>,
+        value: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        let key = key.into();
+        self.put(key.clone(), value.clone());
+
+        let mesh = self.mesh.read().clone();
+        if let Some(mesh) = mesh {
+            mesh.sync_record(key, value).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_distributed(&self, key: &str) -> Result<Vec<u8>> {
+        if let Ok(value) = self.get(key) {
+            return Ok(value);
+        }
+
+        let mesh = self.mesh.read().clone();
+        if let Some(mesh) = mesh {
+            if let Some(value) = mesh.get_cached_record(key).await {
+                self.put(key.to_string(), value.clone());
+                return Ok(value);
+            }
+
+            if let Ok(Some(value)) = mesh.fetch_record(key).await {
+                self.put(key.to_string(), value.clone());
+                return Ok(value);
+            }
+        }
+
+        warn!(key, "distributed context fetch failed");
+        Err(ContextError::NotFound)
     }
 }
 

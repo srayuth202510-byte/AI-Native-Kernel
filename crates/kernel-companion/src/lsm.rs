@@ -2,6 +2,7 @@ use crate::config::LsmConfig;
 use crate::ebpf::load_bpf_o;
 use crate::observability::kernel_metrics;
 use anyhow::Result;
+use aya::maps::{HashMap as BpfHashMap, MapData};
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -165,8 +166,14 @@ impl Default for LsmPolicyEngine {
 pub struct LsmAttachment {
     /// BPF object ที่เก็บรักษาโปรแกรม LSM ใน kernel (None = โหมดจำลอง)
     bpf: Option<aya::Bpf>,
+    /// map สำหรับ sync PID allowlist runtime เข้ากับ kernel hook
+    allowed_pids: Option<BpfHashMap<MapData, u32, u32>>,
+    /// map สำหรับ sync syscall allowlist runtime เข้ากับ kernel hook
+    allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
     /// บ่งชี้ว่ายังคงแนบอยู่กับ Kernel หรือไม่
     attached: bool,
+    /// snapshot ฝั่ง userspace สำหรับทดสอบและ fail-safe checks
+    allowed_pid_cache: HashSet<u32>,
 }
 
 impl LsmAttachment {
@@ -176,17 +183,28 @@ impl LsmAttachment {
     pub fn new() -> Self {
         Self {
             bpf: None,
+            allowed_pids: None,
+            allowed_syscalls: None,
             attached: true,
+            allowed_pid_cache: HashSet::new(),
         }
     }
 
     /// สร้าง LsmAttachment จาก aya::Bpf จริง
     /// โปรแกรม LSM จะทำงานใน kernel จนกว่าจะเรียก detach()
     #[must_use]
-    pub fn new_with_bpf(bpf: aya::Bpf) -> Self {
+    pub fn new_with_bpf(
+        bpf: aya::Bpf,
+        allowed_pids: Option<BpfHashMap<MapData, u32, u32>>,
+        allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
+        allowed_pid_cache: HashSet<u32>,
+    ) -> Self {
         Self {
             bpf: Some(bpf),
+            allowed_pids,
+            allowed_syscalls,
             attached: true,
+            allowed_pid_cache,
         }
     }
 
@@ -194,7 +212,10 @@ impl LsmAttachment {
     pub fn detach(&mut self) {
         // Dropping the Bpf object detaches all programs and unloads them
         self.bpf = None;
+        self.allowed_pids = None;
+        self.allowed_syscalls = None;
         self.attached = false;
+        self.allowed_pid_cache.clear();
     }
 
     /// ตรวจสอบสถานะว่า LSM Hook ยังทำงานอยู่หรือไม่
@@ -207,6 +228,27 @@ impl LsmAttachment {
     #[must_use]
     pub fn is_real(&self) -> bool {
         self.bpf.is_some()
+    }
+
+    pub fn allow_pid(&mut self, pid: u32) -> Result<()> {
+        if let Some(map) = self.allowed_pids.as_mut() {
+            map.insert(pid, 1, 0)?;
+        }
+        self.allowed_pid_cache.insert(pid);
+        Ok(())
+    }
+
+    pub fn deny_pid(&mut self, pid: u32) -> Result<()> {
+        if let Some(map) = self.allowed_pids.as_mut() {
+            let _ = map.remove(&pid);
+        }
+        self.allowed_pid_cache.remove(&pid);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn allows_pid(&self, pid: u32) -> bool {
+        self.allowed_pid_cache.contains(&pid)
     }
 }
 
@@ -229,6 +271,7 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
     let metrics = kernel_metrics();
     let bpf_bytes = load_bpf_o("lsm-security")?;
     let mut bpf = aya::Bpf::load(&bpf_bytes)?;
+    let mut allowed_pid_cache = HashSet::new();
 
     // Aya 0.12: LSM programs require kernel BTF (/sys/kernel/btf/vmlinux)
     // to resolve types between the BPF program and kernel LSM hooks.
@@ -265,40 +308,62 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
         info!("LSM eBPF: security_bprm_check attached");
     }
 
+    // ── security_socket_create LSM hook ──
+    {
+        let prog: &mut aya::programs::Lsm = bpf
+            .program_mut("lsm_socket_create")
+            .ok_or_else(|| anyhow::anyhow!("lsm_socket_create program not found"))?
+            .try_into()?;
+        prog.load("security_socket_create", &btf)?;
+        let link = prog.attach()?;
+        Box::leak(Box::new(link));
+        info!("LSM eBPF: security_socket_create attached");
+    }
+
     // ── populate allowed_pids eBPF map ──
     // เพิ่ม PID ของ companion daemon เองให้อยู่ใน allowlist เสมอ
-    if let Some(map_ref) = bpf.map_mut("allowed_pids") {
-        use aya::maps::HashMap;
-        if let Ok(mut pid_map) = HashMap::<_, u32, u32>::try_from(map_ref) {
-            let own_pid = std::process::id();
-            let _ = pid_map.insert(own_pid, 1, 0);
-            info!("LSM eBPF: PID {own_pid} added to allowed_pids map");
-        } else {
-            warn!("LSM eBPF: could not create HashMap from allowed_pids map");
-        }
+    let mut allowed_pids = if let Some(map) = bpf.take_map("allowed_pids") {
+        Some(BpfHashMap::<_, u32, u32>::try_from(map)?)
+    } else {
+        None
+    };
+    if let Some(pid_map) = allowed_pids.as_mut() {
+        let own_pid = std::process::id();
+        let _ = pid_map.insert(own_pid, 1, 0);
+        allowed_pid_cache.insert(own_pid);
+        info!("LSM eBPF: PID {own_pid} added to allowed_pids map");
+    } else {
+        warn!("LSM eBPF: could not create HashMap from allowed_pids map");
     }
 
     // ── populate allowed_syscalls eBPF map ──
     // เติม syscall numbers ที่ LsmPolicyEngine อนุญาต
-    if let Some(map_ref) = bpf.map_mut("allowed_syscalls") {
-        use aya::maps::HashMap;
-        if let Ok(mut sc_map) = HashMap::<_, u64, u32>::try_from(map_ref) {
-            let allowed_syscalls = engine.get_allowed_syscalls();
-            for (nr, name) in crate::ebpf::build_syscall_table() {
-                if allowed_syscalls.contains(name) {
-                    let _ = sc_map.insert(nr, 1, 0);
-                    debug!("LSM eBPF: syscall {name}({nr}) added to allowlist");
-                }
+    let mut allowed_syscalls = if let Some(map) = bpf.take_map("allowed_syscalls") {
+        Some(BpfHashMap::<_, u64, u32>::try_from(map)?)
+    } else {
+        None
+    };
+    if let Some(sc_map) = allowed_syscalls.as_mut() {
+        let allowed_syscalls = engine.get_allowed_syscalls();
+        for (nr, name) in crate::ebpf::build_syscall_table() {
+            if allowed_syscalls.contains(name) {
+                let _ = sc_map.insert(nr, 1, 0);
+                debug!("LSM eBPF: syscall {name}({nr}) added to allowlist");
             }
-        } else {
-            warn!("LSM eBPF: could not create HashMap from allowed_syscalls map");
         }
+    } else {
+        warn!("LSM eBPF: could not create HashMap from allowed_syscalls map");
     }
 
     info!("LSM eBPF: all programs attached and maps populated");
     metrics.record_attach_attempt("lsm", "success");
     metrics.set_active_mode("lsm", "real");
-    Ok(LsmAttachment::new_with_bpf(bpf))
+    Ok(LsmAttachment::new_with_bpf(
+        bpf,
+        allowed_pids,
+        allowed_syscalls,
+        allowed_pid_cache,
+    ))
 }
 
 /// ฟังก์ชันหลักสำหรับแนบ LSM Hook เข้ากับ Linux Kernel
@@ -371,6 +436,18 @@ mod tests {
         assert!(attachment.is_attached(), "ควรแนบสำเร็จตอนสร้าง");
         attachment.detach();
         assert!(!attachment.is_attached(), "ควรไม่แนบหลังจาก detach()");
+    }
+
+    #[test]
+    fn attachment_pid_allowlist_can_be_updated_in_fail_closed_mode() {
+        let mut attachment = LsmAttachment::new();
+        assert!(!attachment.allows_pid(4242));
+
+        attachment.allow_pid(4242).expect("allow should succeed");
+        assert!(attachment.allows_pid(4242));
+
+        attachment.deny_pid(4242).expect("deny should succeed");
+        assert!(!attachment.allows_pid(4242));
     }
 
     #[test]

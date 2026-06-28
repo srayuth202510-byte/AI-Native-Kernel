@@ -105,3 +105,17 @@ int lsm_bprm_check(struct linux_binprm *bprm) {
     }
     return 0;
 }
+
+/* ── LSM: security_socket_create ──
+ * Fires for socket(2) creation and applies the same PID/token-backed
+ * gate as file open and exec. This extends fail-closed enforcement to
+ * network-capable agents that have not passed userspace token checks.
+ */
+SEC("lsm/security_socket_create")
+int lsm_socket_create(int family, int type, int protocol, int kern)
+{
+    if (!is_pid_allowed()) {
+        return -EPERM;
+    }
+    return 0;
+}

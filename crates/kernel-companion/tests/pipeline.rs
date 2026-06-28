@@ -133,6 +133,38 @@ async fn int_capability_token_lifecycle() {
     assert!(!cap_mgr.authorize_token(&token, "read").unwrap());
 }
 
+#[tokio::test]
+async fn int_lsm_fail_closed_updates_pid_allowlist_from_token_validation() {
+    let mut companion = kernel_companion::KernelCompanion::new();
+    companion.boot().await.expect("boot should succeed");
+
+    let pid = 34_567u32;
+    let token = CapabilityToken::new(
+        201,
+        Scope::Process(pid),
+        vec!["read".to_string()],
+        Duration::from_secs(60),
+        [0x55; 32],
+    );
+
+    let cap_mgr = companion.capability_security();
+    cap_mgr.issue_token(token.clone()).unwrap();
+
+    let allowed = companion
+        .authorize_process_token(pid, token.id, &[0x55; 32], "read")
+        .expect("authorization should succeed");
+    assert!(allowed);
+    assert!(companion.is_pid_authorized(pid));
+
+    let denied = companion
+        .authorize_process_token(pid, token.id, &[0x99; 32], "read")
+        .expect("deny path should not error");
+    assert!(!denied);
+    assert!(!companion.is_pid_authorized(pid));
+
+    companion.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // INT-3: Compute scheduler + context memory integration
 //   Context data influences compute placement decisions

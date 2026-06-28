@@ -419,13 +419,10 @@ impl AgentScheduler {
             }
         }
 
-        let context_memory = Arc::clone(&self.context_memory);
-        let blocking_key = context_key.clone();
-        task::spawn_blocking(move || {
-            context_memory.put(blocking_key, value);
-        })
-        .await
-        .map_err(|_| SchedulerError::ContextUpdateFailed)?;
+        self.context_memory
+            .put_distributed(context_key.clone(), value)
+            .await
+            .map_err(|_| SchedulerError::ContextUpdateFailed)?;
 
         let mut agents = self.agents.write().await;
         let agent = agents
