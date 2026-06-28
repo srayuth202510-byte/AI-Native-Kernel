@@ -116,6 +116,11 @@ impl Config {
         if let Ok(v) = std::env::var("ANK_AUDIT_LOG_PATH") {
             self.capability_security.audit_log_path = v;
         }
+        if let Ok(v) = std::env::var("ANK_MAX_ISSUE_RATE") {
+            if let Ok(n) = v.parse() {
+                self.capability_security.max_issue_rate = n;
+            }
+        }
         if let Ok(v) = std::env::var("ANK_COMPUTE_MODE") {
             self.compute_scheduler.default_mode = v;
         }
@@ -297,18 +302,24 @@ fn default_weight_cost() -> f64 {
 pub struct CapabilitySecurityConfig {
     #[serde(default = "default_audit_log_path")]
     pub audit_log_path: String,
+    #[serde(default = "default_max_issue_rate")]
+    pub max_issue_rate: usize,
 }
 
 impl Default for CapabilitySecurityConfig {
     fn default() -> Self {
         Self {
             audit_log_path: default_audit_log_path(),
+            max_issue_rate: default_max_issue_rate(),
         }
     }
 }
 
 fn default_audit_log_path() -> String {
     "/tmp/ank-audit.log".to_string()
+}
+fn default_max_issue_rate() -> usize {
+    100
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

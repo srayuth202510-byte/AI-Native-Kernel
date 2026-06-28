@@ -59,6 +59,8 @@ pub struct CapabilitySecurityManager {
     metrics: Option<std::sync::Arc<SecurityMetrics>>,
     /// ประวัติเวลาที่ออกโทเค็นล่าสุด (rate limiting)
     issue_rate: RwLock<VecDeque<Instant>>,
+    /// อัตราสูงสุดที่อนุญาตให้ออกโทเค็นต่อวินาที
+    max_issue_rate: usize,
 }
 
 /// ฟังก์ชันเปรียบเทียบข้อมูลไบต์อาร์เรย์ขนาด 32 ไบต์แบบคงเวลา (Constant-time comparison)
@@ -76,6 +78,11 @@ impl CapabilitySecurityManager {
     /// สร้างตัวจัดการความปลอดภัย `CapabilitySecurityManager` ใหม่ด้วยการตั้งค่าเริ่มต้น
     #[must_use]
     pub fn new() -> Self {
+        Self::with_rate_limit(100)
+    }
+
+    #[must_use]
+    pub fn with_rate_limit(max_issue_rate: usize) -> Self {
         let metrics = SecurityMetrics::register(prometheus::default_registry()).ok();
         Self {
             tokens: RwLock::new(HashMap::new()),
@@ -84,12 +91,18 @@ impl CapabilitySecurityManager {
             audit_logger: AuditLogger::default(),
             metrics,
             issue_rate: RwLock::new(VecDeque::new()),
+            max_issue_rate,
         }
     }
 
     /// สร้างตัวจัดการความปลอดภัย `CapabilitySecurityManager` ใหม่พร้อมระบุพาธในการบันทึกไฟล์ประวัติการตรวจสอบ
     #[must_use]
     pub fn new_with_log_path(log_path: std::path::PathBuf) -> Self {
+        Self::new_with_log_path_and_rate(log_path, 100)
+    }
+
+    #[must_use]
+    pub fn new_with_log_path_and_rate(log_path: std::path::PathBuf, max_issue_rate: usize) -> Self {
         let metrics = SecurityMetrics::register(prometheus::default_registry()).ok();
         Self {
             tokens: RwLock::new(HashMap::new()),
@@ -98,17 +111,16 @@ impl CapabilitySecurityManager {
             audit_logger: AuditLogger::new(log_path),
             metrics,
             issue_rate: RwLock::new(VecDeque::new()),
+            max_issue_rate,
         }
     }
 
     /// ออกโทเค็นความสามารถ (Capability Token) ใหม่ บันทึกลงในระบบเพื่อใช้งาน และบันทึกประวัติ (Audit Log)
     ///
-    /// Rate limit: สูงสุด 100 โทเค็นต่อวินาที เพื่อป้องกัน audit log flooding
+    /// Rate limit: ควบคุมโดย `max_issue_rate` (ค่าเริ่มต้น 100/วินาที) เพื่อป้องกัน audit log flooding
     pub fn issue_token(&self, token: CapabilityToken) -> Result<()> {
-        // Rate limiting check
         let now = Instant::now();
         let mut rate_queue = self.issue_rate.write().expect("issue rate lock poisoned");
-        const MAX_RATE_PER_SEC: usize = 100;
         rate_queue.push_back(now);
         while rate_queue
             .front()
@@ -116,7 +128,7 @@ impl CapabilitySecurityManager {
         {
             rate_queue.pop_front();
         }
-        if rate_queue.len() > MAX_RATE_PER_SEC {
+        if rate_queue.len() > self.max_issue_rate {
             return Err(CapabilityError::RateLimited);
         }
         drop(rate_queue);

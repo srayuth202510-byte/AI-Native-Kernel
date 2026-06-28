@@ -34,6 +34,7 @@ weight_cost = 0.1
 
 [capability_security]
 audit_log_path = "/tmp/ank-audit.log"
+max_issue_rate = 100
 
 [intent_bus]
 default_capacity = 1024

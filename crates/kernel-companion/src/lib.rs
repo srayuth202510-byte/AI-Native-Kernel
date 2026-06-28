@@ -90,8 +90,9 @@ impl KernelCompanion {
             config.context_memory.hot_capacity,
             config.context_memory.warm_capacity,
         ));
-        let capability_security = Arc::new(CapabilitySecurityManager::new_with_log_path(
+        let capability_security = Arc::new(CapabilitySecurityManager::new_with_log_path_and_rate(
             std::path::PathBuf::from(&config.capability_security.audit_log_path),
+            config.capability_security.max_issue_rate,
         ));
         let agent_scheduler = Arc::new(AgentScheduler::with_params(
             Arc::clone(&intent_bus),
