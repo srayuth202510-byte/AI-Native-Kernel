@@ -13,12 +13,15 @@ name = "agent-scheduler"
 version = "0.1.0"
 dependencies = [
  "capability-security",
+ "compute-scheduler",
  "context-memory",
  "criterion",
  "intent-bus",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -1,5 +1,7 @@
 use crate::priority::Priority;
 use capability_security::CapabilityToken;
+use compute_scheduler::ComputeTarget;
+use compute_scheduler::placement::WorkloadClass;
 use std::time::Instant;
 
 /// ข้อมูลควบคุมและสถานะของ Agent (Agent Control Block หรือ ACB)
@@ -20,6 +22,10 @@ pub struct AgentControlBlock {
     pub restart_attempts: u32,
     /// เวลาล่าสุดที่ตัวควบคุม (Supervisor) ได้ทำการเริ่มการทำงานของ Agent นี้ใหม่
     pub last_restart: Instant,
+    /// ชนิดของภาระงานสำหรับการจัดสรรอุปกรณ์ (Workload Class)
+    pub workload_class: WorkloadClass,
+    /// เป้าหมายของอุปกรณ์ประมวลผล (Compute Target)
+    pub compute_target: Option<ComputeTarget>,
 }
 
 /// สถานะวงจรชีวิต (Lifecycle States) ของ Agent ในระบบ
@@ -51,6 +57,24 @@ impl AgentControlBlock {
             capabilities: Vec::new(),
             restart_attempts: 0,
             last_restart: Instant::now(),
+            workload_class: WorkloadClass::SmallLlm,
+            compute_target: Some(ComputeTarget::Cpu),
+        }
+    }
+
+    /// สร้าง Agent Control Block ที่ยังไม่ได้ประเมินเป้าหมายสำหรับความต้องการ placement
+    #[must_use]
+    pub fn new_unplaced(id: u64, workload_class: WorkloadClass) -> Self {
+        Self {
+            id,
+            state: AgentState::Creating,
+            priority: Priority::Batch,
+            context_key: None,
+            capabilities: Vec::new(),
+            restart_attempts: 0,
+            last_restart: Instant::now(),
+            workload_class,
+            compute_target: None,
         }
     }
 }

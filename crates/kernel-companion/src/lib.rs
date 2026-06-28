@@ -8,8 +8,8 @@ use crate::observability::kernel_metrics;
 use agent_scheduler::AgentScheduler;
 use capability_security::CapabilitySecurityManager;
 use capability_security::audit::{AuditEntry, AuditLogger};
-use compute_scheduler::ComputeProfile;
-use compute_scheduler::ComputeScheduler;
+use compute_scheduler::placement::{PlacementPolicy, WorkloadClass};
+use compute_scheduler::{ComputeProfile, ComputeScheduler, ComputeTarget};
 use context_memory::ContextMemoryManager;
 use immune_system::{BCellAgent, MacrophageAgent, TCellAgent, ThreatDecision};
 use intent_bus::{Intent, IntentBus, IntentType};
@@ -71,6 +71,8 @@ pub struct KernelCompanion {
     metrics_task: Option<JoinHandle<()>>,
     /// cancellation token ของ metrics server task
     metrics_cancel: Option<tokio_util_cancel::CancellationToken>,
+    /// handle ของ compute scheduler routing task
+    compute_task: Option<JoinHandle<()>>,
 }
 
 impl KernelCompanion {
@@ -147,6 +149,7 @@ impl KernelCompanion {
             tcell_task: None,
             metrics_task: None,
             metrics_cancel: None,
+            compute_task: None,
         }
     }
 
@@ -375,6 +378,60 @@ impl KernelCompanion {
                 }
             }));
 
+            let compute_scheduler = Arc::clone(&self.compute_scheduler);
+            let intent_bus_for_compute = Arc::clone(&self.intent_bus);
+            let mut compute_intent_subscriber = self.intent_bus.subscribe();
+            let mut compute_shutdown_rx = shutdown_tx.subscribe();
+            self.compute_task = Some(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        Some(intent) = compute_intent_subscriber.receive() => {
+                            if intent.intent_type == IntentType::Event && intent.source == "agent-scheduler" {
+                                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
+                                    if data.get("action").and_then(|v| v.as_str()) == Some("PlacementRequest") {
+                                        let agent_id = data.get("agent_id").and_then(|v| v.as_u64()).unwrap_or(0);
+                                        let workload_str = data.get("workload_class").and_then(|v| v.as_str()).unwrap_or("SmallLlm");
+                                        let wl = match workload_str {
+                                            "KernelLogic" => WorkloadClass::KernelLogic,
+                                            "SmallLlm" => WorkloadClass::SmallLlm,
+                                            "LargeLlm" => WorkloadClass::LargeLlm,
+                                            "VectorIndexing" => WorkloadClass::VectorIndexing,
+                                            _ => WorkloadClass::SmallLlm,
+                                        };
+
+                                        // Scan hardware and place
+                                        let policy = PlacementPolicy::new((*compute_scheduler).clone());
+                                        let profiles = compute_scheduler.scan_real_hardware();
+                                        let target = policy.place(wl, &profiles).unwrap_or(ComputeTarget::Cpu);
+
+                                        // Publish response
+                                        let resp_payload = serde_json::json!({
+                                            "action": "PlacementResponse",
+                                            "agent_id": agent_id,
+                                            "compute_target": format!("{:?}", target),
+                                        }).to_string();
+
+                                        let resp_intent = Intent::new(
+                                            uuid::Uuid::new_v4().to_string(),
+                                            IntentType::Event,
+                                            resp_payload,
+                                            intent_bus::IntentPriority::High,
+                                            "compute-scheduler",
+                                        );
+                                        let _ = intent_bus_for_compute.publish(resp_intent).await;
+                                    }
+                                }
+                            }
+                        }
+                        changed = compute_shutdown_rx.changed() => {
+                            if changed.is_err() || *compute_shutdown_rx.borrow() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }));
+
             let cancel_uds = tokio_util_cancel::CancellationToken::new();
             let _ = uds::start_uds_server(
                 Arc::clone(&self.intent_bus),
@@ -449,6 +506,9 @@ impl KernelCompanion {
             let _ = task.await;
         }
         if let Some(task) = self.immune_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.compute_task.take() {
             let _ = task.await;
         }
         if let Some(task) = self.tracer_task.take() {

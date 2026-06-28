@@ -3,6 +3,8 @@ use crate::error::SchedulerError;
 use crate::priority::{Priority, PriorityAgent, PriorityQueue};
 use crate::supervisor::SupervisorService;
 use capability_security::{CapabilitySecurityManager, CapabilityToken};
+use compute_scheduler::ComputeTarget;
+use compute_scheduler::placement::WorkloadClass;
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::collections::HashMap;
@@ -174,13 +176,18 @@ impl AgentScheduler {
             return Err(SchedulerError::AgentAlreadyExists);
         }
 
-        if agent.state == AgentState::Creating {
+        if agent.compute_target.is_some() && agent.state == AgentState::Creating {
             agent.state = AgentState::Running;
         }
 
         let agent_id = agent.id;
         agents.insert(agent_id, agent.clone());
-        let _ = self.monitoring_tx.send(AgentEvent::AgentSpawned(agent));
+
+        if agent.state == AgentState::Running {
+            let _ = self.monitoring_tx.send(AgentEvent::AgentSpawned(agent));
+        } else {
+            let _ = self.monitoring_tx.send(AgentEvent::AgentCreated(agent));
+        }
         Ok(agent_id)
     }
 
@@ -203,9 +210,39 @@ impl AgentScheduler {
         match intent.intent_type {
             IntentType::Command => {
                 if intent.payload == "spawn-agent" {
-                    let agent_id = self.spawn_agent(AgentControlBlock::new(0)).await?;
-                    let agent = self.get_agent(agent_id).await?;
-                    let _ = self.monitoring_tx.send(AgentEvent::AgentCreated(agent));
+                    let workload_str = intent
+                        .metadata
+                        .get("workload")
+                        .map(|s| s.as_str())
+                        .unwrap_or("small");
+                    let wl = match workload_str {
+                        "kernel" => WorkloadClass::KernelLogic,
+                        "small" => WorkloadClass::SmallLlm,
+                        "large" => WorkloadClass::LargeLlm,
+                        "vector" => WorkloadClass::VectorIndexing,
+                        _ => WorkloadClass::SmallLlm,
+                    };
+
+                    let agent_id = self.allocate_agent_id().await;
+                    let agent = AgentControlBlock::new_unplaced(agent_id, wl);
+
+                    self.spawn_agent(agent).await?;
+
+                    let req_payload = serde_json::json!({
+                        "action": "PlacementRequest",
+                        "agent_id": agent_id,
+                        "workload_class": format!("{:?}", wl),
+                    })
+                    .to_string();
+
+                    let req_intent = Intent::new(
+                        uuid::Uuid::new_v4().to_string(),
+                        IntentType::Event,
+                        req_payload,
+                        intent_bus::IntentPriority::High,
+                        "agent-scheduler",
+                    );
+                    let _ = self.intent_bus.publish(req_intent).await;
                 }
             }
             IntentType::Structured => {
@@ -224,7 +261,44 @@ impl AgentScheduler {
                 let payload = intent.payload.clone().into_bytes();
                 self.store_context(agent_id, context_key, payload).await?;
             }
-            IntentType::NaturalLanguage | IntentType::Event | IntentType::Interrupt => {}
+            IntentType::Event => {
+                if intent.source == "compute-scheduler" {
+                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
+                        if data.get("action").and_then(|v| v.as_str()) == Some("PlacementResponse")
+                        {
+                            let agent_id =
+                                data.get("agent_id").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let target_str = data
+                                .get("compute_target")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Cpu");
+                            let target = match target_str {
+                                "Cpu" => ComputeTarget::Cpu,
+                                "Gpu" => ComputeTarget::Gpu,
+                                "Npu" => ComputeTarget::Npu,
+                                "Cloud" => ComputeTarget::Cloud,
+                                _ => ComputeTarget::Cpu,
+                            };
+
+                            let mut agents = self.agents.write().await;
+                            if let Some(agent) = agents.get_mut(&agent_id) {
+                                agent.compute_target = Some(target);
+                                if agent.state == AgentState::Creating {
+                                    agent.state = AgentState::Running;
+                                    let priority_agent =
+                                        PriorityAgent::new(agent_id, agent.priority);
+                                    let mut queue = self.run_queue.write().await;
+                                    queue.push(priority_agent);
+                                    let _ = self
+                                        .monitoring_tx
+                                        .send(AgentEvent::AgentSpawned(agent.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            IntentType::NaturalLanguage | IntentType::Interrupt => {}
         }
         Ok(())
     }
@@ -736,6 +810,8 @@ mod tests {
     #[tokio::test]
     async fn route_command_can_spawn_agent() {
         let scheduler = scheduler();
+        let mut subscriber = scheduler.intent_bus().subscribe();
+
         let intent = Intent::new(
             "intent-2",
             IntentType::Command,
@@ -749,7 +825,42 @@ mod tests {
             .await
             .expect("route should succeed");
 
+        // Wait for PlacementRequest
+        let request = timeout(Duration::from_millis(100), subscriber.receive())
+            .await
+            .expect("should receive PlacementRequest")
+            .unwrap();
+
+        assert_eq!(request.intent_type, IntentType::Event);
+        let data: serde_json::Value = serde_json::from_str(&request.payload).unwrap();
+        assert_eq!(data["action"], "PlacementRequest");
+        let agent_id = data["agent_id"].as_u64().unwrap();
+
+        // Simulate PlacementResponse
+        let resp_payload = serde_json::json!({
+            "action": "PlacementResponse",
+            "agent_id": agent_id,
+            "compute_target": "Cpu",
+        })
+        .to_string();
+
+        let resp_intent = Intent::new(
+            "resp-1",
+            IntentType::Event,
+            resp_payload,
+            IntentPriority::High,
+            "compute-scheduler",
+        );
+
+        scheduler
+            .route_intent(resp_intent)
+            .await
+            .expect("routing response should succeed");
+
         assert_eq!(scheduler.get_running_agents().await.len(), 1);
+        let agent = scheduler.get_agent(agent_id).await.unwrap();
+        assert_eq!(agent.state, AgentState::Running);
+        assert_eq!(agent.compute_target, Some(ComputeTarget::Cpu));
     }
 
     #[tokio::test]

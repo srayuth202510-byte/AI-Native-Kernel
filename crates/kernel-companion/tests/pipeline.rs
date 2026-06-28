@@ -328,10 +328,32 @@ async fn int_full_end_to_end_pipeline() {
     );
     scheduler.route_intent(cmd_intent).await.unwrap();
 
+    let req = timeout(Duration::from_millis(100), subscriber.receive())
+        .await
+        .expect("timeout waiting for placement request")
+        .expect("no placement request");
+    let data: serde_json::Value = serde_json::from_str(&req.payload).unwrap();
+    let agent_id = data["agent_id"].as_u64().unwrap();
+
+    // Simulate response
+    let resp_payload = serde_json::json!({
+        "action": "PlacementResponse",
+        "agent_id": agent_id,
+        "compute_target": "Cpu",
+    })
+    .to_string();
+
+    let resp_intent = Intent::new(
+        "resp-int-test",
+        IntentType::Event,
+        resp_payload,
+        IntentPriority::High,
+        "compute-scheduler",
+    );
+    scheduler.route_intent(resp_intent).await.unwrap();
+
     let running = scheduler.get_running_agents().await;
     assert_eq!(running.len(), 1, "agent should be spawned");
-
-    let agent_id = running[0].id;
 
     // Phase 3: Structured intent updates context
     let mut ctx_intent = Intent::new(

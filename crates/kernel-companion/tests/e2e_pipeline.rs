@@ -131,7 +131,30 @@ async fn e2e_full_pipeline_tracer_to_scheduler() {
         .ok()
         .flatten()
     {
-        let _ = agent_scheduler.route_intent(intent).await;
+        let _ = agent_scheduler.route_intent(intent.clone()).await;
+
+        // If it's a PlacementRequest, publish the response
+        if intent.intent_type == IntentType::Event && intent.source == "agent-scheduler" {
+            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
+                if data.get("action").and_then(|v| v.as_str()) == Some("PlacementRequest") {
+                    let agent_id = data.get("agent_id").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let resp_payload = serde_json::json!({
+                        "action": "PlacementResponse",
+                        "agent_id": agent_id,
+                        "compute_target": "Cpu",
+                    })
+                    .to_string();
+                    let resp_intent = Intent::new(
+                        "resp-e2e",
+                        IntentType::Event,
+                        resp_payload,
+                        IntentPriority::High,
+                        "compute-scheduler",
+                    );
+                    bus_arc.publish(resp_intent).await.unwrap();
+                }
+            }
+        }
     }
 
     // 6) Verify agent was spawned
@@ -199,6 +222,40 @@ async fn e2e_spawn_agent_via_bus() {
         .expect("no intent");
 
     scheduler.route_intent(received).await.unwrap();
+
+    // Wait for PlacementRequest
+    let req = timeout(Duration::from_millis(100), subscriber.receive())
+        .await
+        .expect("timeout waiting for placement request")
+        .expect("no placement request");
+
+    let data: serde_json::Value = serde_json::from_str(&req.payload).unwrap();
+    let agent_id = data["agent_id"].as_u64().unwrap();
+
+    // Simulate response
+    let resp_payload = serde_json::json!({
+        "action": "PlacementResponse",
+        "agent_id": agent_id,
+        "compute_target": "Cpu",
+    })
+    .to_string();
+
+    let resp_intent = Intent::new(
+        "resp-1",
+        IntentType::Event,
+        resp_payload,
+        IntentPriority::High,
+        "compute-scheduler",
+    );
+
+    intent_bus.publish(resp_intent).await.unwrap();
+
+    let resp_received = timeout(Duration::from_millis(100), subscriber.receive())
+        .await
+        .expect("timeout waiting for placement response")
+        .expect("no placement response");
+
+    scheduler.route_intent(resp_received).await.unwrap();
 
     let agents = scheduler.get_running_agents().await;
     assert_eq!(agents.len(), 1);

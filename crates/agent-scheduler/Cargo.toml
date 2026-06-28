@@ -15,6 +15,9 @@ tracing = { workspace = true }
 intent-bus = { path = "../intent-bus" }
 context-memory = { path = "../context-memory" }
 capability-security = { path = "../capability-security" }
+compute-scheduler = { path = "../compute-scheduler" }
+serde_json = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
