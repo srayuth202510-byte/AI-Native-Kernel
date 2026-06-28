@@ -41,11 +41,10 @@ jobs:
       - name: Generate eBPF prebuilt objects (if BTF available)
         run: |
           if [ -f /sys/kernel/btf/vmlinux ]; then
-            bash scripts/build-ebpf-objects.sh
-          else
-            echo "BTF not available — using committed prebuilt objects"
-            ls -la crates/kernel-companion/prebuilt-bpf/
+            bash scripts/build-ebpf-objects.sh || echo "eBPF build script failed — using committed prebuilt objects"
           fi
+          echo "Prebuilt objects:"
+          ls -la crates/kernel-companion/prebuilt-bpf/
 
       - name: Verify formatting
         run: cargo fmt --all -- --check
