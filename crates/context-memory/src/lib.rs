@@ -8,10 +8,12 @@ pub mod fs;
 pub mod hot;
 pub mod p2p_mesh;
 pub mod semantic;
+pub mod vram;
 pub mod warm;
 
 use crate::cold::ColdStore;
 use crate::hot::HotStore;
+use crate::vram::VramStore;
 use crate::warm::WarmStore;
 pub use fs::{SemanticFile, SemanticFileSystem};
 use parking_lot::RwLock;
@@ -32,15 +34,19 @@ pub enum ContextError {
 /// ผลลัพธ์แบบ Custom Result สำหรับ Context Memory
 pub type Result<T> = core::result::Result<T, ContextError>;
 
-/// ตัวจัดการหน่วยความจำบริบทที่แบ่งลำดับชั้นของข้อมูล (Hot -> Warm -> Cold)
+/// ตัวจัดการหน่วยความจำบริบทที่แบ่งลำดับชั้นของข้อมูล (VRAM -> Hot -> Warm -> Cold)
 /// เพื่อประสิทธิภาพสูงสุดในการดึงข้อมูลและประหยัดการใช้ RAM
 pub struct ContextMemoryManager {
+    /// พื้นที่เก็บข้อมูลกราฟิกจำลอง (VRAM Store) สำหรับ GPU/NPU
+    vram: Arc<RwLock<VramStore>>,
     /// พื้นที่เก็บข้อมูลด่วน (Hot Store) ใน RAM เข้าถึงได้เร็วที่สุด
     hot: Arc<RwLock<HotStore>>,
     /// พื้นที่เก็บข้อมูลชั่วคราว (Warm Store) บน RocksDB หรือ NVMe
     warm: Arc<RwLock<WarmStore>>,
     /// พื้นที่เก็บข้อมูลถาวร (Cold Store) บนฮาร์ดดิสก์/ไฟล์สำรอง
     cold: Arc<RwLock<ColdStore>>,
+    /// ขนาดความจุสูงสุดของ VRAM Store ในหน่วยไบต์
+    vram_capacity_bytes: usize,
     /// ขนาดความจุสูงสุดของ Hot Store ก่อนที่จะถูกย้ายไปยัง Warm Store
     hot_capacity: usize,
     /// ขนาดความจุสูงสุดของ Warm Store ก่อนที่จะถูกย้ายไปยัง Cold Store
@@ -60,10 +66,22 @@ impl ContextMemoryManager {
     /// เหมาะสำหรับ testing หรือ configuration ที่ต้องการขนาด tier ที่แน่นอน
     #[must_use]
     pub fn with_capacity(hot_capacity: usize, warm_capacity: usize) -> Self {
+        Self::with_vram_and_capacity(32 * 1024 * 1024, hot_capacity, warm_capacity)
+    }
+
+    /// สร้าง ContextMemoryManager ด้วยค่าความจุ VRAM และ RAM/RocksDB ที่กำหนดเอง
+    #[must_use]
+    pub fn with_vram_and_capacity(
+        vram_capacity_bytes: usize,
+        hot_capacity: usize,
+        warm_capacity: usize,
+    ) -> Self {
         Self {
+            vram: Arc::new(RwLock::new(VramStore::new(vram_capacity_bytes))),
             hot: Arc::new(RwLock::new(HotStore::new())),
             warm: Arc::new(RwLock::new(WarmStore::new())),
             cold: Arc::new(RwLock::new(ColdStore::new())),
+            vram_capacity_bytes,
             hot_capacity,
             warm_capacity,
             timestamps: RwLock::new(HashMap::new()),
@@ -111,13 +129,19 @@ impl ContextMemoryManager {
     }
 
     /// ดึงข้อมูลบริบทจากระบบเก็บข้อมูลตามลำดับชั้น
-    /// โดยจะค้นหาใน Hot Store ก่อน หากไม่พบจะค้นหาใน Warm Store และ Cold Store ตามลำดับ
+    /// โดยจะค้นหาใน VRAM Store ก่อน หากไม่พบจะค้นหาใน Hot Store (RAM), Warm Store และ Cold Store ตามลำดับ
     ///
     /// # Errors
     ///
     /// ส่งคืนข้อผิดพลาด `ContextError::NotFound` หากไม่พบข้อมูลในระดับใดเลย
     #[instrument(skip(self), fields(key = %key))]
     pub fn get(&self, key: &str) -> Result<Vec<u8>> {
+        // ค้นหาใน VRAM Store
+        if let Some(value) = self.vram.write().get(key) {
+            debug!(tier = "vram", "พบข้อมูลใน VRAM Store");
+            return Ok(value);
+        }
+
         // ค้นหาใน Hot Store (RAM)
         if let Some(value) = self.hot.read().get(key) {
             debug!(tier = "hot", "พบข้อมูลใน Hot Store");
@@ -140,19 +164,68 @@ impl ContextMemoryManager {
         Err(ContextError::NotFound)
     }
 
-    /// ยกระดับ (Promote) ข้อมูลจาก Warm หรือ Cold tier กลับขึ้นสู่ Hot tier
+    /// ย้าย (Page) ข้อมูลบริบทไปยัง GPU/NPU VRAM Store
+    ///
+    /// # Errors
+    /// คืน `ContextError::NotFound` หากไม่พบ key ในทุกระดับ (RAM/Warm/Cold)
+    #[instrument(skip(self), fields(key = %key))]
+    pub fn page_to_vram(&self, key: &str) -> Result<()> {
+        // หากอยู่ใน VRAM อยู่แล้ว — อัปเดต LRU และคืน Ok
+        if self.vram.write().get(key).is_some() {
+            debug!(tier = "vram", "ข้อมูลอยู่ใน VRAM อยู่แล้ว — no-op");
+            return Ok(());
+        }
+
+        // ดึงข้อมูลจากระดับอื่น
+        let value = self.get(key)?;
+
+        // ลบข้อมูลออกจากระดับอื่นเพื่อป้องกันความซ้ำซ้อน
+        self.hot.write().remove(key);
+        self.warm.write().remove(key);
+        self.cold.write().remove(key);
+
+        // โหลดข้อมูลลง VRAM
+        let evicted = self.vram.write().insert(key.to_string(), value);
+
+        // หาก VRAM เต็มจนเกิดการถอดถอน (Evict) ข้อมูลเดิมออกมา ให้คัดถ่ายข้อมูลนั้นลง RAM
+        if let Some((evicted_key, evicted_value)) = evicted {
+            warn!(tier = "ram", key = %evicted_key, "VRAM เต็ม — คัดถ่ายข้อมูลเก่าลง RAM");
+            self.put(evicted_key, evicted_value);
+        }
+
+        Ok(())
+    }
+
+    /// คัดถ่าย (Page/Demote) ข้อมูลบริบทจาก GPU/NPU VRAM Store ลงมายัง RAM
+    ///
+    /// # Errors
+    /// คืน `ContextError::NotFound` หากไม่พบข้อมูลใน VRAM Store
+    #[instrument(skip(self), fields(key = %key))]
+    pub fn page_to_ram(&self, key: &str) -> Result<()> {
+        let vram_value = self.vram.write().remove(key);
+        if let Some(value) = vram_value {
+            debug!(tier = "vram->ram", "คัดถ่ายข้อมูลบริบทจาก VRAM ลง RAM");
+            self.put(key.to_string(), value);
+            Ok(())
+        } else {
+            warn!("ไม่พบข้อมูลใน VRAM");
+            Err(ContextError::NotFound)
+        }
+    }
+
+    /// ยกระดับ (Promote) ข้อมูลจาก Warm หรือ Cold tier กลับขึ้นสู่ Hot tier (RAM)
     ///
     /// ค้นหาใน Warm ก่อน ถ้าพบ → ลบออก → insert ใน Hot
     /// ถ้าไม่พบใน Warm → ค้นหาใน Cold → ลบออก → insert ใน Hot
-    /// ถ้าข้อมูลอยู่ใน Hot อยู่แล้ว → no-op (คืน Ok)
+    /// ถ้าข้อมูลอยู่ใน VRAM หรือ Hot อยู่แล้ว → no-op (คืน Ok)
     ///
     /// # Errors
     /// คืน `ContextError::NotFound` หากไม่พบ key ในทุก tier
     #[instrument(skip(self), fields(key = %key))]
     pub fn promote(&self, key: &str) -> Result<()> {
-        // ถ้าอยู่ใน Hot อยู่แล้ว — no-op
-        if self.hot.read().get(key).is_some() {
-            debug!(tier = "hot", "ข้อมูลอยู่ใน Hot อยู่แล้ว — no-op");
+        // ถ้าอยู่ใน VRAM หรือ Hot อยู่แล้ว — no-op
+        if self.vram.read().contains_key(key) || self.hot.read().get(key).is_some() {
+            debug!(tier = "vram/hot", "ข้อมูลอยู่ใน VRAM หรือ Hot อยู่แล้ว — no-op");
             return Ok(());
         }
         // ค้นหาและดึงออกจาก Warm
@@ -194,9 +267,12 @@ impl ContextMemoryManager {
     /// คืนชื่อ tier ที่เก็บข้อมูล key นั้นอยู่ในปัจจุบัน
     /// ใช้สำหรับ debugging, testing และ observability
     ///
-    /// คืน `Some("hot")`, `Some("warm")`, `Some("cold")` หรือ `None`
+    /// คืน `Some("vram")`, `Some("hot")`, `Some("warm")`, `Some("cold")` หรือ `None`
     #[must_use]
     pub fn tier_of(&self, key: &str) -> Option<&'static str> {
+        if self.vram.read().contains_key(key) {
+            return Some("vram");
+        }
         if self.hot.read().get(key).is_some() {
             return Some("hot");
         }
@@ -209,7 +285,13 @@ impl ContextMemoryManager {
         None
     }
 
-    /// ลบข้อมูลบริบทที่หมดอายุ (> ttl) ออกจากทั้ง Hot, Warm, Cold tiers
+    /// คืนค่าขนาดความจุ VRAM สูงสุดในหน่วยไบต์
+    #[must_use]
+    pub fn vram_capacity(&self) -> usize {
+        self.vram_capacity_bytes
+    }
+
+    /// ลบข้อมูลบริบทที่หมดอายุ (> ttl) ออกจากทุก tiers (VRAM, Hot, Warm, Cold)
     /// คืนจำนวนข้อมูลที่ถูกลบ
     #[instrument(skip(self), fields(ttl_ms = ttl.as_millis() as u64))]
     pub fn clean_expired(&self, ttl: std::time::Duration) -> u64 {
@@ -230,6 +312,7 @@ impl ContextMemoryManager {
         let mut ts = self.timestamps.write();
         for key in &expired_keys {
             ts.remove(key);
+            self.vram.write().remove(key);
             self.hot.write().remove(key);
             self.warm.write().remove(key);
             self.cold.write().remove(key);
@@ -423,5 +506,65 @@ mod tests {
         memory.promote("k").expect("promote hot เป็น no-op");
         assert_eq!(memory.tier_of("k"), Some("hot"));
         assert_eq!(memory.get("k").expect("k ยังอยู่"), b"v".to_vec());
+    }
+
+    #[test]
+    fn vram_paging_round_trip() {
+        let memory = ContextMemoryManager::with_vram_and_capacity(100, 2, 2);
+        memory.put("a", b"alpha".to_vec()); // 5 bytes
+        assert_eq!(memory.tier_of("a"), Some("hot"));
+
+        memory
+            .page_to_vram("a")
+            .expect("page to VRAM should succeed");
+        assert_eq!(memory.tier_of("a"), Some("vram"));
+        assert_eq!(memory.get("a").unwrap(), b"alpha".to_vec());
+
+        memory.page_to_ram("a").expect("page to RAM should succeed");
+        assert_eq!(memory.tier_of("a"), Some("hot"));
+        assert_eq!(memory.get("a").unwrap(), b"alpha".to_vec());
+    }
+
+    #[test]
+    fn vram_eviction_when_capacity_exceeded() {
+        // VRAM capacity is 10 bytes
+        let memory = ContextMemoryManager::with_vram_and_capacity(10, 2, 2);
+        memory.put("a", b"123456".to_vec()); // 6 bytes
+        memory.put("b", b"123456".to_vec()); // 6 bytes
+
+        memory.page_to_vram("a").unwrap();
+        assert_eq!(memory.tier_of("a"), Some("vram"));
+
+        // a is 6 bytes. b is 6 bytes. Total = 12 bytes > 10 bytes capacity.
+        // Paging b to VRAM will evict a from VRAM to RAM (hot).
+        memory.page_to_vram("b").unwrap();
+        assert_eq!(memory.tier_of("b"), Some("vram"));
+        assert_eq!(memory.tier_of("a"), Some("hot"));
+
+        assert_eq!(memory.get("a").unwrap(), b"123456".to_vec());
+        assert_eq!(memory.get("b").unwrap(), b"123456".to_vec());
+    }
+
+    #[test]
+    fn promote_on_vram_key_is_noop() {
+        let memory = ContextMemoryManager::with_vram_and_capacity(100, 2, 2);
+        memory.put("a", b"alpha".to_vec());
+        memory.page_to_vram("a").unwrap();
+
+        assert_eq!(memory.tier_of("a"), Some("vram"));
+        memory.promote("a").expect("promote should be no-op");
+        assert_eq!(memory.tier_of("a"), Some("vram"));
+    }
+
+    #[test]
+    fn page_to_vram_nonexistent_returns_not_found() {
+        let memory = ContextMemoryManager::new();
+        assert_eq!(memory.page_to_vram("ghost"), Err(ContextError::NotFound));
+    }
+
+    #[test]
+    fn page_to_ram_nonexistent_returns_not_found() {
+        let memory = ContextMemoryManager::new();
+        assert_eq!(memory.page_to_ram("ghost"), Err(ContextError::NotFound));
     }
 }
