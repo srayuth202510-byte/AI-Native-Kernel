@@ -18,12 +18,18 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+fn default_trust_score() -> u8 {
+    100
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub id: String,
     pub addr: SocketAddr,
     pub last_seen_millis: u64,
     pub capabilities: Vec<String>,
+    #[serde(default = "default_trust_score")]
+    pub trust_score: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +102,7 @@ impl P2PMeshManager {
             addr,
             last_seen_millis: now_millis(),
             capabilities: vec!["semantic".to_string(), "filesystem".to_string()],
+            trust_score: 100,
         };
 
         let (tx, rx) = mpsc::channel(1000);
@@ -298,6 +305,45 @@ impl P2PMeshManager {
         }
     }
 
+    pub async fn set_trust_score(&self, node_id: &str, score: u8) {
+        let mut nodes = self.known_nodes.write().await;
+        if let Some(node) = nodes.get_mut(node_id) {
+            node.trust_score = score;
+            if score < 50 {
+                self.peers.write().await.remove(node_id);
+                warn!(
+                    "P2P: Trust score for node {} dropped below 50, severed connection",
+                    node_id
+                );
+            }
+        }
+    }
+
+    pub async fn penalize_node(&self, node_id: &str, penalty: u8) {
+        let mut nodes = self.known_nodes.write().await;
+        if let Some(node) = nodes.get_mut(node_id) {
+            node.trust_score = node.trust_score.saturating_sub(penalty);
+            let score = node.trust_score;
+            if score < 50 {
+                self.peers.write().await.remove(node_id);
+                warn!(
+                    "P2P: Node {} penalized by {}, trust score dropped below 50, severed connection",
+                    node_id, penalty
+                );
+            } else {
+                debug!(
+                    "P2P: Node {} penalized by {}, new trust score: {}",
+                    node_id, penalty, score
+                );
+            }
+        }
+    }
+
+    pub async fn get_trust_score(&self, node_id: &str) -> u8 {
+        let nodes = self.known_nodes.read().await;
+        nodes.get(node_id).map(|n| n.trust_score).unwrap_or(100)
+    }
+
     async fn broadcast_message(&self, message: P2PMessage) -> Result<()> {
         let payload = serde_json::to_string(&message)?;
         let peers = self.peers.read().await;
@@ -322,6 +368,22 @@ struct SharedState {
 
 async fn on_message(line: &str, node_id: &str, state: &SharedState) {
     if let Ok(msg) = serde_json::from_str::<P2PMessage>(line.trim()) {
+        // Enforce Zero-Trust: reject messages from nodes with trust score < 50
+        let sender_trust = state
+            .known_nodes
+            .read()
+            .await
+            .get(node_id)
+            .map(|n| n.trust_score)
+            .unwrap_or(100);
+        if sender_trust < 50 {
+            warn!(
+                "P2P: Rejecting message of type {:?} from untrusted node {} (trust: {})",
+                msg.msg_type, node_id, sender_trust
+            );
+            return;
+        }
+
         state
             .known_nodes
             .write()
@@ -345,10 +407,52 @@ async fn on_message(line: &str, node_id: &str, state: &SharedState) {
 
         if msg.msg_type == MessageType::RecordSync {
             if let Ok(record) = serde_json::from_slice::<RecordSyncPayload>(&msg.data) {
+                // Verify owner node trust
+                let record_owner_trust = state
+                    .known_nodes
+                    .read()
+                    .await
+                    .get(&record.owner_node)
+                    .map(|n| n.trust_score)
+                    .unwrap_or(100);
+                if record_owner_trust < 50 {
+                    warn!(
+                        "P2P: Ignoring RecordSync from untrusted node: {}",
+                        record.owner_node
+                    );
+                    return;
+                }
+
                 let mut records = state.records.write().await;
-                let should_update = records
-                    .get(&record.key)
-                    .is_none_or(|existing| existing.version <= record.version);
+                // Conflict Model:
+                // 1. Compare owner node trust score (higher wins)
+                // 2. If trust scores are equal, compare version (higher wins)
+                // 3. If version is also equal, tie-break deterministically using lexicographically smaller owner node ID
+                let should_update = if let Some(existing) = records.get(&record.key) {
+                    let existing_owner_trust = state
+                        .known_nodes
+                        .read()
+                        .await
+                        .get(&existing.owner_node)
+                        .map(|n| n.trust_score)
+                        .unwrap_or(100);
+                    if record_owner_trust > existing_owner_trust {
+                        true
+                    } else if record_owner_trust < existing_owner_trust {
+                        false
+                    } else {
+                        if record.version > existing.version {
+                            true
+                        } else if record.version < existing.version {
+                            false
+                        } else {
+                            record.owner_node < existing.owner_node
+                        }
+                    }
+                } else {
+                    true
+                };
+
                 if should_update {
                     records.insert(record.key.clone(), record);
                 }
@@ -389,16 +493,48 @@ async fn on_message(line: &str, node_id: &str, state: &SharedState) {
 
         if msg.msg_type == MessageType::RecordFetchResponse {
             if let Ok(response) = serde_json::from_slice::<RecordFetchResponse>(&msg.data) {
-                if let Some(value) = response.value.clone() {
-                    state.records.write().await.insert(
-                        response.key.clone(),
-                        RecordSyncPayload {
-                            key: response.key,
-                            value: value.clone(),
-                            owner_node: response.owner_node,
-                            version: now_millis(),
-                        },
+                // Verify responder trust
+                let responder_trust = state
+                    .known_nodes
+                    .read()
+                    .await
+                    .get(&response.owner_node)
+                    .map(|n| n.trust_score)
+                    .unwrap_or(100);
+                if responder_trust < 50 {
+                    warn!(
+                        "P2P: Ignoring RecordFetchResponse from untrusted node: {}",
+                        response.owner_node
                     );
+                    return;
+                }
+
+                if let Some(value) = response.value.clone() {
+                    let mut records = state.records.write().await;
+                    let should_update = if let Some(existing) = records.get(&response.key) {
+                        let existing_trust = state
+                            .known_nodes
+                            .read()
+                            .await
+                            .get(&existing.owner_node)
+                            .map(|n| n.trust_score)
+                            .unwrap_or(100);
+                        responder_trust >= existing_trust
+                    } else {
+                        true
+                    };
+
+                    if should_update {
+                        records.insert(
+                            response.key.clone(),
+                            RecordSyncPayload {
+                                key: response.key,
+                                value: value.clone(),
+                                owner_node: response.owner_node,
+                                version: now_millis(),
+                            },
+                        );
+                    }
                 }
 
                 if let Some(tx) = state
@@ -443,6 +579,16 @@ async fn handle_connection(
             anyhow::bail!("expected Handshake, got {:?}", hs.msg_type);
         }
 
+        // Enforce Zero-Trust: check if the connecting node has trust score < 50
+        {
+            let nodes = state.known_nodes.read().await;
+            if let Some(node) = nodes.get(&hs.from) {
+                if node.trust_score < 50 {
+                    anyhow::bail!("Rejecting connection from untrusted node: {}", hs.from);
+                }
+            }
+        }
+
         {
             let mut nodes = state.known_nodes.write().await;
             nodes.insert(
@@ -452,6 +598,7 @@ async fn handle_connection(
                     addr: hs.from_addr,
                     last_seen_millis: now_millis(),
                     capabilities: Vec::new(),
+                    trust_score: 100,
                 },
             );
         }
@@ -528,6 +675,16 @@ async fn handle_connection(
             anyhow::bail!("expected Handshake response, got {:?}", hs_resp.msg_type);
         }
 
+        // Enforce Zero-Trust: check if the remote node has trust score < 50
+        {
+            let nodes = state.known_nodes.read().await;
+            if let Some(node) = nodes.get(&hs_resp.from) {
+                if node.trust_score < 50 {
+                    anyhow::bail!("Rejecting connection from untrusted node: {}", hs_resp.from);
+                }
+            }
+        }
+
         {
             let mut nodes = state.known_nodes.write().await;
             nodes.insert(
@@ -537,6 +694,7 @@ async fn handle_connection(
                     addr: hs_resp.from_addr,
                     last_seen_millis: now_millis(),
                     capabilities: Vec::new(),
+                    trust_score: 100,
                 },
             );
         }
@@ -595,6 +753,7 @@ mod tests {
             addr: test_addr(port),
             last_seen_millis: now_millis(),
             capabilities: vec!["test".to_string()],
+            trust_score: 100,
         }
     }
 
@@ -993,6 +1152,141 @@ mod tests {
         assert_eq!(
             b.get_cached_record("fetch-key").await,
             Some(b"fetch-value".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trust_score_default_and_penalize() {
+        let m = P2PMeshManager::new(test_addr(0));
+        let peer = make_node("peer-x", 9999);
+        m.add_node(peer.clone()).await;
+
+        assert_eq!(m.get_trust_score("peer-x").await, 100);
+
+        m.penalize_node("peer-x", 30).await;
+        assert_eq!(m.get_trust_score("peer-x").await, 70);
+
+        m.penalize_node("peer-x", 30).await;
+        assert_eq!(m.get_trust_score("peer-x").await, 40); // drops below 50
+    }
+
+    #[tokio::test]
+    async fn test_conflict_resolution_rules() {
+        let known_nodes = Arc::new(RwLock::new(HashMap::new()));
+        let records = Arc::new(RwLock::new(HashMap::new()));
+        let state = SharedState {
+            known_nodes: Arc::clone(&known_nodes),
+            peers: Arc::new(RwLock::new(HashMap::new())),
+            records: Arc::clone(&records),
+            pending_fetches: Arc::new(RwLock::new(HashMap::new())),
+            local_id: "local".to_string(),
+            local_addr: test_addr(9099),
+        };
+
+        // Setup nodes with different trust scores
+        let mut node_low = make_node("node-low", 9001);
+        node_low.trust_score = 45; // untrusted
+        let mut node_mid = make_node("node-mid", 9002);
+        node_mid.trust_score = 60;
+        let mut node_high = make_node("node-high", 9003);
+        node_high.trust_score = 90;
+
+        known_nodes
+            .write()
+            .await
+            .insert("node-low".to_string(), node_low);
+        known_nodes
+            .write()
+            .await
+            .insert("node-mid".to_string(), node_mid);
+        known_nodes
+            .write()
+            .await
+            .insert("node-high".to_string(), node_high);
+
+        // 1. RecordSync from untrusted node should be ignored
+        let payload_low = RecordSyncPayload {
+            key: "key1".to_string(),
+            value: b"val-low".to_vec(),
+            owner_node: "node-low".to_string(),
+            version: 100,
+        };
+        let msg_low = P2PMessage {
+            from: "node-low".to_string(),
+            from_addr: test_addr(9001),
+            to: None,
+            msg_type: MessageType::RecordSync,
+            data: serde_json::to_vec(&payload_low).unwrap(),
+            timestamp_millis: now_millis(),
+        };
+        let line_low = serde_json::to_string(&msg_low).unwrap();
+        on_message(&line_low, "node-low", &state).await;
+        assert!(records.read().await.get("key1").is_none());
+
+        // 2. RecordSync from mid-trust node should succeed
+        let payload_mid = RecordSyncPayload {
+            key: "key1".to_string(),
+            value: b"val-mid".to_vec(),
+            owner_node: "node-mid".to_string(),
+            version: 100,
+        };
+        let msg_mid = P2PMessage {
+            from: "node-mid".to_string(),
+            from_addr: test_addr(9002),
+            to: None,
+            msg_type: MessageType::RecordSync,
+            data: serde_json::to_vec(&payload_mid).unwrap(),
+            timestamp_millis: now_millis(),
+        };
+        let line_mid = serde_json::to_string(&msg_mid).unwrap();
+        on_message(&line_mid, "node-mid", &state).await;
+        assert_eq!(
+            records.read().await.get("key1").unwrap().value,
+            b"val-mid".to_vec()
+        );
+
+        // 3. Higher trust node (node-high) should overwrite lower trust node (node-mid) even if version is same or lower
+        let payload_high = RecordSyncPayload {
+            key: "key1".to_string(),
+            value: b"val-high".to_vec(),
+            owner_node: "node-high".to_string(),
+            version: 50, // lower version but higher trust
+        };
+        let msg_high = P2PMessage {
+            from: "node-high".to_string(),
+            from_addr: test_addr(9003),
+            to: None,
+            msg_type: MessageType::RecordSync,
+            data: serde_json::to_vec(&payload_high).unwrap(),
+            timestamp_millis: now_millis(),
+        };
+        let line_high = serde_json::to_string(&msg_high).unwrap();
+        on_message(&line_high, "node-high", &state).await;
+        assert_eq!(
+            records.read().await.get("key1").unwrap().value,
+            b"val-high".to_vec()
+        );
+
+        // 4. If trust is equal, higher version wins
+        let payload_high_v2 = RecordSyncPayload {
+            key: "key1".to_string(),
+            value: b"val-high-v2".to_vec(),
+            owner_node: "node-high".to_string(),
+            version: 150, // higher version
+        };
+        let msg_high_v2 = P2PMessage {
+            from: "node-high".to_string(),
+            from_addr: test_addr(9003),
+            to: None,
+            msg_type: MessageType::RecordSync,
+            data: serde_json::to_vec(&payload_high_v2).unwrap(),
+            timestamp_millis: now_millis(),
+        };
+        let line_high_v2 = serde_json::to_string(&msg_high_v2).unwrap();
+        on_message(&line_high_v2, "node-high", &state).await;
+        assert_eq!(
+            records.read().await.get("key1").unwrap().value,
+            b"val-high-v2".to_vec()
         );
     }
 }
