@@ -1,4 +1,7 @@
-use crate::{ComputeError, ComputeProfile, ComputeScheduler, ComputeTarget};
+use crate::{
+    ComputeError, ComputeProfile, ComputeScheduler, ComputeTarget, InferenceRuntime,
+    PlacementDecision,
+};
 use tracing::{debug, instrument};
 
 /// ชนิดของภาระงาน (Workload Class) สำหรับเลือกฮาร์ดแวร์เป้าหมายที่เหมาะสมที่สุด
@@ -72,6 +75,51 @@ impl PlacementPolicy {
         debug!(best_target = ?best_target, "Placement Policy ตัดสินใจเลือกอุปกรณ์");
 
         Ok(best_target)
+    }
+
+    /// ตัดสินใจเลือกรันไทม์การประมวลผล (Inference Runtime) ที่เหมาะสมตามอุปกรณ์เป้าหมายและชนิดภาระงาน
+    #[must_use]
+    pub fn select_runtime(
+        target: ComputeTarget,
+        workload: WorkloadClass,
+    ) -> Option<InferenceRuntime> {
+        match target {
+            ComputeTarget::Cpu => match workload {
+                WorkloadClass::KernelLogic => None,
+                WorkloadClass::SmallLlm | WorkloadClass::LargeLlm => {
+                    Some(InferenceRuntime::LlamaCpp)
+                }
+                WorkloadClass::VectorIndexing => Some(InferenceRuntime::OnnxRuntime),
+            },
+            ComputeTarget::Gpu => match workload {
+                WorkloadClass::KernelLogic => None,
+                _ => Some(InferenceRuntime::TensorRtLlm),
+            },
+            ComputeTarget::Npu => match workload {
+                WorkloadClass::KernelLogic => None,
+                WorkloadClass::SmallLlm => Some(InferenceRuntime::LlamaCpp),
+                _ => Some(InferenceRuntime::OnnxRuntime),
+            },
+            ComputeTarget::Cloud => match workload {
+                WorkloadClass::KernelLogic => None,
+                _ => Some(InferenceRuntime::LlamaCpp),
+            },
+        }
+    }
+
+    /// ประเมินและเลือกอุปกรณ์พร้อมรันไทม์การประมวลผลที่ดีที่สุด
+    ///
+    /// # Errors
+    /// คืนค่า `ComputeError::NoTargetAvailable` หากไม่มีอุปกรณ์ใดรองรับงานนี้
+    #[instrument(skip(self, available_profiles), fields(workload = ?workload))]
+    pub fn place_with_runtime(
+        &self,
+        workload: WorkloadClass,
+        available_profiles: &[(ComputeTarget, ComputeProfile)],
+    ) -> Result<PlacementDecision, ComputeError> {
+        let target = self.place(workload, available_profiles)?;
+        let runtime = Self::select_runtime(target, workload);
+        Ok(PlacementDecision { target, runtime })
     }
 }
 
@@ -168,5 +216,50 @@ mod tests {
         // LargeLlm ต้องการ GPU หรือ Cloud เท่านั้น
         let result = policy.place(WorkloadClass::LargeLlm, &profiles);
         assert_eq!(result, Err(ComputeError::NoTargetAvailable));
+    }
+
+    #[test]
+    fn select_runtime_rules() {
+        assert_eq!(
+            PlacementPolicy::select_runtime(ComputeTarget::Cpu, WorkloadClass::SmallLlm),
+            Some(InferenceRuntime::LlamaCpp)
+        );
+        assert_eq!(
+            PlacementPolicy::select_runtime(ComputeTarget::Gpu, WorkloadClass::LargeLlm),
+            Some(InferenceRuntime::TensorRtLlm)
+        );
+        assert_eq!(
+            PlacementPolicy::select_runtime(ComputeTarget::Npu, WorkloadClass::VectorIndexing),
+            Some(InferenceRuntime::OnnxRuntime)
+        );
+        assert_eq!(
+            PlacementPolicy::select_runtime(ComputeTarget::Cpu, WorkloadClass::KernelLogic),
+            None
+        );
+    }
+
+    #[test]
+    fn place_with_runtime_computes_correct_decision() {
+        let scheduler = ComputeScheduler::new();
+        let policy = PlacementPolicy::new(scheduler);
+        let profiles = dummy_profiles();
+
+        let decision = policy
+            .place_with_runtime(WorkloadClass::SmallLlm, &profiles)
+            .unwrap();
+
+        assert_eq!(decision.target, ComputeTarget::Npu);
+        assert_eq!(decision.runtime, Some(InferenceRuntime::LlamaCpp));
+    }
+
+    #[test]
+    fn mock_inference_execution_latencies() {
+        let llama = InferenceRuntime::LlamaCpp;
+        let onnx = InferenceRuntime::OnnxRuntime;
+        let trt = InferenceRuntime::TensorRtLlm;
+
+        assert_eq!(llama.execute_mock_inference(100), 50.0);
+        assert_eq!(onnx.execute_mock_inference(100), 30.0);
+        assert_eq!(trt.execute_mock_inference(100), 8.0);
     }
 }

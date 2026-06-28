@@ -35,6 +35,36 @@ pub enum ComputeTarget {
     Cloud,
 }
 
+/// รันไทม์จำลองสำหรับการประมวลผลโมเดล AI (Inference Runtime)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InferenceRuntime {
+    /// llama.cpp - เหมาะกับ CPU/NPU และ Edge deployments
+    LlamaCpp,
+    /// ONNX Runtime - เหมาะกับ NPU และ cross-platform workloads
+    OnnxRuntime,
+    /// TensorRT-LLM - เหมาะกับ GPU ประสิทธิภาพสูง
+    TensorRtLlm,
+}
+
+impl InferenceRuntime {
+    /// จำลองการรันโมเดล (Mock inference execution) และส่งคืนความหน่วงในการประมวลผลจริง (ms)
+    #[must_use]
+    pub fn execute_mock_inference(&self, tokens: usize) -> f64 {
+        match self {
+            Self::LlamaCpp => tokens as f64 * 0.5,
+            Self::OnnxRuntime => tokens as f64 * 0.3,
+            Self::TensorRtLlm => tokens as f64 * 0.08,
+        }
+    }
+}
+
+/// การตัดสินใจผลลัพธ์การจัดสรร (PlacementDecision) ที่รวบรวมทั้งฮาร์ดแวร์เป้าหมายและรันไทม์ที่เลือก
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlacementDecision {
+    pub target: ComputeTarget,
+    pub runtime: Option<InferenceRuntime>,
+}
+
 /// โปรไฟล์ข้อมูลประสิทธิภาพและพลังงานของฮาร์ดแวร์แต่ละประเภท
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComputeProfile {
