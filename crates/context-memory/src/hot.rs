@@ -25,6 +25,12 @@ impl HotStore {
         self.entries.insert(key, value);
     }
 
+    /// ตรวจสอบว่ามีคีย์ใน Hot Store หรือไม่
+    #[must_use]
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.entries.contains_key(key)
+    }
+
     /// ดึงสำเนาข้อมูลบริบทตามคีย์ที่กำหนด (ถ้ามี)
     #[must_use]
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {

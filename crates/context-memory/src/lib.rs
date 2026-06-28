@@ -74,12 +74,17 @@ impl ContextMemoryManager {
     #[instrument(skip(self, value), fields(key = %key.as_ref(), value_len = value.len()))]
     pub fn put(&self, key: impl Into<String> + AsRef<str>, value: Vec<u8>) {
         let key = key.into();
-        self.timestamps
-            .write()
-            .expect("timestamps lock poisoned")
-            .insert(key.clone(), Instant::now());
         debug!(tier = "hot", "บันทึกข้อมูลบริบทลง Hot Store");
         let mut hot = self.hot.write().expect("hot memory lock poisoned");
+        let is_new = !hot.contains_key(&key);
+        if is_new {
+            drop(hot);
+            self.timestamps
+                .write()
+                .expect("timestamps lock poisoned")
+                .insert(key.clone(), Instant::now());
+            hot = self.hot.write().expect("hot memory lock poisoned");
+        }
         hot.insert(key, value);
 
         // ตรวจสอบขนาดเพื่อย้ายข้อมูล (Evict) ไปยัง Warm Store

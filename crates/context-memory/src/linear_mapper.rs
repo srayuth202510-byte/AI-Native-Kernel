@@ -174,7 +174,7 @@ impl IdentityMapper {
         self.actor_registry
             .values()
             .filter(|actor| {
-                actor.is_active && actor.last_heartbeat < cutoff
+                actor.is_active && actor.last_heartbeat >= cutoff
             })
             .cloned()
             .collect()
