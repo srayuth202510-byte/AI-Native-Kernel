@@ -387,3 +387,309 @@ async fn handle_connection(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+    use tokio::time::timeout;
+
+    fn test_addr(port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    }
+
+    fn make_node(id: &str, port: u16) -> NodeInfo {
+        NodeInfo {
+            id: id.to_string(),
+            addr: test_addr(port),
+            last_seen_millis: now_millis(),
+            capabilities: vec!["test".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn now_millis_returns_reasonable_value() {
+        let t = now_millis();
+        // should be around year 2026+ (roughly > 1.7T ms since epoch)
+        assert!(
+            t > 1_700_000_000_000,
+            "epoch millis should be > 1.7T, got {t}"
+        );
+        // should not be in the far future
+        assert!(
+            t < 2_000_000_000_000,
+            "epoch millis should be < 2T, got {t}"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_alive_recent_returns_true() {
+        let node = make_node("alive", 9001);
+        assert!(is_alive(&node));
+    }
+
+    #[tokio::test]
+    async fn is_alive_stale_returns_false() {
+        let node = NodeInfo {
+            last_seen_millis: now_millis() - 120_000, // 2 min ago
+            ..make_node("stale", 9002)
+        };
+        assert!(!is_alive(&node));
+    }
+
+    #[tokio::test]
+    async fn manager_new_sets_local_node() {
+        let m = P2PMeshManager::new(test_addr(0));
+        assert!(!m.local_node.id.is_empty());
+        assert_eq!(m.local_node.addr.port(), 0);
+        assert!(m.message_rx.is_some());
+    }
+
+    #[tokio::test]
+    async fn manager_add_and_get_neighbors() {
+        let m = P2PMeshManager::new(test_addr(0));
+        let n1 = make_node("node-a", 9010);
+        let n2 = make_node("node-b", 9011);
+        m.add_node(n1).await;
+        m.add_node(n2).await;
+        let neighbors = m.get_neighbors().await;
+        assert_eq!(neighbors.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn manager_remove_node() {
+        let m = P2PMeshManager::new(test_addr(0));
+        let n1 = make_node("node-remove", 9020);
+        m.add_node(n1).await;
+        assert_eq!(m.get_neighbors().await.len(), 1);
+        m.remove_node("node-remove").await;
+        assert_eq!(m.get_neighbors().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn manager_is_connected_recent() {
+        let m = P2PMeshManager::new(test_addr(0));
+        let n = make_node("connected", 9030);
+        m.add_node(n).await;
+        assert!(m.is_connected("connected").await);
+    }
+
+    #[tokio::test]
+    async fn manager_is_connected_unknown() {
+        let m = P2PMeshManager::new(test_addr(0));
+        assert!(!m.is_connected("nonexistent").await);
+    }
+
+    #[tokio::test]
+    async fn manager_get_alive_peers_filters_stale() {
+        let m = P2PMeshManager::new(test_addr(0));
+        m.add_node(make_node("fresh", 9040)).await;
+        m.add_node(NodeInfo {
+            last_seen_millis: now_millis() - 120_000,
+            ..make_node("stale", 9041)
+        })
+        .await;
+        let alive = m.get_alive_peers().await;
+        assert_eq!(alive.len(), 1);
+        assert_eq!(alive[0].id, "fresh");
+        assert_eq!(alive[0].addr.port(), 9040);
+    }
+
+    #[tokio::test]
+    async fn p2p_message_serde_roundtrip() {
+        let msg = P2PMessage {
+            from: "node-a".to_string(),
+            from_addr: test_addr(9050),
+            to: None,
+            msg_type: MessageType::Handshake,
+            data: vec![1, 2, 3],
+            timestamp_millis: now_millis(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: P2PMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.from, "node-a");
+        assert_eq!(deserialized.msg_type, MessageType::Handshake);
+        assert_eq!(deserialized.data, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn on_message_updates_last_seen() {
+        let known_nodes: Arc<RwLock<HashMap<String, NodeInfo>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let node = make_node("target", 9060);
+        known_nodes
+            .write()
+            .await
+            .insert("target".to_string(), node.clone());
+
+        let ping = P2PMessage {
+            from: "target".to_string(),
+            from_addr: test_addr(9060),
+            to: None,
+            msg_type: MessageType::Ping,
+            data: Vec::new(),
+            timestamp_millis: now_millis(),
+        };
+        let line = serde_json::to_string(&ping).unwrap();
+
+        let old_seen = node.last_seen_millis;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        on_message(&line, "target", &known_nodes).await;
+        let updated = known_nodes
+            .read()
+            .await
+            .get("target")
+            .unwrap()
+            .last_seen_millis;
+        assert!(updated >= old_seen, "last_seen should update");
+    }
+
+    #[tokio::test]
+    async fn on_message_with_neighborlist_merges_nodes() {
+        let known_nodes: Arc<RwLock<HashMap<String, NodeInfo>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        known_nodes
+            .write()
+            .await
+            .insert("local".to_string(), make_node("local", 9070));
+
+        let remote_nodes = vec![make_node("remote-a", 9080), make_node("remote-b", 9081)];
+        let data = serde_json::to_vec(&remote_nodes).unwrap();
+        let msg = P2PMessage {
+            from: "local".to_string(),
+            from_addr: test_addr(9070),
+            to: None,
+            msg_type: MessageType::NeighborList,
+            data,
+            timestamp_millis: now_millis(),
+        };
+        let line = serde_json::to_string(&msg).unwrap();
+
+        on_message(&line, "local", &known_nodes).await;
+        let nodes = known_nodes.read().await;
+        assert_eq!(nodes.len(), 3);
+        assert!(nodes.contains_key("remote-a"));
+        assert!(nodes.contains_key("remote-b"));
+    }
+
+    #[tokio::test]
+    async fn two_nodes_tcp_handshake() {
+        let a = Arc::new(P2PMeshManager::new(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )));
+        // Bind listener manually, pass handle_connection for each accept
+        let listener_a = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port_a = listener_a.local_addr().unwrap().port();
+        let a_ref = a.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, peer_addr) = listener_a.accept().await.unwrap();
+                let mgr = a_ref.clone();
+                tokio::spawn(async move {
+                    let _ = handle_connection(stream, peer_addr, &mgr, true).await;
+                });
+            }
+        });
+
+        let b = Arc::new(P2PMeshManager::new(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        timeout(
+            Duration::from_secs(5),
+            b.clone().connect_to_peer(test_addr(port_a)),
+        )
+        .await
+        .expect("connect_to_peer timeout")
+        .expect("connect_to_peer failed");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let a_peers = a.get_alive_peers().await;
+        let b_peers = b.get_alive_peers().await;
+        assert!(!a_peers.is_empty(), "Node A should have discovered Node B");
+        assert!(!b_peers.is_empty(), "Node B should have discovered Node A");
+    }
+
+    #[tokio::test]
+    async fn gossip_propagates_neighbors() {
+        let a = Arc::new(P2PMeshManager::new(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )));
+        let listener_a = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port_a = listener_a.local_addr().unwrap().port();
+        let a_ref = a.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, peer_addr) = listener_a.accept().await.unwrap();
+                let mgr = a_ref.clone();
+                tokio::spawn(async move {
+                    let _ = handle_connection(stream, peer_addr, &mgr, true).await;
+                });
+            }
+        });
+
+        let b = Arc::new(P2PMeshManager::new(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )));
+        let listener_b = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _port_b = listener_b.local_addr().unwrap().port();
+        let b_ref = b.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, peer_addr) = listener_b.accept().await.unwrap();
+                let mgr = b_ref.clone();
+                tokio::spawn(async move {
+                    let _ = handle_connection(stream, peer_addr, &mgr, true).await;
+                });
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        timeout(
+            Duration::from_secs(5),
+            b.clone().connect_to_peer(test_addr(port_a)),
+        )
+        .await
+        .expect("A↔B connect timeout")
+        .expect("A↔B connect result");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        b.gossip_neighbors().await.expect("B gossip");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let a_peers = a.get_alive_peers().await;
+        assert!(
+            a_peers.iter().any(|n| n.id == b.local_node.id),
+            "A should know B after gossip"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_to_unreachable_returns_error() {
+        let m = Arc::new(P2PMeshManager::new(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )));
+        let result = m
+            .connect_to_peer(test_addr(1)) // port 1 is privileged = connection refused
+            .await;
+        assert!(result.is_err(), "connect to unreachable should fail");
+    }
+
+    #[tokio::test]
+    async fn node_info_serialization() {
+        let n = make_node("serde-test", 9090);
+        let json = serde_json::to_string(&n).unwrap();
+        let back: NodeInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "serde-test");
+        assert_eq!(back.addr.port(), 9090);
+        assert_eq!(back.capabilities, vec!["test"]);
+    }
+}

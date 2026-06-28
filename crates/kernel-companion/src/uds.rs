@@ -221,8 +221,54 @@ pub async fn start_uds_server(
 mod tests {
     use super::*;
     use intent_bus::{Intent, IntentPriority, IntentType};
+    use std::collections::HashMap;
+    use std::time::Duration;
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
+
+    /// Helper: spawn a UDS server with all subsystems = None, return (cancel, socket_path)
+    async fn spawn_uds_server() -> (Arc<IntentBus>, CancellationToken, String) {
+        let socket_path = format!("/tmp/ank-uds-test-{}.sock", uuid::Uuid::new_v4());
+        let intent_bus = Arc::new(IntentBus::new(10));
+        let cancel = CancellationToken::new();
+        start_uds_server(
+            Arc::clone(&intent_bus),
+            None,
+            None,
+            None,
+            None,
+            &socket_path,
+            cancel.clone(),
+        )
+        .await
+        .expect("start_uds_server");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        (intent_bus, cancel, socket_path)
+    }
+
+    /// Helper: send JSON line, read response line
+    async fn send_command(
+        client: &mut UnixStream,
+        payload: &str,
+        metadata: HashMap<String, String>,
+    ) -> String {
+        let mut intent = Intent::new(
+            uuid::Uuid::new_v4().to_string(),
+            IntentType::Command,
+            payload,
+            IntentPriority::High,
+            "test",
+        );
+        intent.metadata = metadata;
+        let line = format!("{}\n", serde_json::to_string(&intent).unwrap());
+        client.write_all(line.as_bytes()).await.unwrap();
+        client.flush().await.unwrap();
+
+        let mut buf = String::new();
+        let mut reader = tokio::io::BufReader::new(&mut *client);
+        reader.read_line(&mut buf).await.unwrap();
+        buf
+    }
 
     #[tokio::test]
     async fn test_uds_server_lifecycle_and_publish() {
@@ -231,7 +277,6 @@ mod tests {
         let mut sub = intent_bus.subscribe();
         let cancel = CancellationToken::new();
 
-        // Start UDS Server
         start_uds_server(
             Arc::clone(&intent_bus),
             None,
@@ -244,10 +289,8 @@ mod tests {
         .await
         .expect("Failed to start UDS server");
 
-        // Wait a short duration for the socket to bind and start listening
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Connect to UDS and send a valid intent
         let mut client = UnixStream::connect(&socket_path)
             .await
             .expect("Failed to connect to UDS socket");
@@ -264,8 +307,7 @@ mod tests {
         client.write_all(json_line.as_bytes()).await.unwrap();
         client.flush().await.unwrap();
 
-        // Receive from IntentBus
-        let received = tokio::time::timeout(std::time::Duration::from_millis(500), sub.receive())
+        let received = tokio::time::timeout(Duration::from_millis(500), sub.receive())
             .await
             .expect("Timeout waiting for intent")
             .expect("No intent received");
@@ -273,21 +315,161 @@ mod tests {
         assert_eq!(received.id, "uds-test-1");
         assert_eq!(received.payload, "test payload");
 
-        // Send invalid JSON line
+        // Send invalid JSON
         client.write_all(b"invalid-json\n").await.unwrap();
         client.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Make sure no intent is published (timeout should occur if we try to receive)
-        // Wait briefly to allow processing
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // Cancel server
         cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
 
-        // Wait a short duration for shutdown
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    #[tokio::test]
+    async fn uds_status_command_returns_online() {
+        let (_bus, cancel, socket_path) = spawn_uds_server().await;
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
 
-        // Cleanup
+        let resp = send_command(&mut client, "status", HashMap::new()).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        assert_eq!(parsed["status"], "online");
+        assert_eq!(parsed["running_agents"], 0);
+        assert_eq!(parsed["blocked_syscalls"], serde_json::json!([]));
+        assert_eq!(parsed["hardware_targets"], serde_json::json!([]));
+
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
+    #[tokio::test]
+    async fn uds_list_quarantine_command() {
+        let (_bus, cancel, socket_path) = spawn_uds_server().await;
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+
+        let resp = send_command(&mut client, "list-quarantine", HashMap::new()).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        assert_eq!(parsed["quarantined_pids"], serde_json::json!([]));
+
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
+    #[tokio::test]
+    async fn uds_set_threshold_without_tcell() {
+        let (_bus, cancel, socket_path) = spawn_uds_server().await;
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+
+        let mut meta = HashMap::new();
+        meta.insert("rate".to_string(), "10".to_string());
+        meta.insert("deny".to_string(), "5".to_string());
+        let resp = send_command(&mut client, "set-threshold", meta).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        // No TCell → success should be false
+        assert_eq!(parsed["success"], false);
+        assert_eq!(
+            parsed["message"],
+            "Failed to parse rate or deny from metadata"
+        );
+
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
+    #[tokio::test]
+    async fn uds_set_lsm_profile_without_lsm() {
+        let (_bus, cancel, socket_path) = spawn_uds_server().await;
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+
+        let mut meta = HashMap::new();
+        meta.insert("profile".to_string(), "strict".to_string());
+        let resp = send_command(&mut client, "set-lsm-profile", meta).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        assert_eq!(parsed["success"], false);
+        assert_eq!(parsed["message"], "LSM engine unavailable");
+
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
+    #[tokio::test]
+    async fn uds_unknown_command_publishes_to_bus() {
+        let (bus, cancel, socket_path) = spawn_uds_server().await;
+        let mut sub = bus.subscribe();
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+
+        // "unknown" is not a recognized command, so it should be published to the bus
+        let mut meta = HashMap::new();
+        meta.insert("foo".to_string(), "bar".to_string());
+        let mut intent = Intent::new(
+            "unknown-cmd",
+            IntentType::Command,
+            "unknown",
+            IntentPriority::High,
+            "test",
+        );
+        intent.metadata = meta;
+        let line = format!("{}\n", serde_json::to_string(&intent).unwrap());
+        client.write_all(line.as_bytes()).await.unwrap();
+        client.flush().await.unwrap();
+
+        let received = tokio::time::timeout(Duration::from_millis(500), sub.receive())
+            .await
+            .expect("Timeout")
+            .expect("No intent");
+        assert_eq!(received.payload, "unknown");
+
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
+    #[tokio::test]
+    async fn uds_non_command_intent_publishes_to_bus() {
+        let (bus, cancel, socket_path) = spawn_uds_server().await;
+        let mut sub = bus.subscribe();
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+
+        let intent = Intent::new(
+            "nl-intent",
+            IntentType::NaturalLanguage,
+            "open the browser",
+            IntentPriority::Medium,
+            "test",
+        );
+        let line = format!("{}\n", serde_json::to_string(&intent).unwrap());
+        client.write_all(line.as_bytes()).await.unwrap();
+        client.flush().await.unwrap();
+
+        let received = tokio::time::timeout(Duration::from_millis(500), sub.receive())
+            .await
+            .expect("Timeout")
+            .expect("No intent");
+        assert_eq!(received.payload, "open the browser");
+        assert_eq!(received.intent_type, IntentType::NaturalLanguage);
+
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
+    #[tokio::test]
+    async fn uds_set_threshold_missing_metadata() {
+        let (_bus, cancel, socket_path) = spawn_uds_server().await;
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+
+        // No 'rate' metadata → should fail
+        let mut meta = HashMap::new();
+        meta.insert("deny".to_string(), "5".to_string());
+        let resp = send_command(&mut client, "set-threshold", meta).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        assert_eq!(parsed["success"], false);
+
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
         let _ = tokio::fs::remove_file(&socket_path).await;
     }
 }

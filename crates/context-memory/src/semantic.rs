@@ -135,6 +135,18 @@ impl SemanticStore {
 }
 
 #[cfg(test)]
+impl SemanticStore {
+    /// Create an instance without connecting to Qdrant (test-only)
+    pub fn test_instance(collection_name: &str) -> Self {
+        let client = Qdrant::from_url("http://127.0.0.1:1").build().unwrap();
+        Self {
+            client,
+            collection_name: collection_name.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::env;

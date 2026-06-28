@@ -213,6 +213,131 @@ mod tests {
             .is_ok()
     }
 
+    // ── SemanticFile unit tests ────────────────────────────────────
+
+    #[test]
+    fn semantic_file_construction() {
+        let f = SemanticFile {
+            path: "docs/test.txt".into(),
+            content: "hello world".into(),
+            size: 11,
+        };
+        assert_eq!(f.path, "docs/test.txt");
+        assert_eq!(f.content, "hello world");
+        assert_eq!(f.size, 11);
+    }
+
+    #[test]
+    fn semantic_file_ordering_independent() {
+        let a = SemanticFile {
+            path: "a.txt".into(),
+            content: "aaa".into(),
+            size: 3,
+        };
+        let b = SemanticFile {
+            path: "b.txt".into(),
+            content: "bbb".into(),
+            size: 3,
+        };
+        // PartialEq/Eq — different paths should not be equal
+        assert_ne!(a, b);
+        // Clone should produce equal copy
+        assert_eq!(a, a.clone());
+    }
+
+    // ── generate_embedding unit tests (pure, no Qdrant) ────────────
+    fn make_sfs(vector_size: usize) -> SemanticFileSystem {
+        let temp_dir = std::env::temp_dir().join(format!("ank-sfs-emb-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(SemanticStore::test_instance("test"));
+        SemanticFileSystem {
+            base_dir: temp_dir,
+            semantic_store: store,
+            vector_size,
+        }
+    }
+
+    #[tokio::test]
+    async fn new_creates_base_directory() {
+        let temp_dir = std::env::temp_dir().join(format!("ank-sfs-new-{}", uuid::Uuid::new_v4()));
+        assert!(!temp_dir.exists(), "temp dir should not exist yet");
+        let store = Arc::new(SemanticStore::test_instance("test"));
+        let sfs = SemanticFileSystem::new(&temp_dir, store, 4).await.unwrap();
+        assert!(temp_dir.exists(), "base_dir should be created by new()");
+        assert_eq!(sfs.vector_size, 4);
+        let _ = tokio_fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn generate_embedding_has_correct_length() {
+        let sfs = make_sfs(8);
+        let v = sfs.generate_embedding("hello world");
+        assert_eq!(v.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn generate_embedding_empty_text_returns_zeros() {
+        let sfs = make_sfs(4);
+        let v = sfs.generate_embedding("");
+        assert_eq!(v, vec![0.0f32; 4]);
+    }
+
+    #[tokio::test]
+    async fn generate_embedding_single_word_is_unit_vector() {
+        let sfs = make_sfs(16);
+        let v = sfs.generate_embedding("rust");
+        let sum_sq: f32 = v.iter().map(|x| x * x).sum();
+        // Should be ≈ 1.0 (normalized)
+        assert!(
+            (sum_sq - 1.0).abs() < 1e-5,
+            "norm squared should be 1.0, got {sum_sq}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_embedding_multi_word_is_unit_vector() {
+        let sfs = make_sfs(16);
+        let v = sfs.generate_embedding("the quick brown fox");
+        let sum_sq: f32 = v.iter().map(|x| x * x).sum();
+        assert!(
+            (sum_sq - 1.0).abs() < 1e-5,
+            "norm squared should be 1.0, got {sum_sq}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_embedding_deterministic() {
+        let sfs = make_sfs(32);
+        let text = "same text every time";
+        let v1 = sfs.generate_embedding(text);
+        let v2 = sfs.generate_embedding(text);
+        assert_eq!(v1, v2, "embedding should be deterministic");
+    }
+
+    #[tokio::test]
+    async fn generate_embedding_different_texts_differ() {
+        let sfs = make_sfs(32);
+        let v1 = sfs.generate_embedding("hello world");
+        let v2 = sfs.generate_embedding("goodbye world");
+        assert_ne!(
+            v1, v2,
+            "different texts should produce different embeddings"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_embedding_large_text() {
+        let sfs = make_sfs(64);
+        let text = "word ".repeat(1000);
+        let v = sfs.generate_embedding(&text);
+        let sum_sq: f32 = v.iter().map(|x| x * x).sum();
+        assert!(
+            (sum_sq - 1.0).abs() < 1e-5,
+            "norm should be 1.0 even for large text"
+        );
+    }
+
+    // ── Integration tests (require Qdrant) ─────────────────────────
+
     #[tokio::test]
     #[ignore = "Requires a running Qdrant instance; override with QDRANT_URL/QDRANT_HOST/QDRANT_PORT"]
     async fn test_semantic_file_system_operations() -> Result<()> {
