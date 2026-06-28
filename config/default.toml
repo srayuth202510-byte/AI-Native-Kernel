@@ -44,6 +44,9 @@ bcell_learning_interval_ms = 10000
 macrophage_gc_interval_ms = 30000
 max_anomaly_score = 10
 quarantine_duration_secs = 300
+rate_threshold = 100
+deny_threshold = 5
+kill_threshold = 15
 
 [ebpf]
 enable_fallback = true
@@ -111,6 +114,17 @@ allowed_syscalls = [
   "eventfd2",
   "ioctl",
   "fcntl",
+  "socket",
+  "connect",
+  "accept",
+  "accept4",
+  "bind",
+  "listen",
+  "shutdown",
+  "getsockname",
+  "getpeername",
+  "setsockopt",
+  "getsockopt",
 ]
 
 [lsm.profiles.dev]

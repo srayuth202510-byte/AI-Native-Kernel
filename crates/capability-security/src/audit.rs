@@ -16,7 +16,7 @@ pub enum AuditError {
 }
 
 /// รายการบันทึกประวัติการตรวจสอบการเข้าใช้งานหรือการตัดสินใจด้านความปลอดภัย (Audit Entry)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuditEntry {
     /// การกระทำที่เกิดขึ้น (เช่น "issued", "allowed", "denied")
     pub action: String,
@@ -24,6 +24,21 @@ pub struct AuditEntry {
     pub token_id: u64,
     /// เวลาที่เกิดการกระทำขึ้นในรูปแบบวินาทีสะสมนับตั้งแต่ UNIX Epoch
     pub timestamp: u64,
+    /// Process ID ที่เกี่ยวข้อง (ถ้ามี)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// User ID ที่เกี่ยวข้อง (ถ้ามี)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u32>,
+    /// ชื่อ syscall ที่เกี่ยวข้อง (ถ้ามี)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub syscall: Option<String>,
+    /// Anomaly score จาก T-Cell (ถ้ามี)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anomaly_score: Option<f64>,
+    /// เหตุผลในการตัดสินใจ (ถ้ามี)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl AuditEntry {
@@ -38,6 +53,11 @@ impl AuditEntry {
             action: action.to_string(),
             token_id,
             timestamp,
+            pid: None,
+            uid: None,
+            syscall: None,
+            anomaly_score: None,
+            reason: None,
         }
     }
 
@@ -63,6 +83,39 @@ impl AuditEntry {
     #[must_use]
     pub fn revoked(token_id: u64) -> Self {
         Self::new("revoked", token_id)
+    }
+
+    /// สร้างข้อมูลบันทึกประวัติสำหรับการ "ปฏิเสธ syscall" (Syscall Denied)
+    #[must_use]
+    pub fn syscall_denied(pid: u32, uid: u32, syscall: &str, reason: &str) -> Self {
+        let mut entry = Self::new("syscall_denied", 0);
+        entry.pid = Some(pid);
+        entry.uid = Some(uid);
+        entry.syscall = Some(syscall.to_string());
+        entry.reason = Some(reason.to_string());
+        entry
+    }
+
+    /// สร้างข้อมูลบันทึกประวัติสำหรับการ "quarantine process" (Process Quarantined)
+    #[must_use]
+    pub fn process_quarantined(pid: u32, uid: u32, anomaly_score: f64, reason: &str) -> Self {
+        let mut entry = Self::new("process_quarantined", 0);
+        entry.pid = Some(pid);
+        entry.uid = Some(uid);
+        entry.anomaly_score = Some(anomaly_score);
+        entry.reason = Some(reason.to_string());
+        entry
+    }
+
+    /// สร้างข้อมูลบันทึกประวัติสำหรับการ "kill process" (Process Killed)
+    #[must_use]
+    pub fn process_killed(pid: u32, uid: u32, anomaly_score: f64, reason: &str) -> Self {
+        let mut entry = Self::new("process_killed", 0);
+        entry.pid = Some(pid);
+        entry.uid = Some(uid);
+        entry.anomaly_score = Some(anomaly_score);
+        entry.reason = Some(reason.to_string());
+        entry
     }
 }
 
