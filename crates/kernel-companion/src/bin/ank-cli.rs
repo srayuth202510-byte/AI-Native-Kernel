@@ -173,6 +173,21 @@ async fn main() -> Result<()> {
                         active_lsm_profile, allowed_syscalls_count
                     );
 
+                    let vram_allocated = json_resp["vram_allocated"].as_u64().unwrap_or(0);
+                    let vram_capacity = json_resp["vram_capacity"].as_u64().unwrap_or(0);
+                    let p2p_enabled = json_resp["p2p_enabled"].as_bool().unwrap_or(false);
+                    let p2p_peers = json_resp["p2p_peers"].as_u64().unwrap_or(0);
+
+                    println!(
+                        "VRAM Paging      : {} / {} bytes",
+                        vram_allocated, vram_capacity
+                    );
+                    if p2p_enabled {
+                        println!("P2P Context Mesh : Online ({} active peers)", p2p_peers);
+                    } else {
+                        println!("P2P Context Mesh : Offline");
+                    }
+
                     if let Some(hardware) = json_resp["hardware_targets"].as_array() {
                         println!("-----------------------------------------");
                         println!("          อุปกรณ์ฮาร์ดแวร์จริงที่ตรวจพบ");

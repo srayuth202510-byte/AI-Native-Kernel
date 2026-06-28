@@ -13,6 +13,8 @@ pub enum AuditError {
     Serialize(#[source] serde_json::Error),
     #[error("failed to write audit entry")]
     Write(#[source] std::io::Error),
+    #[error("audit log validation failed")]
+    ValidationFailed,
 }
 
 /// รายการบันทึกประวัติการตรวจสอบการเข้าใช้งานหรือการตัดสินใจด้านความปลอดภัย (Audit Entry)
@@ -39,9 +41,25 @@ pub struct AuditEntry {
     /// เหตุผลในการตัดสินใจ (ถ้ามี)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// ลายเซ็นแฮชทางคริปโทกราฟีของ Entry และประวัติก่อนหน้า (Cryptographic Hash chain)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
 }
 
 impl AuditEntry {
+    /// คำนวณค่าแฮชของรายการโดยผูกกับประวัติก่อนหน้าเพื่อตรวจสอบความถูกต้องแบบย้อนหลัง (Hash chaining)
+    pub fn compute_hash(&self, previous_hash: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut temp = self.clone();
+        temp.hash = None;
+        let json_data = serde_json::to_vec(&temp).unwrap_or_default();
+
+        let mut hasher = Sha256::new();
+        hasher.update(&json_data);
+        hasher.update(previous_hash.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
     /// สร้างข้อมูลบันทึกประวัติการตรวจสอบใหม่
     #[must_use]
     pub fn new(action: &str, token_id: u64) -> Self {
@@ -58,6 +76,7 @@ impl AuditEntry {
             syscall: None,
             anomaly_score: None,
             reason: None,
+            hash: None,
         }
     }
 
@@ -124,17 +143,52 @@ impl AuditEntry {
 pub struct AuditLogger {
     /// พาธสำหรับจัดเก็บไฟล์บันทึกประวัติ (Log File)
     log_path: PathBuf,
+    /// แฮชล่าสุดที่คำนวณและเขียนลงไฟล์แล้ว
+    last_hash: std::sync::Arc<parking_lot::Mutex<Option<String>>>,
 }
 
 impl AuditLogger {
     /// สร้างตัวบันทึกข้อมูลการตรวจสอบ `AuditLogger` ใหม่พร้อมพาธของไฟล์ล็อก
     #[must_use]
     pub fn new(log_path: PathBuf) -> Self {
-        Self { log_path }
+        Self {
+            log_path,
+            last_hash: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+        }
     }
 
-    /// บันทึกรายการตรวจสอบลงในไฟล์ล็อก
-    pub fn record(&self, entry: AuditEntry) -> Result<(), AuditError> {
+    fn get_last_hash_from_file(&self) -> String {
+        if let Ok(file) = File::open(&self.log_path) {
+            let reader = BufReader::new(file);
+            let mut last_h = String::new();
+            for line_str in reader.lines().map_while(Result::ok) {
+                if let Ok(entry) = serde_json::from_str::<AuditEntry>(&line_str) {
+                    if let Some(h) = entry.hash {
+                        last_h = h;
+                    }
+                }
+            }
+            last_h
+        } else {
+            String::new()
+        }
+    }
+
+    /// บันทึกรายการตรวจสอบลงในไฟล์ล็อก พร้อมทำ Hash Chaining กับประวัติก่อนหน้า
+    pub fn record(&self, mut entry: AuditEntry) -> Result<(), AuditError> {
+        let mut cache = self.last_hash.lock();
+        let prev_hash = match &*cache {
+            Some(h) => h.clone(),
+            None => {
+                let h = self.get_last_hash_from_file();
+                *cache = Some(h.clone());
+                h
+            }
+        };
+
+        let hash = entry.compute_hash(&prev_hash);
+        entry.hash = Some(hash.clone());
+
         // เปิดไฟล์แบบเขียนต่อท้ายอย่างเดียว (append-only) และสร้างใหม่หากยังไม่มี
         // ซึ่งเป็นการทำงานรูปแบบ WORM (Write Once Read Many) ในระดับระบบปฏิบัติการเพื่อความปลอดภัยของข้อมูลประวัติ
         let mut file = OpenOptions::new()
@@ -144,6 +198,8 @@ impl AuditLogger {
             .map_err(AuditError::Open)?;
         let json_str = serde_json::to_string(&entry).map_err(AuditError::Serialize)?;
         writeln!(file, "{}", json_str).map_err(AuditError::Write)?;
+
+        *cache = Some(hash);
         Ok(())
     }
 
@@ -160,6 +216,29 @@ impl AuditLogger {
             }
         }
         entries
+    }
+
+    /// ตรวจสอบความถูกต้องของสายโซ่แฮชทั้งหมด (Hash Chain Validation)
+    /// คืนค่า Ok(true) หากข้อมูลไม่ถูกดัดแปลง หรือ Ok(false) หากประวัติถูกแก้ไข/ถูกแทรกแซง
+    pub fn validate_log(&self) -> Result<bool, AuditError> {
+        let entries = self.entries();
+        if entries.is_empty() {
+            return Ok(true);
+        }
+
+        let mut prev_hash = String::new();
+        for entry in &entries {
+            let Some(recorded_hash) = entry.hash.as_deref() else {
+                return Ok(false);
+            };
+            let computed = entry.compute_hash(&prev_hash);
+            if computed != recorded_hash {
+                return Ok(false);
+            }
+            prev_hash = recorded_hash.to_string();
+        }
+
+        Ok(true)
     }
 }
 
@@ -224,5 +303,34 @@ mod tests {
         assert_eq!(AuditEntry::allowed(1).action, "allowed");
         assert_eq!(AuditEntry::denied(1).action, "denied");
         assert_eq!(AuditEntry::revoked(1).action, "revoked");
+    }
+
+    #[test]
+    fn test_audit_hash_chain_validation() {
+        let path = test_log_path("validation");
+        let logger = AuditLogger::new(path.clone());
+
+        logger.record(AuditEntry::issued(10)).unwrap();
+        logger.record(AuditEntry::allowed(20)).unwrap();
+        logger.record(AuditEntry::denied(30)).unwrap();
+
+        // 1. ตรวจสอบว่าแฮชเชนปกติผ่านฉลุย
+        assert!(logger.validate_log().unwrap(), "normal log should be valid");
+
+        // 2. จำลองการแก้ไขไฟล์ (tampering) ในแถวที่สอง
+        let lines = std::fs::read_to_string(&path).unwrap();
+        let mut lines_vec: Vec<String> = lines.lines().map(|s| s.to_string()).collect();
+        // แก้ไข token_id ของบรรทัดที่สองจาก 20 เป็น 99
+        lines_vec[1] = lines_vec[1].replace("\"token_id\":20", "\"token_id\":99");
+        let new_content = lines_vec.join("\n") + "\n";
+        std::fs::write(&path, new_content).unwrap();
+
+        // 3. ตรวจสอบว่า validation จับได้ว่าโดนดัดแปลงข้อมูล
+        assert!(
+            !logger.validate_log().unwrap(),
+            "tampered log should fail validation"
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 }

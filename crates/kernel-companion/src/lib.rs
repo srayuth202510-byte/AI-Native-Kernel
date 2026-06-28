@@ -455,26 +455,8 @@ impl KernelCompanion {
                 }
             }));
 
-            let cancel_uds = tokio_util_cancel::CancellationToken::new();
-            let _ = uds::start_uds_server(
-                Arc::clone(&self.intent_bus),
-                Some(Arc::clone(&self.tcell)),
-                Some(Arc::clone(&self.lsm_engine)),
-                Some(Arc::clone(&self.agent_scheduler)),
-                Some(Arc::clone(&self.compute_scheduler)),
-                &self.config.kernel_companion.uds_socket_path,
-                cancel_uds,
-            )
-            .await;
-
-            let metrics_addr = self.config.kernel_companion.metrics_server_addr.clone();
-            let cancel_metrics = tokio_util_cancel::CancellationToken::new();
-            self.metrics_cancel = Some(cancel_metrics.clone());
-            self.metrics_task = Some(tokio::spawn(async move {
-                let _ = metrics_server::start_metrics_server(&metrics_addr, cancel_metrics).await;
-            }));
-
             // ── P2P Gossip Mesh Integration ──
+            let mut p2p_mgr_opt = None;
             if self.config.context_memory.p2p_enabled {
                 if let Ok(addr) = self
                     .config
@@ -518,7 +500,8 @@ impl KernelCompanion {
                         }
                     });
 
-                    self.p2p_mesh = Some(p2p_mgr);
+                    self.p2p_mesh = Some(Arc::clone(&p2p_mgr));
+                    p2p_mgr_opt = Some(p2p_mgr);
                     info!("P2P Mesh: initialized on addr {}", addr);
                 } else {
                     warn!(
@@ -527,6 +510,27 @@ impl KernelCompanion {
                     );
                 }
             }
+
+            let cancel_uds = tokio_util_cancel::CancellationToken::new();
+            let _ = uds::start_uds_server(
+                Arc::clone(&self.intent_bus),
+                Some(Arc::clone(&self.tcell)),
+                Some(Arc::clone(&self.lsm_engine)),
+                Some(Arc::clone(&self.agent_scheduler)),
+                Some(Arc::clone(&self.compute_scheduler)),
+                Some(Arc::clone(&self.context_memory)),
+                p2p_mgr_opt,
+                &self.config.kernel_companion.uds_socket_path,
+                cancel_uds,
+            )
+            .await;
+
+            let metrics_addr = self.config.kernel_companion.metrics_server_addr.clone();
+            let cancel_metrics = tokio_util_cancel::CancellationToken::new();
+            self.metrics_cancel = Some(cancel_metrics.clone());
+            self.metrics_task = Some(tokio::spawn(async move {
+                let _ = metrics_server::start_metrics_server(&metrics_addr, cancel_metrics).await;
+            }));
 
             self.shutdown_tx = Some(shutdown_tx);
         }

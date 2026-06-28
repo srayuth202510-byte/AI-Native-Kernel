@@ -3,6 +3,8 @@ use crate::tokio_util_cancel::CancellationToken;
 use agent_scheduler::AgentScheduler;
 use anyhow::Result;
 use compute_scheduler::ComputeScheduler;
+use context_memory::ContextMemoryManager;
+use context_memory::p2p_mesh::P2PMeshManager;
 use immune_system::TCellAgent;
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
@@ -13,12 +15,15 @@ use tracing::{debug, error, info};
 
 /// เริ่มต้น Unix Domain Socket Server สำหรับรับ Intent จากภายนอก
 /// และรองรับการตอบกลับข้อมูลสืบค้นหรือคำสั่งควบคุมความปลอดภัยของ CLI แบบสองทาง (Bidirectional)
+#[allow(clippy::too_many_arguments)]
 pub async fn start_uds_server(
     intent_bus: Arc<IntentBus>,
     tcell: Option<Arc<TCellAgent>>,
     lsm: Option<Arc<LsmPolicyEngine>>,
     agent_scheduler: Option<Arc<AgentScheduler>>,
     compute_scheduler: Option<Arc<ComputeScheduler>>,
+    context_memory: Option<Arc<ContextMemoryManager>>,
+    p2p_mesh: Option<Arc<P2PMeshManager>>,
     socket_path: &str,
     cancel: CancellationToken,
 ) -> Result<()> {
@@ -32,6 +37,8 @@ pub async fn start_uds_server(
     let lsm = lsm.clone();
     let agent_scheduler = agent_scheduler.clone();
     let compute_scheduler = compute_scheduler.clone();
+    let context_memory = context_memory.clone();
+    let p2p_mesh = p2p_mesh.clone();
 
     tokio::spawn(async move {
         loop {
@@ -50,6 +57,8 @@ pub async fn start_uds_server(
                             let lsm = lsm.clone();
                             let agent_scheduler = agent_scheduler.clone();
                             let compute_scheduler = compute_scheduler.clone();
+                            let context_memory = context_memory.clone();
+                            let p2p_mesh = p2p_mesh.clone();
 
                             tokio::spawn(async move {
                                 let (reader, mut writer) = socket.split();
@@ -102,6 +111,20 @@ pub async fn start_uds_server(
                                                             }
                                                         }
 
+                                                        let mut vram_allocated = 0;
+                                                        let mut vram_capacity = 0;
+                                                        let mut p2p_peers = 0;
+                                                        let mut p2p_enabled = false;
+
+                                                        if let Some(ref cm) = context_memory {
+                                                            vram_allocated = cm.vram_allocated();
+                                                            vram_capacity = cm.vram_capacity();
+                                                        }
+                                                        if let Some(ref pm) = p2p_mesh {
+                                                            p2p_enabled = true;
+                                                            p2p_peers = pm.get_alive_peers().await.len();
+                                                        }
+
                                                         let response = serde_json::json!({
                                                             "status": "online",
                                                             "running_agents": running_agents,
@@ -110,6 +133,10 @@ pub async fn start_uds_server(
                                                             "active_lsm_profile": active_lsm_profile,
                                                             "allowed_syscalls_count": allowed_syscalls_count,
                                                             "hardware_targets": hardware_targets,
+                                                            "vram_allocated": vram_allocated,
+                                                            "vram_capacity": vram_capacity,
+                                                            "p2p_peers": p2p_peers,
+                                                            "p2p_enabled": p2p_enabled,
                                                         });
                                                         let resp_json = format!("{}\n", response);
                                                         let _ = writer.write_all(resp_json.as_bytes()).await;
@@ -242,6 +269,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
             &socket_path,
             cancel.clone(),
         )
@@ -284,6 +313,8 @@ mod tests {
 
         start_uds_server(
             Arc::clone(&intent_bus),
+            None,
+            None,
             None,
             None,
             None,

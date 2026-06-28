@@ -291,6 +291,12 @@ impl ContextMemoryManager {
         self.vram_capacity_bytes
     }
 
+    /// คืนค่าขนาดพื้นที่ VRAM ที่ถูกใช้งานจริงในปัจจุบัน (ไบต์)
+    #[must_use]
+    pub fn vram_allocated(&self) -> usize {
+        self.vram.read().allocated_bytes()
+    }
+
     /// ลบข้อมูลบริบทที่หมดอายุ (> ttl) ออกจากทุก tiers (VRAM, Hot, Warm, Cold)
     /// คืนจำนวนข้อมูลที่ถูกลบ
     #[instrument(skip(self), fields(ttl_ms = ttl.as_millis() as u64))]
