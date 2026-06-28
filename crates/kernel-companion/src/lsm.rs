@@ -369,12 +369,12 @@ mod tests {
     }
 
     #[test]
-    fn execve_fork_socket_denied() {
-        // ทดสอบว่า syscall อันตราย เช่น execve, fork, socket ต้องถูกปฏิเสธ
+    fn execve_fork_denied_socket_allowed() {
+        // ทดสอบว่า execve/fork ถูกปฏิเสธ แต่ socket อนุญาต (network-aware agents)
         let engine = LsmPolicyEngine::new();
         assert_eq!(engine.decision_for_syscall("execve"), LsmDecision::Deny);
         assert_eq!(engine.decision_for_syscall("fork"), LsmDecision::Deny);
-        assert_eq!(engine.decision_for_syscall("socket"), LsmDecision::Deny);
+        assert_eq!(engine.decision_for_syscall("socket"), LsmDecision::Allow);
     }
 
     #[test]

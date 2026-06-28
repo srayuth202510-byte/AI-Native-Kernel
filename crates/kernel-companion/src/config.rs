@@ -132,6 +132,21 @@ impl Config {
         if let Ok(v) = std::env::var("ANK_LSM_PROFILE") {
             self.lsm.active_profile = v;
         }
+        if let Ok(v) = std::env::var("ANK_RATE_THRESHOLD") {
+            if let Ok(n) = v.parse() {
+                self.immune_system.rate_threshold = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_DENY_THRESHOLD") {
+            if let Ok(n) = v.parse() {
+                self.immune_system.deny_threshold = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_KILL_THRESHOLD") {
+            if let Ok(n) = v.parse() {
+                self.immune_system.kill_threshold = n;
+            }
+        }
         self
     }
 }
@@ -352,6 +367,12 @@ pub struct ImmuneSystemConfig {
     pub max_anomaly_score: u32,
     #[serde(default = "default_quarantine")]
     pub quarantine_duration_secs: u64,
+    #[serde(default = "default_rate_threshold")]
+    pub rate_threshold: u32,
+    #[serde(default = "default_deny_threshold")]
+    pub deny_threshold: u32,
+    #[serde(default = "default_kill_threshold")]
+    pub kill_threshold: u32,
 }
 
 impl Default for ImmuneSystemConfig {
@@ -362,6 +383,9 @@ impl Default for ImmuneSystemConfig {
             macrophage_gc_interval_ms: default_macrophage_interval(),
             max_anomaly_score: default_max_anomaly(),
             quarantine_duration_secs: default_quarantine(),
+            rate_threshold: default_rate_threshold(),
+            deny_threshold: default_deny_threshold(),
+            kill_threshold: default_kill_threshold(),
         }
     }
 }
@@ -380,6 +404,15 @@ fn default_max_anomaly() -> u32 {
 }
 fn default_quarantine() -> u64 {
     300
+}
+fn default_rate_threshold() -> u32 {
+    100
+}
+fn default_deny_threshold() -> u32 {
+    5
+}
+fn default_kill_threshold() -> u32 {
+    15
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -533,6 +566,17 @@ fn runtime_allowlist() -> &'static [&'static str] {
         "eventfd2",
         "ioctl",
         "fcntl",
+        "socket",
+        "connect",
+        "accept",
+        "accept4",
+        "bind",
+        "listen",
+        "shutdown",
+        "getsockname",
+        "getpeername",
+        "setsockopt",
+        "getsockopt",
     ]
 }
 
@@ -634,7 +678,10 @@ mod tests {
         assert!(allowed.contains("openat"));
         assert!(allowed.contains("poll"));
         assert!(allowed.contains("futex"));
-        assert!(!allowed.contains("socket"));
+        assert!(
+            allowed.contains("socket"),
+            "socket should be in runtime profile for network-aware agents"
+        );
     }
 
     #[test]

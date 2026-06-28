@@ -72,6 +72,8 @@ pub struct TCellAgent {
     rate_threshold: AtomicU64,
     /// จำนวน deny ติดต่อกันที่ถือว่าผิดปกติ
     deny_threshold: AtomicU32,
+    /// คะแนน anomaly ที่ถือว่าถึงขีด kill
+    kill_threshold: AtomicU32,
     /// รายการ PID ที่ถูก quarantine แล้ว
     quarantined: Arc<RwLock<HashMap<u32, Instant>>>,
 }
@@ -79,21 +81,32 @@ pub struct TCellAgent {
 impl TCellAgent {
     #[must_use]
     pub fn new(rate_threshold: u64, deny_threshold: u32) -> Self {
+        Self::with_kill_threshold(rate_threshold, deny_threshold, 15)
+    }
+
+    #[must_use]
+    pub fn with_kill_threshold(
+        rate_threshold: u64,
+        deny_threshold: u32,
+        kill_threshold: u32,
+    ) -> Self {
         Self {
             stats: Arc::new(RwLock::new(HashMap::new())),
             rate_threshold: AtomicU64::new(rate_threshold),
             deny_threshold: AtomicU32::new(deny_threshold),
+            kill_threshold: AtomicU32::new(kill_threshold),
             quarantined: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// อัปเดตขีดจำกัดความปลอดภัยของ T-Cell แบบ thread-safe
-    pub fn update_thresholds(&self, rate_threshold: u64, deny_threshold: u32) {
+    pub fn update_thresholds(&self, rate_threshold: u64, deny_threshold: u32, kill_threshold: u32) {
         self.rate_threshold.store(rate_threshold, Ordering::Relaxed);
         self.deny_threshold.store(deny_threshold, Ordering::Relaxed);
+        self.kill_threshold.store(kill_threshold, Ordering::Relaxed);
         debug!(
             rate_threshold,
-            deny_threshold, "T-Cell: thresholds updated dynamically"
+            deny_threshold, kill_threshold, "T-Cell: thresholds updated dynamically"
         );
     }
 
@@ -107,6 +120,7 @@ impl TCellAgent {
     ) -> ThreatDecision {
         let rate_limit = self.rate_threshold.load(Ordering::Relaxed);
         let deny_limit = self.deny_threshold.load(Ordering::Relaxed);
+        let kill_limit = self.kill_threshold.load(Ordering::Relaxed);
 
         let mut stats = self.stats.write().await;
         let entry = stats.entry(pid).or_default();
@@ -157,7 +171,7 @@ impl TCellAgent {
         // ตัดสินใจระดับภัยคุกคามโดยอ้างอิงจากเกณฑ์ (Hard limits) และ Anomaly Score
         if entry.deny_count >= deny_limit as u64
             || (rate_limit > 0 && entry.syscall_count >= rate_limit * 2)
-            || score >= 15.0
+            || score >= kill_limit as f64
         {
             warn!(
                 pid,
@@ -330,7 +344,7 @@ mod tests {
     #[tokio::test]
     async fn dynamic_threshold_update() {
         let t = make_tcell();
-        t.update_thresholds(10, 2);
+        t.update_thresholds(10, 2, 15);
         // rate threshold is now 10. 10 * 2 = 20 is critical limit.
         for _ in 0..20 {
             let _ = t.observe_syscall(1, "read", false).await;

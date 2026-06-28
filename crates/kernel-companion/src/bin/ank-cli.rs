@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
         println!("  ank-cli spawn-agent [payload]    Spawns a new agent");
         println!("  ank-cli status                  Gets system & immune stats");
         println!("  ank-cli list-quarantine         Lists currently quarantined process IDs");
-        println!("  ank-cli set-threshold <r> <d>   Sets T-Cell rate & deny thresholds");
+        println!("  ank-cli set-threshold <r> <d> [k] Sets T-Cell rate, deny & kill thresholds");
         println!("  ank-cli set-lsm-profile <name>  Switches active LSM profile");
         return Ok(());
     }
@@ -46,7 +46,9 @@ async fn main() -> Result<()> {
         "status" | "list-quarantine" => {}
         "set-threshold" => {
             if args.len() < 4 {
-                println!("Usage: ank-cli set-threshold <rate_threshold> <deny_threshold>");
+                println!(
+                    "Usage: ank-cli set-threshold <rate_threshold> <deny_threshold> [kill_threshold]"
+                );
                 return Ok(());
             }
             // เก็บค่า Threshold ที่จะตั้งค่าส่งต่อไปยัง TCellAgent ผ่าน metadata
@@ -56,6 +58,11 @@ async fn main() -> Result<()> {
             intent
                 .metadata
                 .insert("deny".to_string(), args[3].to_string());
+            if args.len() > 4 {
+                intent
+                    .metadata
+                    .insert("kill".to_string(), args[4].to_string());
+            }
         }
         "set-lsm-profile" => {
             if args.len() < 3 {

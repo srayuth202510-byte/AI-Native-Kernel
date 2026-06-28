@@ -112,7 +112,11 @@ impl KernelCompanion {
         let weights = compute_scheduler::weights::AdaptiveWeights::from_mode(compute_mode);
 
         let intent_bus_immune = Arc::clone(&intent_bus);
-        let tcell = Arc::new(TCellAgent::new(100, 5));
+        let tcell = Arc::new(TCellAgent::with_kill_threshold(
+            config.immune_system.rate_threshold as u64,
+            config.immune_system.deny_threshold,
+            config.immune_system.kill_threshold,
+        ));
         let bcell = Arc::new(BCellAgent::new(100));
         let macrophage = Arc::new(MacrophageAgent::new(
             intent_bus_immune,

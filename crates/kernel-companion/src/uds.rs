@@ -127,11 +127,12 @@ pub async fn start_uds_server(
                                                     } else if cmd == "set-threshold" {
                                                         let rate = intent.metadata.get("rate").and_then(|r| r.parse::<u64>().ok());
                                                         let deny = intent.metadata.get("deny").and_then(|d| d.parse::<u32>().ok());
+                                                        let kill = intent.metadata.get("kill").and_then(|k| k.parse::<u32>().ok());
 
                                                         let mut success = false;
                                                         if let (Some(r), Some(d)) = (rate, deny) {
                                                             if let Some(ref tc) = tcell {
-                                                                tc.update_thresholds(r, d);
+                                                                tc.update_thresholds(r, d, kill.unwrap_or(15));
                                                                 success = true;
                                                             }
                                                         }
