@@ -1,3 +1,5 @@
+#[cfg(feature = "rocksdb-warm")]
+use parking_lot::Mutex;
 #[cfg(not(feature = "rocksdb-warm"))]
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -79,7 +81,7 @@ pub struct WarmStore {
     /// พาธสำหรับจัดเก็บ RocksDB เพื่อใช้ในการลบไฟล์เมื่อ drop
     path: std::path::PathBuf,
     /// คิวติดตามลำดับข้อมูล FIFO สำหรับการ evict ข้อมูลเก่า
-    order: std::sync::Mutex<VecDeque<String>>,
+    order: Mutex<VecDeque<String>>,
     /// นับจำนวนรายการเพื่อประเมิน len() โดยไม่ต้อง scan ทั้ง DB
     count: std::sync::atomic::AtomicUsize,
 }
@@ -106,7 +108,7 @@ impl WarmStore {
         Self {
             db: Some(db),
             path,
-            order: std::sync::Mutex::new(VecDeque::new()),
+            order: Mutex::new(VecDeque::new()),
             count: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -117,7 +119,7 @@ impl WarmStore {
         let is_new = db.get(key.as_bytes()).map(|v| v.is_none()).unwrap_or(true);
         db.put(key.as_bytes(), &value).expect("RocksDB put ล้มเหลว");
         if is_new {
-            let mut order = self.order.lock().expect("order lock poisoned");
+            let mut order = self.order.lock();
             order.push_back(key);
             self.count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -146,7 +148,7 @@ impl WarmStore {
     /// ลบและส่งคืนข้อมูลเก่าที่สุดตามลำดับ FIFO เพื่อย้ายไปยัง Cold Store
     pub fn evict_oldest(&mut self) -> Option<(String, Vec<u8>)> {
         let key = {
-            let mut order = self.order.lock().expect("order lock poisoned");
+            let mut order = self.order.lock();
             order.pop_front()?
         };
         let db = self.db.as_ref().expect("RocksDB database is closed");
@@ -163,7 +165,7 @@ impl WarmStore {
         let db = self.db.as_ref().expect("RocksDB database is closed");
         let value = db.get(key.as_bytes()).ok().flatten()?;
         db.delete(key.as_bytes()).ok();
-        let mut order = self.order.lock().expect("order lock poisoned");
+        let mut order = self.order.lock();
         order.retain(|k| k != key);
         self.count
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);

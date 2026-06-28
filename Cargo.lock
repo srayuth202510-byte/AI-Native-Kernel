@@ -311,6 +311,7 @@ name = "capability-security"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "parking_lot",
  "prometheus",
  "serde",
  "serde_json",
@@ -490,6 +491,7 @@ dependencies = [
  "criterion",
  "futures",
  "ndarray",
+ "parking_lot",
  "qdrant-client",
  "rocksdb",
  "serde",
@@ -1388,6 +1390,7 @@ dependencies = [
  "crossterm",
  "immune-system",
  "intent-bus",
+ "parking_lot",
  "prometheus",
  "proptest",
  "ratatui",

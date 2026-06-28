@@ -2,6 +2,7 @@ use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task;
 use tracing::{debug, instrument};
 
 /// Macrophage Agent — หน่วยกวาดล้าง (Garbage Collector)
@@ -82,9 +83,11 @@ impl MacrophageAgent {
     /// ล้าง Context entries ที่หมดอายุออกจาก ContextMemory
     #[instrument(skip(self))]
     pub async fn sweep_context(&self) -> u64 {
-        let count = self
-            .context_memory
-            .clean_expired(Duration::from_secs(self.context_ttl_secs));
+        let context_memory = Arc::clone(&self.context_memory);
+        let ttl = Duration::from_secs(self.context_ttl_secs);
+        let count = task::spawn_blocking(move || context_memory.clean_expired(ttl))
+            .await
+            .unwrap_or(0);
         if count > 0 {
             debug!(count, "Macrophage: cleaned expired context entries");
         }

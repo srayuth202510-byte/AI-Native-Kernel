@@ -247,8 +247,6 @@ pub struct ContextMemoryConfig {
     pub hot_capacity: usize,
     #[serde(default = "default_warm_cap")]
     pub warm_capacity: usize,
-    #[serde(default = "default_rocksdb")]
-    pub enable_rocksdb: bool,
 }
 
 impl Default for ContextMemoryConfig {
@@ -256,7 +254,6 @@ impl Default for ContextMemoryConfig {
         Self {
             hot_capacity: default_hot_cap(),
             warm_capacity: default_warm_cap(),
-            enable_rocksdb: default_rocksdb(),
         }
     }
 }
@@ -266,9 +263,6 @@ fn default_hot_cap() -> usize {
 }
 fn default_warm_cap() -> usize {
     1024
-}
-fn default_rocksdb() -> bool {
-    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

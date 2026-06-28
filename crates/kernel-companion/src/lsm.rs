@@ -2,6 +2,7 @@ use crate::config::LsmConfig;
 use crate::ebpf::load_bpf_o;
 use crate::observability::kernel_metrics;
 use anyhow::Result;
+use parking_lot::RwLock;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
@@ -36,11 +37,11 @@ pub struct LsmPolicyEngine {
     /// ผลการตัดสินใจเริ่มต้นกรณีไม่ตรงกับเงื่อนไขใด ๆ (Fail-closed: DENY)
     default_decision: LsmDecision,
     /// profile ที่ active อยู่จาก config
-    active_profile: std::sync::RwLock<String>,
+    active_profile: RwLock<String>,
     /// profiles ที่ resolve แล้วจาก config
-    profiles: std::sync::RwLock<BTreeMap<String, HashSet<String>>>,
+    profiles: RwLock<BTreeMap<String, HashSet<String>>>,
     /// รายชื่อ syscall ที่ถูกบล็อกโดย Immune System antibodies (deny rules)
-    blocked_syscalls: std::sync::RwLock<std::collections::HashSet<String>>,
+    blocked_syscalls: RwLock<std::collections::HashSet<String>>,
 }
 
 impl LsmPolicyEngine {
@@ -65,35 +66,23 @@ impl LsmPolicyEngine {
             .collect::<BTreeMap<_, _>>();
         Self {
             default_decision: LsmDecision::Deny,
-            active_profile: std::sync::RwLock::new(config.active_profile_name().to_string()),
-            profiles: std::sync::RwLock::new(profiles),
-            blocked_syscalls: std::sync::RwLock::new(std::collections::HashSet::new()),
+            active_profile: RwLock::new(config.active_profile_name().to_string()),
+            profiles: RwLock::new(profiles),
+            blocked_syscalls: RwLock::new(std::collections::HashSet::new()),
         }
     }
 
     /// เพิ่ม syscall ใน Blocklist ตาม Antibody Rule จาก Immune System B-Cell Agent
     pub fn add_blocked_syscall(&self, syscall: impl Into<String>) {
         let syscall = syscall.into();
-        self.blocked_syscalls
-            .write()
-            .expect("blocked_syscalls lock poisoned")
-            .insert(syscall);
-        let blocked_count = self
-            .blocked_syscalls
-            .read()
-            .expect("blocked_syscalls lock poisoned")
-            .len();
+        self.blocked_syscalls.write().insert(syscall);
+        let blocked_count = self.blocked_syscalls.read().len();
         kernel_metrics().set_blocked_syscalls(blocked_count);
     }
 
     /// ดึงรายการ syscall ทั้งหมดที่ถูกบล็อคโดยแอนติบอดี
     pub fn get_blocked_syscalls(&self) -> Vec<String> {
-        self.blocked_syscalls
-            .read()
-            .expect("blocked_syscalls lock poisoned")
-            .iter()
-            .cloned()
-            .collect()
+        self.blocked_syscalls.read().iter().cloned().collect()
     }
 
     /// ดึง allowlist ที่ active อยู่ในรูปแบบ snapshot
@@ -102,7 +91,6 @@ impl LsmPolicyEngine {
         let active_profile = self.active_profile_name();
         self.profiles
             .read()
-            .expect("profiles lock poisoned")
             .get(active_profile.as_str())
             .cloned()
             .unwrap_or_default()
@@ -111,35 +99,24 @@ impl LsmPolicyEngine {
     /// คืนชื่อ profile ที่ active อยู่
     #[must_use]
     pub fn active_profile_name(&self) -> String {
-        self.active_profile
-            .read()
-            .expect("active_profile lock poisoned")
-            .clone()
+        self.active_profile.read().clone()
     }
 
     /// รายชื่อ profile ทั้งหมดที่มีอยู่ใน config
     #[must_use]
     pub fn available_profiles(&self) -> Vec<String> {
-        self.profiles
-            .read()
-            .expect("profiles lock poisoned")
-            .keys()
-            .cloned()
-            .collect()
+        self.profiles.read().keys().cloned().collect()
     }
 
     /// สลับ active profile แบบ runtime
     pub fn set_active_profile(&self, profile: &str) -> std::result::Result<(), LsmError> {
-        let profiles = self.profiles.read().expect("profiles lock poisoned");
+        let profiles = self.profiles.read();
         if !profiles.contains_key(profile) {
             return Err(LsmError::UnknownProfile(profile.to_string()));
         }
         drop(profiles);
 
-        *self
-            .active_profile
-            .write()
-            .expect("active_profile lock poisoned") = profile.to_string();
+        *self.active_profile.write() = profile.to_string();
         Ok(())
     }
 
@@ -152,12 +129,7 @@ impl LsmPolicyEngine {
     pub fn decision_for_syscall(&self, syscall: &str) -> LsmDecision {
         let metrics = kernel_metrics();
         // ขั้นแรก: ตรวจสอบ Blocklist จาก Immune System antibodies
-        if self
-            .blocked_syscalls
-            .read()
-            .expect("blocked_syscalls lock poisoned")
-            .contains(syscall)
-        {
+        if self.blocked_syscalls.read().contains(syscall) {
             metrics.record_lsm_decision("deny", "antibody");
             warn!(
                 decision = "deny (antibody)",

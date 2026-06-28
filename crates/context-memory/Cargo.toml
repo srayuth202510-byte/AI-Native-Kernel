@@ -16,6 +16,7 @@ rocksdb-warm = ["dep:rocksdb"]
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+parking_lot = { workspace = true }
 rocksdb = { workspace = true, optional = true }
 qdrant-client = "1.18.0"
 uuid = { workspace = true, features = ["v4", "v5"] }

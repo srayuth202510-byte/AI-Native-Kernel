@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, broadcast};
+use tokio::task;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, instrument};
 
@@ -344,7 +345,13 @@ impl AgentScheduler {
             }
         }
 
-        self.context_memory.put(context_key.clone(), value);
+        let context_memory = Arc::clone(&self.context_memory);
+        let blocking_key = context_key.clone();
+        task::spawn_blocking(move || {
+            context_memory.put(blocking_key, value);
+        })
+        .await
+        .map_err(|_| SchedulerError::ContextUpdateFailed)?;
 
         let mut agents = self.agents.write().await;
         let agent = agents
@@ -377,19 +384,25 @@ impl AgentScheduler {
             return Err(SchedulerError::CapabilityDenied);
         }
 
-        for capability in &token.capabilities {
-            let allowed = self
-                .capability_security
-                .authorize_token(&token, capability)
-                .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
-            if !allowed {
-                return Err(SchedulerError::CapabilityDenied);
+        let capability_security = Arc::clone(&self.capability_security);
+        let token_to_issue = token.clone();
+        let grant_result = task::spawn_blocking(move || {
+            for capability in &token_to_issue.capabilities {
+                let allowed = capability_security
+                    .authorize_token(&token_to_issue, capability)
+                    .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
+                if !allowed {
+                    return Err(SchedulerError::CapabilityDenied);
+                }
             }
-        }
 
-        self.capability_security
-            .issue_token(token.clone())
-            .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
+            capability_security
+                .issue_token(token_to_issue)
+                .map_err(|_| SchedulerError::CapabilitySecurityFailed)
+        })
+        .await
+        .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
+        grant_result?;
 
         let mut agents = self.agents.write().await;
         let agent = agents
@@ -500,7 +513,7 @@ impl AgentScheduler {
                                         agent_id,
                                         priority,
                                         time_slice,
-                                        &context_memory,
+                                        Arc::clone(&context_memory),
                                         &monitoring_tx,
                                     ).await;
 
@@ -548,7 +561,7 @@ impl AgentScheduler {
         agent_id: u64,
         priority: Priority,
         time_slice: Duration,
-        context_memory: &ContextMemoryManager,
+        context_memory: Arc<ContextMemoryManager>,
         monitoring_tx: &broadcast::Sender<AgentEvent>,
     ) {
         debug!(
@@ -563,14 +576,30 @@ impl AgentScheduler {
         tokio::time::sleep(time_slice).await;
 
         // Promote context to hot tier if agent has context
-        let agents_read = context_memory.tier_of(&format!("agent-{}", agent_id));
+        let context_key = format!("agent-{}", agent_id);
+        let context_memory_for_blocking = Arc::clone(&context_memory);
+        let agents_read = task::spawn_blocking({
+            let context_key = context_key.clone();
+            move || context_memory_for_blocking.tier_of(&context_key)
+        })
+        .await
+        .ok()
+        .flatten();
         if let Some(tier) = agents_read {
             if tier != "hot" {
-                let _ = context_memory.promote(&format!("agent-{}", agent_id));
-                let _ = monitoring_tx.send(AgentEvent::AgentContextSwitched(
-                    agent_id,
-                    format!("agent-{}", agent_id),
-                ));
+                let context_memory_for_blocking = Arc::clone(&context_memory);
+                let promoted = task::spawn_blocking({
+                    let context_key = context_key.clone();
+                    move || context_memory_for_blocking.promote(&context_key)
+                })
+                .await
+                .ok()
+                .and_then(|result| result.ok())
+                .is_some();
+                if promoted {
+                    let _ =
+                        monitoring_tx.send(AgentEvent::AgentContextSwitched(agent_id, context_key));
+                }
             }
         }
     }

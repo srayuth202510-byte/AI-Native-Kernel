@@ -10,8 +10,8 @@ pub use metrics::{SecurityMetrics, render_metrics};
 use crate::audit::{AuditEntry, AuditLogger};
 use crate::policy::{PolicyDecision, PolicyEngine};
 pub use crate::token::{CapabilityToken, Scope};
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::RwLock;
 use std::time::Instant;
 use thiserror::Error;
 
@@ -75,6 +75,26 @@ pub fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 }
 
 impl CapabilitySecurityManager {
+    fn tokens_read(&self) -> RwLockReadGuard<'_, HashMap<u64, CapabilityToken>> {
+        self.tokens.read()
+    }
+
+    fn tokens_write(&self) -> RwLockWriteGuard<'_, HashMap<u64, CapabilityToken>> {
+        self.tokens.write()
+    }
+
+    fn revoked_read(&self) -> RwLockReadGuard<'_, HashSet<u64>> {
+        self.revoked.read()
+    }
+
+    fn revoked_write(&self) -> RwLockWriteGuard<'_, HashSet<u64>> {
+        self.revoked.write()
+    }
+
+    fn issue_rate_write(&self) -> RwLockWriteGuard<'_, VecDeque<Instant>> {
+        self.issue_rate.write()
+    }
+
     /// สร้างตัวจัดการความปลอดภัย `CapabilitySecurityManager` ใหม่ด้วยการตั้งค่าเริ่มต้น
     #[must_use]
     pub fn new() -> Self {
@@ -120,7 +140,7 @@ impl CapabilitySecurityManager {
     /// Rate limit: ควบคุมโดย `max_issue_rate` (ค่าเริ่มต้น 100/วินาที) เพื่อป้องกัน audit log flooding
     pub fn issue_token(&self, token: CapabilityToken) -> Result<()> {
         let now = Instant::now();
-        let mut rate_queue = self.issue_rate.write().expect("issue rate lock poisoned");
+        let mut rate_queue = self.issue_rate_write();
         rate_queue.push_back(now);
         while rate_queue
             .front()
@@ -140,20 +160,14 @@ impl CapabilitySecurityManager {
             m.tokens_issued_total.inc();
             m.audit_entries_total.inc();
         }
-        self.tokens
-            .write()
-            .expect("capability tokens lock poisoned")
-            .insert(token.id, token);
+        self.tokens_write().insert(token.id, token);
         Ok(())
     }
 
     /// เพิกถอนโทเค็นความสามารถ (Capability Token) ตามรหัสโทเค็น
     /// โทเค็นที่ถูกเพิกถอนแล้วจะไม่สามารถใช้งานได้อีกต่อไป แม้จะยังไม่หมดอายุ
     pub fn revoke_token(&self, token_id: u64) -> Result<()> {
-        self.revoked
-            .write()
-            .expect("revoked set lock poisoned")
-            .insert(token_id);
+        self.revoked_write().insert(token_id);
         self.audit_logger
             .record(AuditEntry::revoked(token_id))
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
@@ -166,19 +180,13 @@ impl CapabilitySecurityManager {
     /// ตรวจสอบว่าโทเค็นถูกเพิกถอนแล้วหรือไม่
     #[must_use]
     pub fn is_revoked(&self, token_id: u64) -> bool {
-        self.revoked
-            .read()
-            .expect("revoked set lock poisoned")
-            .contains(&token_id)
+        self.revoked_read().contains(&token_id)
     }
 
     /// จำนวนโทเค็นที่ถูกเพิกถอนทั้งหมด
     #[must_use]
     pub fn revoked_count(&self) -> usize {
-        self.revoked
-            .read()
-            .expect("revoked set lock poisoned")
-            .len()
+        self.revoked_read().len()
     }
 
     /// ตรวจสอบสิทธิ์ของโทเค็นโดยอ้างอิงกับ Capability ที่ร้องขอ
@@ -215,7 +223,7 @@ impl CapabilitySecurityManager {
         scope: &Scope,
         capability: &str,
     ) -> Result<bool> {
-        let tokens = self.tokens.read().expect("capability tokens lock poisoned");
+        let tokens = self.tokens_read();
         let Some(token) = tokens.get(&token_id) else {
             if let Some(ref m) = self.metrics {
                 m.token_validation_failures_total.inc();
@@ -279,7 +287,7 @@ impl CapabilitySecurityManager {
         scope: &Scope,
         capability: &str,
     ) -> Result<PolicyDecision> {
-        let tokens = self.tokens.read().expect("capability tokens lock poisoned");
+        let tokens = self.tokens_read();
         let Some(token) = tokens.get(&token_id) else {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))

@@ -14,6 +14,7 @@ use crate::cold::ColdStore;
 use crate::hot::HotStore;
 use crate::warm::WarmStore;
 pub use fs::{SemanticFile, SemanticFileSystem};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -35,17 +36,17 @@ pub type Result<T> = core::result::Result<T, ContextError>;
 /// เพื่อประสิทธิภาพสูงสุดในการดึงข้อมูลและประหยัดการใช้ RAM
 pub struct ContextMemoryManager {
     /// พื้นที่เก็บข้อมูลด่วน (Hot Store) ใน RAM เข้าถึงได้เร็วที่สุด
-    hot: Arc<std::sync::RwLock<HotStore>>,
+    hot: Arc<RwLock<HotStore>>,
     /// พื้นที่เก็บข้อมูลชั่วคราว (Warm Store) บน RocksDB หรือ NVMe
-    warm: Arc<std::sync::RwLock<WarmStore>>,
+    warm: Arc<RwLock<WarmStore>>,
     /// พื้นที่เก็บข้อมูลถาวร (Cold Store) บนฮาร์ดดิสก์/ไฟล์สำรอง
-    cold: Arc<std::sync::RwLock<ColdStore>>,
+    cold: Arc<RwLock<ColdStore>>,
     /// ขนาดความจุสูงสุดของ Hot Store ก่อนที่จะถูกย้ายไปยัง Warm Store
     hot_capacity: usize,
     /// ขนาดความจุสูงสุดของ Warm Store ก่อนที่จะถูกย้ายไปยัง Cold Store
     warm_capacity: usize,
     /// บันทึกเวลาในการป้อนข้อมูล (สำหรับ GC / TTL-based clean)
-    timestamps: std::sync::RwLock<HashMap<String, Instant>>,
+    timestamps: RwLock<HashMap<String, Instant>>,
 }
 
 impl ContextMemoryManager {
@@ -60,12 +61,12 @@ impl ContextMemoryManager {
     #[must_use]
     pub fn with_capacity(hot_capacity: usize, warm_capacity: usize) -> Self {
         Self {
-            hot: Arc::new(std::sync::RwLock::new(HotStore::new())),
-            warm: Arc::new(std::sync::RwLock::new(WarmStore::new())),
-            cold: Arc::new(std::sync::RwLock::new(ColdStore::new())),
+            hot: Arc::new(RwLock::new(HotStore::new())),
+            warm: Arc::new(RwLock::new(WarmStore::new())),
+            cold: Arc::new(RwLock::new(ColdStore::new())),
             hot_capacity,
             warm_capacity,
-            timestamps: std::sync::RwLock::new(HashMap::new()),
+            timestamps: RwLock::new(HashMap::new()),
         }
     }
 
@@ -76,15 +77,12 @@ impl ContextMemoryManager {
     pub fn put(&self, key: impl Into<String> + AsRef<str>, value: Vec<u8>) {
         let key = key.into();
         debug!(tier = "hot", "บันทึกข้อมูลบริบทลง Hot Store");
-        let mut hot = self.hot.write().expect("hot memory lock poisoned");
+        let mut hot = self.hot.write();
         let is_new = !hot.contains_key(&key);
         if is_new {
             drop(hot);
-            self.timestamps
-                .write()
-                .expect("timestamps lock poisoned")
-                .insert(key.clone(), Instant::now());
-            hot = self.hot.write().expect("hot memory lock poisoned");
+            self.timestamps.write().insert(key.clone(), Instant::now());
+            hot = self.hot.write();
         }
         hot.insert(key, value);
 
@@ -95,7 +93,7 @@ impl ContextMemoryManager {
 
             if let Some((evicted_key, evicted_value)) = evicted {
                 warn!(tier = "warm", key = %evicted_key, "Hot Store เต็ม — ย้ายข้อมูลเก่าลง Warm Store");
-                let mut warm = self.warm.write().expect("warm memory lock poisoned");
+                let mut warm = self.warm.write();
                 warm.insert(evicted_key.clone(), evicted_value);
 
                 // ตรวจสอบขนาดเพื่อย้ายข้อมูล (Evict) ไปยัง Cold Store
@@ -105,10 +103,7 @@ impl ContextMemoryManager {
 
                     if let Some((spilled_key, spilled_value)) = spilled {
                         warn!(tier = "cold", key = %spilled_key, "Warm Store เต็ม — ย้ายข้อมูลเก่าลง Cold Store");
-                        self.cold
-                            .write()
-                            .expect("cold memory lock poisoned")
-                            .insert(spilled_key, spilled_value);
+                        self.cold.write().insert(spilled_key, spilled_value);
                     }
                 }
             }
@@ -124,29 +119,19 @@ impl ContextMemoryManager {
     #[instrument(skip(self), fields(key = %key))]
     pub fn get(&self, key: &str) -> Result<Vec<u8>> {
         // ค้นหาใน Hot Store (RAM)
-        if let Some(value) = self.hot.read().expect("hot memory lock poisoned").get(key) {
+        if let Some(value) = self.hot.read().get(key) {
             debug!(tier = "hot", "พบข้อมูลใน Hot Store");
             return Ok(value);
         }
 
         // ค้นหาใน Warm Store (RocksDB / NVMe)
-        if let Some(value) = self
-            .warm
-            .read()
-            .expect("warm memory lock poisoned")
-            .get(key)
-        {
+        if let Some(value) = self.warm.read().get(key) {
             debug!(tier = "warm", "พบข้อมูลใน Warm Store");
             return Ok(value);
         }
 
         // ค้นหาใน Cold Store (Disk File)
-        if let Some(value) = self
-            .cold
-            .read()
-            .expect("cold memory lock poisoned")
-            .get(key)
-        {
+        if let Some(value) = self.cold.read().get(key) {
             debug!(tier = "cold", "พบข้อมูลใน Cold Store");
             return Ok(value);
         }
@@ -166,25 +151,19 @@ impl ContextMemoryManager {
     #[instrument(skip(self), fields(key = %key))]
     pub fn promote(&self, key: &str) -> Result<()> {
         // ถ้าอยู่ใน Hot อยู่แล้ว — no-op
-        if self
-            .hot
-            .read()
-            .expect("hot lock poisoned")
-            .get(key)
-            .is_some()
-        {
+        if self.hot.read().get(key).is_some() {
             debug!(tier = "hot", "ข้อมูลอยู่ใน Hot อยู่แล้ว — no-op");
             return Ok(());
         }
         // ค้นหาและดึงออกจาก Warm
-        let warm_value = self.warm.write().expect("warm lock poisoned").remove(key);
+        let warm_value = self.warm.write().remove(key);
         if let Some(value) = warm_value {
             debug!(tier = "warm->hot", "ยกระดับข้อมูลจาก Warm ขึ้น Hot");
             self.put(key.to_string(), value);
             return Ok(());
         }
         // ค้นหาและดึงออกจาก Cold
-        let cold_value = self.cold.write().expect("cold lock poisoned").remove(key);
+        let cold_value = self.cold.write().remove(key);
         if let Some(value) = cold_value {
             debug!(tier = "cold->hot", "ยกระดับข้อมูลจาก Cold ขึ้น Hot");
             self.put(key.to_string(), value);
@@ -202,13 +181,10 @@ impl ContextMemoryManager {
     /// คืน `ContextError::NotFound` หากไม่พบ key ใน Hot Store
     #[instrument(skip(self), fields(key = %key))]
     pub fn demote(&self, key: &str) -> Result<()> {
-        let hot_value = self.hot.write().expect("hot lock poisoned").remove(key);
+        let hot_value = self.hot.write().remove(key);
         if let Some(value) = hot_value {
             debug!(tier = "hot->warm", "ลดระดับข้อมูลจาก Hot ลง Warm");
-            self.warm
-                .write()
-                .expect("warm lock poisoned")
-                .insert(key.to_string(), value);
+            self.warm.write().insert(key.to_string(), value);
             return Ok(());
         }
         warn!("demote ล้มเหลว — ไม่พบ key ใน Hot Store");
@@ -221,31 +197,13 @@ impl ContextMemoryManager {
     /// คืน `Some("hot")`, `Some("warm")`, `Some("cold")` หรือ `None`
     #[must_use]
     pub fn tier_of(&self, key: &str) -> Option<&'static str> {
-        if self
-            .hot
-            .read()
-            .expect("hot lock poisoned")
-            .get(key)
-            .is_some()
-        {
+        if self.hot.read().get(key).is_some() {
             return Some("hot");
         }
-        if self
-            .warm
-            .read()
-            .expect("warm lock poisoned")
-            .get(key)
-            .is_some()
-        {
+        if self.warm.read().get(key).is_some() {
             return Some("warm");
         }
-        if self
-            .cold
-            .read()
-            .expect("cold lock poisoned")
-            .get(key)
-            .is_some()
-        {
+        if self.cold.read().get(key).is_some() {
             return Some("cold");
         }
         None
@@ -256,7 +214,7 @@ impl ContextMemoryManager {
     #[instrument(skip(self), fields(ttl_ms = ttl.as_millis() as u64))]
     pub fn clean_expired(&self, ttl: std::time::Duration) -> u64 {
         let now = Instant::now();
-        let timestamps = self.timestamps.read().expect("timestamps lock poisoned");
+        let timestamps = self.timestamps.read();
         let expired_keys: Vec<String> = timestamps
             .iter()
             .filter(|(_, ts)| now.duration_since(**ts) > ttl)
@@ -269,12 +227,12 @@ impl ContextMemoryManager {
             return 0;
         }
 
-        let mut ts = self.timestamps.write().expect("timestamps lock poisoned");
+        let mut ts = self.timestamps.write();
         for key in &expired_keys {
             ts.remove(key);
-            self.hot.write().expect("hot lock poisoned").remove(key);
-            self.warm.write().expect("warm lock poisoned").remove(key);
-            self.cold.write().expect("cold lock poisoned").remove(key);
+            self.hot.write().remove(key);
+            self.warm.write().remove(key);
+            self.cold.write().remove(key);
         }
 
         debug!(count, "ContextMemory: cleaned expired entries");

@@ -29,7 +29,7 @@ Linux Kernel (eBPF/LSM Hooks via Aya)
 ### คำอธิบายโมดูล:
 1. **[kernel-companion](crates/kernel-companion/)**: ตัวประสานงานหลัก (Composition Root) โหลด LSM eBPF hooks และเปิด Unix Domain Socket รับ Intent จากภายนอก
 2. **[agent-scheduler](crates/agent-scheduler/)**: ควบคุมวงจรชีวิตของ Agent (Agent Lifecycle) และคอยดูแลความผิดพลาดด้วย Supervisor
-3. **[context-memory](crates/context-memory/)**: ระบบจัดการหน่วยความจำบริบทแบบลำดับชั้น (Hot (RAM) / Warm (RocksDB) / Cold (Disk))
+3. **[context-memory](crates/context-memory/)**: ระบบจัดการหน่วยความจำบริบทแบบลำดับชั้น (Hot (RAM) / Warm (in-memory by default, RocksDB via feature flag) / Cold (Disk))
 4. **[capability-security](crates/capability-security/)**: ตรวจสอบและบริหารสิทธิ์ความปลอดภัยแบบ Zero-Trust (Default = DENY) พร้อมเขียนรายงานแบบลบไม่ได้ (WORM Audit Log)
 5. **[compute-scheduler](crates/compute-scheduler/)**: จัดสรรอุปกรณ์ประมวลผล (Placement) ตาม Latency, Power, และ Cost
 6. **[intent-bus](crates/intent-bus/)**: บัสรับส่งข่าวสารเหตุการณ์และคำสั่งแบบ asynchronous
@@ -78,6 +78,9 @@ ank-cli set-threshold <rate_limit> <deny_limit>
 # คอมไพล์โปรเจคแบบ Release
 rtk cargo build --release
 
+# เปิดใช้ Warm tier แบบ RocksDB (compile-time feature)
+rtk cargo build --release --features context-memory/rocksdb-warm
+
 # รันชุดการทดสอบทั้งหมดของระบบ (Unit + Integration Tests)
 rtk cargo test
 
@@ -87,6 +90,9 @@ rtk cargo clippy --all-targets --all-features -- -D warnings
 # จัดระเบียบฟอร์แมตโค้ดในทั้งโครงการ
 rtk cargo fmt
 ```
+
+หมายเหตุ: backend ของ Warm tier ไม่ได้สลับผ่าน `config/default.toml` ตอน runtime
+แต่เลือกตอน build ด้วย feature `context-memory/rocksdb-warm`
 
 ## 5. ตรวจความพร้อมสำหรับ Real eBPF/LSM
 
