@@ -23,6 +23,7 @@ pub mod config;
 pub mod ebpf;
 pub mod lsm;
 pub mod metrics_server;
+pub mod nlp;
 pub mod observability;
 pub mod uds;
 
@@ -202,6 +203,7 @@ impl KernelCompanion {
             let (shutdown_tx, mut routing_shutdown_rx) = watch::channel(false);
             let supervisor_shutdown_rx = shutdown_tx.subscribe();
 
+            let intent_bus_for_routing = Arc::clone(&self.intent_bus);
             // รัน Task สำหรับดักฟัง Intent Bus และส่งต่อไปยัง Agent Scheduler แบบ Async
             self.routing_task = Some(tokio::spawn(async move {
                 loop {
@@ -209,6 +211,11 @@ impl KernelCompanion {
                         intent = intent_subscriber.receive() => {
                             match intent {
                                 Some(intent) => {
+                                    if intent.intent_type == IntentType::NaturalLanguage {
+                                        if let Some(cmd_intent) = nlp::parse_natural_language_intent(&intent) {
+                                            let _ = intent_bus_for_routing.publish(cmd_intent).await;
+                                        }
+                                    }
                                     let _ = scheduler.route_intent(intent).await;
                                 }
                                 None => break,

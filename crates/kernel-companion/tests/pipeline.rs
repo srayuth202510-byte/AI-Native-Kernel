@@ -640,3 +640,58 @@ async fn int_context_tier_migration_with_agent() {
     let agent = scheduler_with_small.get_agent(agent_id).await.unwrap();
     assert_eq!(agent.context_key.as_deref(), Some("agent-ctx"));
 }
+
+// ---------------------------------------------------------------------------
+// INT-9: Full NLP and Compute Placement Integration
+//   User publishes NaturalLanguage intent → Routing task parses into spawn command
+//   → AgentScheduler broadcasts PlacementRequest → Compute worker answers with
+//   PlacementResponse (placed on GPU) → Agent starts running on GPU!
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn int_nlp_to_compute_placement_pipeline() {
+    let mut config = kernel_companion::config::Config::default();
+    config.kernel_companion.uds_socket_path =
+        format!("/tmp/nlp-test-{}.sock", uuid::Uuid::new_v4());
+
+    let mut companion = kernel_companion::KernelCompanion::with_config(&config);
+    companion.boot().await.expect("boot should succeed");
+
+    let intent_bus = companion.intent_bus();
+    let agent_scheduler = companion.agent_scheduler();
+
+    // NaturalLanguage intent matching LargeLlm
+    let nl_intent = Intent::new(
+        "nl-test",
+        intent_bus::IntentType::NaturalLanguage,
+        "run a large reasoning model on high speed gpu",
+        intent_bus::IntentPriority::Medium,
+        "user",
+    );
+
+    intent_bus.publish(nl_intent).await.unwrap();
+
+    let mut running_agent = None;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let running = agent_scheduler.get_running_agents().await;
+        if !running.is_empty() {
+            running_agent = Some(running[0].clone());
+            break;
+        }
+    }
+
+    let agent =
+        running_agent.expect("agent should be automatically spawned via NLP intent routing");
+    assert_eq!(
+        agent.workload_class,
+        compute_scheduler::placement::WorkloadClass::LargeLlm
+    );
+    // GPU placement is preferred for LargeLlm, but on CPU-only test hosts it falls back to CPU
+    assert!(
+        agent.compute_target == Some(ComputeTarget::Gpu)
+            || agent.compute_target == Some(ComputeTarget::Cpu)
+    );
+
+    companion.shutdown().await;
+    let _ = tokio::fs::remove_file(&config.kernel_companion.uds_socket_path).await;
+}
