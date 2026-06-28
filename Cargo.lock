@@ -488,9 +488,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
+ "futures",
  "ndarray",
  "qdrant-client",
  "rocksdb",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tonic",

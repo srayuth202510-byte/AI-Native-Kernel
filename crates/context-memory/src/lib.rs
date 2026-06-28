@@ -6,6 +6,7 @@
 pub mod cold;
 pub mod fs;
 pub mod hot;
+pub mod p2p_mesh;
 pub mod semantic;
 pub mod warm;
 

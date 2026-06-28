@@ -21,6 +21,9 @@ qdrant-client = "1.18.0"
 uuid = { workspace = true, features = ["v4", "v5"] }
 ndarray = "0.17.2"
 tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
