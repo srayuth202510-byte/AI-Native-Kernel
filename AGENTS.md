@@ -202,3 +202,4 @@ Key targets:
 - [ ] Structured logging with PII sanitized
 - [ ] Policy Engine fails closed (DENY) on error
 - [ ] Audit log entry written for every security decision (ALLOW/DENY)
+*********
