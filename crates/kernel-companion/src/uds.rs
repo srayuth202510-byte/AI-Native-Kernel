@@ -1,17 +1,22 @@
 use crate::lsm::LsmPolicyEngine;
 use crate::tokio_util_cancel::CancellationToken;
 use agent_scheduler::AgentScheduler;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use capability_security::CapabilitySecurityManager;
 use compute_scheduler::ComputeScheduler;
 use context_memory::ContextMemoryManager;
 use context_memory::p2p_mesh::P2PMeshManager;
 use immune_system::TCellAgent;
 use intent_bus::{Intent, IntentBus, IntentType};
+use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
+use nix::unistd::{Gid, Uid};
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::task;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// เริ่มต้น Unix Domain Socket Server สำหรับรับ Intent จากภายนอก
 /// และรองรับการตอบกลับข้อมูลสืบค้นหรือคำสั่งควบคุมความปลอดภัยของ CLI แบบสองทาง (Bidirectional)
@@ -26,12 +31,33 @@ pub async fn start_uds_server(
     p2p_mesh: Option<Arc<P2PMeshManager>>,
     socket_path: &str,
     cancel: CancellationToken,
+    auth_manager: Option<Arc<CapabilitySecurityManager>>,
 ) -> Result<()> {
     // ลบไฟล์ซ็อกเก็ตเก่าถ้ามี
     let _ = tokio::fs::remove_file(socket_path).await;
 
+    // กำหนดสิทธิ์การเข้าถึงซ็อกเก็ตอย่างเข้มงวด
     let listener = UnixListener::bind(socket_path)?;
     info!("UDS Server listening on {}", socket_path);
+
+    // กำหนดสิทธิ์ only owner:reader, owner:writer
+    let metadata = Path::new(socket_path)
+        .metadata()
+        .with_context(|| format!("Failed to get metadata for socket {}", socket_path))?;
+    let file_permissions = metadata.permissions();
+    let mode = file_permissions.mode();
+    if mode != 0o600 {
+        warn!(
+            "Socket file {} has permissions {} (expected 0o600) - hardening in progress",
+            mode, socket_path
+        );
+        #[cfg(unix)]
+        {
+            let mut new_perms = file_permissions;
+            new_perms.set_mode(0o600);
+            tokio::fs::set_permissions(socket_path, new_perms).await?;
+        }
+    }
 
     let tcell = tcell.clone();
     let lsm = lsm.clone();
@@ -51,14 +77,30 @@ pub async fn start_uds_server(
                 }
                 accept_res = listener.accept() => {
                     match accept_res {
-                        Ok((mut socket, _addr)) => {
-                            let bus = Arc::clone(&intent_bus);
-                            let tcell = tcell.clone();
-                            let lsm = lsm.clone();
-                            let agent_scheduler = agent_scheduler.clone();
-                            let compute_scheduler = compute_scheduler.clone();
-                            let context_memory = context_memory.clone();
-                            let p2p_mesh = p2p_mesh.clone();
+                        Ok((mut socket, addr)) => {
+                            let authenticated = match auth_manager.as_ref() {
+                                Some(_) => match check_socket_permissions(&mut socket).await {
+                                    Ok(true) => true,
+                                    Ok(false) => {
+                                        warn!("Authentication failed for UDS connection from {:#?} - dropping", addr);
+                                        false
+                                    }
+                                    Err(e) => {
+                                        error!("Peer credential check failed for UDS connection from {:#?}: {}", addr, e);
+                                        false
+                                    }
+                                },
+                                None => true,
+                            };
+
+                            if authenticated {
+                                let bus = Arc::clone(&intent_bus);
+                                let tcell = tcell.clone();
+                                let lsm = lsm.clone();
+                                let agent_scheduler = agent_scheduler.clone();
+                                let compute_scheduler = compute_scheduler.clone();
+                                let context_memory = context_memory.clone();
+                                let p2p_mesh = p2p_mesh.clone();
 
                             tokio::spawn(async move {
                                 let (reader, mut writer) = socket.split();
@@ -221,7 +263,7 @@ pub async fn start_uds_server(
                                                     }
                                                 }
 
-                                                // สำหรับคำสั่งธรรมดาทั่วไป ให้ส่งเข้าสู่บัส Intent เพื่อโปรเซสตามปกติ
+                                                // สำหรับ Intent ทั่วไป ให้ส่งเข้าสู่บัส Intent เพื่อโปรเซสตามปกติ (อนุญาตได้)
                                                 if let Err(e) = bus.publish(intent).await {
                                                     error!("Failed to publish UDS intent: {}", e);
                                                 }
@@ -236,6 +278,7 @@ pub async fn start_uds_server(
                                     }
                                 }
                             });
+                        } // if authenticated
                         }
                         Err(e) => {
                             error!("UDS accept error: {}", e);
@@ -247,6 +290,29 @@ pub async fn start_uds_server(
     });
 
     Ok(())
+}
+
+async fn check_socket_permissions(socket: &mut tokio::net::UnixStream) -> Result<bool> {
+    let creds =
+        getsockopt(socket, PeerCredentials).with_context(|| "Failed to get peer credentials")?;
+
+    let uid = Uid::from_raw(creds.uid());
+    let gid = Gid::from_raw(creds.gid());
+
+    // ตรวจสอบว่าผู้ใช้ที่ถูกเชื่อมต่อคือ root (UID 0) - การควบคุมความปลอดภัยหลัก
+    if !uid.is_root() {
+        warn!(
+            "Non-root user attempting UDS authentication: uid={}, gid={}",
+            uid, gid
+        );
+        return Ok(false);
+    }
+
+    // ไม่ต้องตรวจสอบ group ในที่นี้แล้ว เนื่องจาก root สามารถทำได้ทุกอย่าง
+    // ในการใช้งานจริงควรมีการตรวจสอบสิทธิ์ของ group ด้วย
+
+    info!("UDS authentication succeeded for uid={}, gid={}", uid, gid);
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -273,6 +339,7 @@ mod tests {
             None,
             &socket_path,
             cancel.clone(),
+            None,
         )
         .await
         .expect("start_uds_server");
@@ -321,6 +388,7 @@ mod tests {
             None,
             &socket_path,
             cancel.clone(),
+            None,
         )
         .await
         .expect("Failed to start UDS server");

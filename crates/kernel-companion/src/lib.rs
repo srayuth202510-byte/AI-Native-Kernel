@@ -524,6 +524,7 @@ impl KernelCompanion {
                 p2p_mgr_opt,
                 &self.config.kernel_companion.uds_socket_path,
                 cancel_uds,
+                Some(Arc::clone(&self.capability_security)),
             )
             .await;
 
