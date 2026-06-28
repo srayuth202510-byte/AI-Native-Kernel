@@ -70,6 +70,9 @@ pub struct RecordFetchResponse {
     pub owner_node: String,
 }
 
+type PendingFetchSender = oneshot::Sender<Option<Vec<u8>>>;
+type PendingFetchMap = Arc<RwLock<HashMap<String, PendingFetchSender>>>;
+
 pub struct P2PMeshManager {
     pub local_node: NodeInfo,
     pub known_nodes: Arc<RwLock<HashMap<String, NodeInfo>>>,
@@ -78,7 +81,7 @@ pub struct P2PMeshManager {
     pub message_rx: Option<mpsc::Receiver<P2PMessage>>,
     peers: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>,
     records: Arc<RwLock<HashMap<String, RecordSyncPayload>>>,
-    pending_fetches: Arc<RwLock<HashMap<String, oneshot::Sender<Option<Vec<u8>>>>>>,
+    pending_fetches: PendingFetchMap,
 }
 
 fn is_alive(node: &NodeInfo) -> bool {
@@ -312,7 +315,7 @@ struct SharedState {
     known_nodes: Arc<RwLock<HashMap<String, NodeInfo>>>,
     peers: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>,
     records: Arc<RwLock<HashMap<String, RecordSyncPayload>>>,
-    pending_fetches: Arc<RwLock<HashMap<String, oneshot::Sender<Option<Vec<u8>>>>>>,
+    pending_fetches: PendingFetchMap,
     local_id: String,
     local_addr: SocketAddr,
 }
