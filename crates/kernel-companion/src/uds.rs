@@ -331,7 +331,7 @@ mod tests {
         let mut client = UnixStream::connect(&socket_path).await.unwrap();
 
         let resp = send_command(&mut client, "status", HashMap::new()).await;
-        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
         assert_eq!(parsed["status"], "online");
         assert_eq!(parsed["running_agents"], 0);
         assert_eq!(parsed["blocked_syscalls"], serde_json::json!([]));
@@ -348,7 +348,7 @@ mod tests {
         let mut client = UnixStream::connect(&socket_path).await.unwrap();
 
         let resp = send_command(&mut client, "list-quarantine", HashMap::new()).await;
-        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
         assert_eq!(parsed["quarantined_pids"], serde_json::json!([]));
 
         cancel.cancel();
@@ -365,7 +365,7 @@ mod tests {
         meta.insert("rate".to_string(), "10".to_string());
         meta.insert("deny".to_string(), "5".to_string());
         let resp = send_command(&mut client, "set-threshold", meta).await;
-        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
         // No TCell → success should be false
         assert_eq!(parsed["success"], false);
         assert_eq!(
@@ -386,7 +386,7 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert("profile".to_string(), "strict".to_string());
         let resp = send_command(&mut client, "set-lsm-profile", meta).await;
-        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
         assert_eq!(parsed["success"], false);
         assert_eq!(parsed["message"], "LSM engine unavailable");
 
@@ -465,7 +465,7 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert("deny".to_string(), "5".to_string());
         let resp = send_command(&mut client, "set-threshold", meta).await;
-        let parsed: serde_json::Value = serde_json::from_str(&resp.trim()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
         assert_eq!(parsed["success"], false);
 
         cancel.cancel();
