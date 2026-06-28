@@ -11,6 +11,7 @@ use capability_security::audit::{AuditEntry, AuditLogger};
 use compute_scheduler::placement::{PlacementPolicy, WorkloadClass};
 use compute_scheduler::{ComputeProfile, ComputeScheduler, ComputeTarget};
 use context_memory::ContextMemoryManager;
+use context_memory::p2p_mesh::P2PMeshManager;
 use immune_system::{BCellAgent, MacrophageAgent, TCellAgent, ThreatDecision};
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::sync::Arc;
@@ -74,6 +75,12 @@ pub struct KernelCompanion {
     metrics_cancel: Option<tokio_util_cancel::CancellationToken>,
     /// handle ของ compute scheduler routing task
     compute_task: Option<JoinHandle<()>>,
+    /// P2P Gossip Mesh manager
+    p2p_mesh: Option<Arc<P2PMeshManager>>,
+    /// handle ของ P2P mesh listener task
+    p2p_listener_task: Option<JoinHandle<()>>,
+    /// handle ของ P2P gossip sync loop task
+    p2p_gossip_task: Option<JoinHandle<()>>,
 }
 
 impl KernelCompanion {
@@ -151,6 +158,9 @@ impl KernelCompanion {
             metrics_task: None,
             metrics_cancel: None,
             compute_task: None,
+            p2p_mesh: None,
+            p2p_listener_task: None,
+            p2p_gossip_task: None,
         }
     }
 
@@ -164,6 +174,12 @@ impl KernelCompanion {
     #[must_use]
     pub fn agent_scheduler(&self) -> Arc<AgentScheduler> {
         Arc::clone(&self.agent_scheduler)
+    }
+
+    /// ดึงการอ้างอิงไปยัง P2P Gossip Mesh manager
+    #[must_use]
+    pub fn p2p_mesh(&self) -> Option<Arc<P2PMeshManager>> {
+        self.p2p_mesh.clone()
     }
 
     /// ดึงการอ้างอิงไปยัง Compute Scheduler
@@ -458,6 +474,60 @@ impl KernelCompanion {
                 let _ = metrics_server::start_metrics_server(&metrics_addr, cancel_metrics).await;
             }));
 
+            // ── P2P Gossip Mesh Integration ──
+            if self.config.context_memory.p2p_enabled {
+                if let Ok(addr) = self
+                    .config
+                    .context_memory
+                    .p2p_listen_addr
+                    .parse::<std::net::SocketAddr>()
+                {
+                    let p2p_mgr = Arc::new(P2PMeshManager::new(addr));
+                    let p2p_listener_mgr = Arc::clone(&p2p_mgr);
+                    let p2p_gossip_mgr = Arc::clone(&p2p_mgr);
+
+                    self.p2p_listener_task = Some(tokio::spawn(async move {
+                        if let Err(e) = p2p_listener_mgr.start_listener().await {
+                            warn!("P2P Mesh: listener failed: {}", e);
+                        }
+                    }));
+
+                    self.p2p_gossip_task = Some(tokio::spawn(async move {
+                        p2p_gossip_mgr.start_gossip_loop().await;
+                    }));
+
+                    let p2p_bootstrap_mgr = Arc::clone(&p2p_mgr);
+                    let bootstrap_nodes = self.config.context_memory.p2p_bootstrap_nodes.clone();
+                    tokio::spawn(async move {
+                        for node in bootstrap_nodes {
+                            if let Ok(peer_addr) = node.parse::<std::net::SocketAddr>() {
+                                if let Err(e) =
+                                    p2p_bootstrap_mgr.clone().connect_to_peer(peer_addr).await
+                                {
+                                    warn!(
+                                        "P2P Bootstrap: failed to connect to peer {}: {}",
+                                        peer_addr, e
+                                    );
+                                } else {
+                                    info!(
+                                        "P2P Bootstrap: successfully connected to peer {}",
+                                        peer_addr
+                                    );
+                                }
+                            }
+                        }
+                    });
+
+                    self.p2p_mesh = Some(p2p_mgr);
+                    info!("P2P Mesh: initialized on addr {}", addr);
+                } else {
+                    warn!(
+                        "P2P Mesh: invalid listen addr {}",
+                        self.config.context_memory.p2p_listen_addr
+                    );
+                }
+            }
+
             self.shutdown_tx = Some(shutdown_tx);
         }
 
@@ -516,6 +586,14 @@ impl KernelCompanion {
             let _ = task.await;
         }
         if let Some(task) = self.compute_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.p2p_listener_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        if let Some(task) = self.p2p_gossip_task.take() {
+            task.abort();
             let _ = task.await;
         }
         if let Some(task) = self.tracer_task.take() {

@@ -695,3 +695,65 @@ async fn int_nlp_to_compute_placement_pipeline() {
     companion.shutdown().await;
     let _ = tokio::fs::remove_file(&config.kernel_companion.uds_socket_path).await;
 }
+
+// ---------------------------------------------------------------------------
+// INT-10: P2P Context Mesh integration test
+//   Boot two companion nodes A and B with P2P enabled.
+//   Verify they connect, handshake, and discover each other's NodeInfo.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn int_p2p_mesh_discovery_pipeline() {
+    let mut config_a = kernel_companion::config::Config::default();
+    config_a.kernel_companion.uds_socket_path =
+        format!("/tmp/p2p-test-a-{}.sock", uuid::Uuid::new_v4());
+    config_a.context_memory.p2p_enabled = true;
+    config_a.context_memory.p2p_listen_addr = "127.0.0.1:29091".to_string();
+
+    let mut config_b = kernel_companion::config::Config::default();
+    config_b.kernel_companion.uds_socket_path =
+        format!("/tmp/p2p-test-b-{}.sock", uuid::Uuid::new_v4());
+    config_b.context_memory.p2p_enabled = true;
+    config_b.context_memory.p2p_listen_addr = "127.0.0.1:29092".to_string();
+    config_b.context_memory.p2p_bootstrap_nodes = vec!["127.0.0.1:29091".to_string()];
+
+    // Boot Node A
+    let mut companion_a = kernel_companion::KernelCompanion::with_config(&config_a);
+    companion_a.boot().await.expect("A boot should succeed");
+
+    // Boot Node B
+    let mut companion_b = kernel_companion::KernelCompanion::with_config(&config_b);
+    companion_b.boot().await.expect("B boot should succeed");
+
+    let mesh_a = companion_a
+        .p2p_mesh()
+        .expect("A should have active mesh manager");
+    let mesh_b = companion_b
+        .p2p_mesh()
+        .expect("B should have active mesh manager");
+
+    // Wait a brief moment for handshake and bootstrap connection to complete
+    let mut discovered = false;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let peers_a = mesh_a.get_alive_peers().await;
+        let peers_b = mesh_b.get_alive_peers().await;
+        if !peers_a.is_empty() && !peers_b.is_empty() {
+            discovered = true;
+            break;
+        }
+    }
+
+    assert!(
+        discovered,
+        "Node A and Node B should have discovered each other via bootstrap connection"
+    );
+
+    let peers_a = mesh_a.get_alive_peers().await;
+    assert_eq!(peers_a[0].id, mesh_b.local_node.id);
+
+    companion_a.shutdown().await;
+    companion_b.shutdown().await;
+
+    let _ = tokio::fs::remove_file(&config_a.kernel_companion.uds_socket_path).await;
+    let _ = tokio::fs::remove_file(&config_b.kernel_companion.uds_socket_path).await;
+}

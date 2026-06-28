@@ -113,6 +113,14 @@ impl Config {
                 self.context_memory.warm_capacity = n;
             }
         }
+        if let Ok(v) = std::env::var("ANK_P2P_ENABLED") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.context_memory.p2p_enabled = b;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_P2P_LISTEN_ADDR") {
+            self.context_memory.p2p_listen_addr = v;
+        }
         if let Ok(v) = std::env::var("ANK_AUDIT_LOG_PATH") {
             self.capability_security.audit_log_path = v;
         }
@@ -247,6 +255,12 @@ pub struct ContextMemoryConfig {
     pub hot_capacity: usize,
     #[serde(default = "default_warm_cap")]
     pub warm_capacity: usize,
+    #[serde(default = "default_p2p_enabled")]
+    pub p2p_enabled: bool,
+    #[serde(default = "default_p2p_listen_addr")]
+    pub p2p_listen_addr: String,
+    #[serde(default = "default_p2p_bootstrap")]
+    pub p2p_bootstrap_nodes: Vec<String>,
 }
 
 impl Default for ContextMemoryConfig {
@@ -254,6 +268,9 @@ impl Default for ContextMemoryConfig {
         Self {
             hot_capacity: default_hot_cap(),
             warm_capacity: default_warm_cap(),
+            p2p_enabled: default_p2p_enabled(),
+            p2p_listen_addr: default_p2p_listen_addr(),
+            p2p_bootstrap_nodes: default_p2p_bootstrap(),
         }
     }
 }
@@ -263,6 +280,15 @@ fn default_hot_cap() -> usize {
 }
 fn default_warm_cap() -> usize {
     1024
+}
+fn default_p2p_enabled() -> bool {
+    false
+}
+fn default_p2p_listen_addr() -> String {
+    "127.0.0.1:9091".to_string()
+}
+fn default_p2p_bootstrap() -> Vec<String> {
+    Vec::new()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -23,6 +23,9 @@ next_agent_id_start = 1
 [context_memory]
 hot_capacity = 256
 warm_capacity = 1024
+p2p_enabled = false
+p2p_listen_addr = "127.0.0.1:9091"
+p2p_bootstrap_nodes = []
 
 [compute_scheduler]
 default_mode = "throughput"
