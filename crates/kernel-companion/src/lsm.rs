@@ -250,6 +250,11 @@ impl LsmAttachment {
     pub fn allows_pid(&self, pid: u32) -> bool {
         self.allowed_pid_cache.contains(&pid)
     }
+
+    #[must_use]
+    pub fn allowed_pids(&self) -> HashSet<u32> {
+        self.allowed_pid_cache.clone()
+    }
 }
 
 impl Default for LsmAttachment {

@@ -55,7 +55,7 @@ pub struct KernelCompanion {
     /// การตั้งค่าที่ใช้ขณะรัน (kept for reference)
     config: Config,
     /// สถานะการเชื่อมต่อกับ LSM Hook ในระบบ Linux Kernel
-    attachment: Option<LsmAttachment>,
+    attachment: Arc<parking_lot::Mutex<Option<LsmAttachment>>>,
     /// ช่องสัญญาณใช้แจ้งให้ background tasks หยุดทำงาน
     shutdown_tx: Option<watch::Sender<bool>>,
     /// handle ของ routing task
@@ -148,7 +148,7 @@ impl KernelCompanion {
             tcell,
             bcell,
             macrophage,
-            attachment: None,
+            attachment: Arc::new(parking_lot::Mutex::new(None)),
             shutdown_tx: None,
             routing_task: None,
             supervisor_task: None,
@@ -199,9 +199,12 @@ impl KernelCompanion {
         info!("KernelCompanion กำลัง boot");
 
         // แนบ LSM Hook เข้ากับระบบ Kernel หากยังไม่ได้ดำเนินการ
-        if self.attachment.is_none() {
-            self.attachment = Some(attach_lsm_hooks(Arc::clone(&self.lsm_engine))?);
-            info!("LSM Hooks แนบสำเร็จ");
+        {
+            let mut attachment_lock = self.attachment.lock();
+            if attachment_lock.is_none() {
+                *attachment_lock = Some(attach_lsm_hooks(Arc::clone(&self.lsm_engine))?);
+                info!("LSM Hooks แนบสำเร็จ");
+            }
         }
 
         // เริ่มต้นใช้งานโมดูลอื่น ๆ
@@ -219,6 +222,84 @@ impl KernelCompanion {
             let supervisor = scheduler.supervisor();
             let (shutdown_tx, mut routing_shutdown_rx) = watch::channel(false);
             let supervisor_shutdown_rx = shutdown_tx.subscribe();
+
+            // ── Register capability revocation callback ──
+            {
+                let cap_manager_clone = Arc::clone(&self.capability_security);
+                let attachment_clone = Arc::clone(&self.attachment);
+                self.capability_security.register_revocation_callback(Arc::new(move |token_id| {
+                    let tokens = cap_manager_clone.get_tokens();
+                    if let Some(token) = tokens.iter().find(|t| t.id == token_id) {
+                        if let Scope::Process(pid) = token.scope {
+                            if let Some(attachment) = attachment_clone.lock().as_mut() {
+                                if let Err(e) = attachment.deny_pid(pid) {
+                                    tracing::error!("Failed to deny PID {} upon token revocation: {:?}", pid, e);
+                                } else {
+                                    tracing::warn!("LSM: Revoked PID {} from allowed_pids because token {} was revoked", pid, token_id);
+                                }
+                            }
+                        }
+                    }
+                }));
+            }
+
+            // ── Spawn periodic capability expiration task ──
+            {
+                let cap_sec = Arc::clone(&self.capability_security);
+                let attachment_for_expiry = Arc::clone(&self.attachment);
+                let mut expiry_shutdown_rx = shutdown_tx.subscribe();
+                tokio::spawn(async move {
+                    let expiry_interval = std::time::Duration::from_millis(500); // Check twice a second
+                    loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(expiry_interval) => {
+                                let tokens = cap_sec.get_tokens();
+                                let mut pid_tokens: std::collections::HashMap<u32, Vec<capability_security::CapabilityToken>> = std::collections::HashMap::new();
+                                for token in &tokens {
+                                    if let Scope::Process(pid) = token.scope {
+                                        pid_tokens.entry(pid).or_default().push(token.clone());
+                                    }
+                                }
+
+                                let current_allowed_pids = {
+                                    if let Some(attachment) = attachment_for_expiry.lock().as_ref() {
+                                        attachment.allowed_pids()
+                                    } else {
+                                        std::collections::HashSet::new()
+                                    }
+                                };
+
+                                for pid in current_allowed_pids {
+                                    if pid == std::process::id() {
+                                        continue;
+                                    }
+
+                                    let has_valid_token = if let Some(tokens_for_pid) = pid_tokens.get(&pid) {
+                                        tokens_for_pid.iter().any(|t| t.is_valid() && !cap_sec.is_revoked(t.id))
+                                    } else {
+                                        false
+                                    };
+
+                                    if !has_valid_token {
+                                        if let Some(attachment) = attachment_for_expiry.lock().as_mut() {
+                                            if let Err(e) = attachment.deny_pid(pid) {
+                                                tracing::error!("Failed to deny expired PID {}: {:?}", pid, e);
+                                            } else {
+                                                tracing::warn!("LSM: Revoked PID {} from allowed_pids due to token expiration/no active tokens", pid);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            changed = expiry_shutdown_rx.changed() => {
+                                if changed.is_err() || *expiry_shutdown_rx.borrow() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
 
             let intent_bus_for_routing = Arc::clone(&self.intent_bus);
             // รัน Task สำหรับดักฟัง Intent Bus และส่งต่อไปยัง Agent Scheduler แบบ Async
@@ -612,10 +693,10 @@ impl KernelCompanion {
         if let Some(task) = self.metrics_task.take() {
             let _ = task.await;
         }
-        if let Some(attachment) = self.attachment.as_mut() {
+        if let Some(attachment) = self.attachment.lock().as_mut() {
             attachment.detach();
         }
-        self.attachment = None;
+        *self.attachment.lock() = None;
         info!("KernelCompanion shutdown เสร็จสมบูรณ์");
     }
 
@@ -657,7 +738,7 @@ impl KernelCompanion {
             capability,
         )?;
 
-        if let Some(attachment) = self.attachment.as_mut() {
+        if let Some(attachment) = self.attachment.lock().as_mut() {
             if allowed {
                 attachment.allow_pid(pid)?;
             } else {
@@ -671,6 +752,7 @@ impl KernelCompanion {
     #[must_use]
     pub fn is_pid_authorized(&self, pid: u32) -> bool {
         self.attachment
+            .lock()
             .as_ref()
             .is_some_and(|attachment| attachment.allows_pid(pid))
     }
@@ -679,6 +761,7 @@ impl KernelCompanion {
     #[must_use]
     pub fn is_attached(&self) -> bool {
         self.attachment
+            .lock()
             .as_ref()
             .is_some_and(LsmAttachment::is_attached)
     }

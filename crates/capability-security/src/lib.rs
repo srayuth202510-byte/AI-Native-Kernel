@@ -43,6 +43,15 @@ pub enum CapabilityError {
     RateLimited,
 }
 
+#[derive(Clone)]
+struct RevocationCallback(std::sync::Arc<dyn Fn(u64) + Send + Sync>);
+
+impl std::fmt::Debug for RevocationCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RevocationCallback").finish()
+    }
+}
+
 /// ตัวจัดการความปลอดภัยอิงความสามารถ (Capability-based Security Manager)
 /// ทำหน้าที่ควบคุมสิทธิ์ ออกโทเค็น ตรวจสอบสิทธิ์ เพิกถอนโทเค็น และบันทึกประวัติความปลอดภัย
 #[derive(Debug)]
@@ -61,6 +70,8 @@ pub struct CapabilitySecurityManager {
     issue_rate: RwLock<VecDeque<Instant>>,
     /// อัตราสูงสุดที่อนุญาตให้ออกโทเค็นต่อวินาที
     max_issue_rate: usize,
+    /// Callback สำหรับการแจ้งเตือนเมื่อโทเค็นถูกเพิกถอน (Revocation callback)
+    revocation_callback: RwLock<Option<RevocationCallback>>,
 }
 
 /// ฟังก์ชันเปรียบเทียบข้อมูลไบต์อาร์เรย์ขนาด 32 ไบต์แบบคงเวลา (Constant-time comparison)
@@ -112,6 +123,7 @@ impl CapabilitySecurityManager {
             metrics,
             issue_rate: RwLock::new(VecDeque::new()),
             max_issue_rate,
+            revocation_callback: RwLock::new(None),
         }
     }
 
@@ -132,6 +144,7 @@ impl CapabilitySecurityManager {
             metrics,
             issue_rate: RwLock::new(VecDeque::new()),
             max_issue_rate,
+            revocation_callback: RwLock::new(None),
         }
     }
 
@@ -168,6 +181,11 @@ impl CapabilitySecurityManager {
     /// โทเค็นที่ถูกเพิกถอนแล้วจะไม่สามารถใช้งานได้อีกต่อไป แม้จะยังไม่หมดอายุ
     pub fn revoke_token(&self, token_id: u64) -> Result<()> {
         self.revoked_write().insert(token_id);
+
+        if let Some(ref callback) = *self.revocation_callback.read() {
+            (callback.0)(token_id);
+        }
+
         self.audit_logger
             .record(AuditEntry::revoked(token_id))
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
@@ -175,6 +193,20 @@ impl CapabilitySecurityManager {
             m.audit_entries_total.inc();
         }
         Ok(())
+    }
+
+    /// ลงทะเบียน Callback สำหรับประมวลผลเมื่อโทเค็นถูกเพิกถอน (เช่น ลบ PID ใน allowed_pids)
+    pub fn register_revocation_callback(
+        &self,
+        callback: std::sync::Arc<dyn Fn(u64) + Send + Sync>,
+    ) {
+        *self.revocation_callback.write() = Some(RevocationCallback(callback));
+    }
+
+    /// ดึงรายการโทเค็นทั้งหมดในระบบเพื่อนำมาตรวจสอบ/วิเคราะห์ (เช่น การตรวจจับการหมดอายุ)
+    #[must_use]
+    pub fn get_tokens(&self) -> Vec<CapabilityToken> {
+        self.tokens_read().values().cloned().collect()
     }
 
     /// ตรวจสอบว่าโทเค็นถูกเพิกถอนแล้วหรือไม่

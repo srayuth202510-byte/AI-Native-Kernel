@@ -789,3 +789,57 @@ async fn int_p2p_mesh_discovery_pipeline() {
     let _ = tokio::fs::remove_file(&config_a.kernel_companion.uds_socket_path).await;
     let _ = tokio::fs::remove_file(&config_b.kernel_companion.uds_socket_path).await;
 }
+
+#[tokio::test]
+async fn int_lsm_token_revocation_and_expiration_propagation() {
+    let mut companion = kernel_companion::KernelCompanion::new();
+    companion.boot().await.expect("boot should succeed");
+
+    let pid_expire = 11111u32;
+    let pid_revoke = 22222u32;
+
+    let token_expire = CapabilityToken::new(
+        301,
+        Scope::Process(pid_expire),
+        vec!["read".to_string()],
+        Duration::from_millis(50), // Expires very quickly
+        [0x11; 32],
+    );
+
+    let token_revoke = CapabilityToken::new(
+        302,
+        Scope::Process(pid_revoke),
+        vec!["read".to_string()],
+        Duration::from_secs(3600), // Long-lived
+        [0x22; 32],
+    );
+
+    let cap_mgr = companion.capability_security();
+    cap_mgr.issue_token(token_expire.clone()).unwrap();
+    cap_mgr.issue_token(token_revoke.clone()).unwrap();
+
+    // 1. Authorize both
+    assert!(
+        companion
+            .authorize_process_token(pid_expire, token_expire.id, &[0x11; 32], "read")
+            .unwrap()
+    );
+    assert!(
+        companion
+            .authorize_process_token(pid_revoke, token_revoke.id, &[0x22; 32], "read")
+            .unwrap()
+    );
+
+    assert!(companion.is_pid_authorized(pid_expire));
+    assert!(companion.is_pid_authorized(pid_revoke));
+
+    // 2. Revoke the second token - should deny pid_revoke immediately
+    cap_mgr.revoke_token(token_revoke.id).unwrap();
+    assert!(!companion.is_pid_authorized(pid_revoke));
+
+    // 3. Wait for token_expire to expire and periodic check to run
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(!companion.is_pid_authorized(pid_expire));
+
+    companion.shutdown().await;
+}
