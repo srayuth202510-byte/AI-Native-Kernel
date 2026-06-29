@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 use crate::token::{CapabilityToken, Scope};
 
@@ -15,8 +15,8 @@ pub enum PolicyDecision {
 /// ตรวจสอบว่าโทเค็น ขอบเขต (Scope) และ Capability มีความสอดคล้องกันหรือไม่
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
-    /// รายการสิทธิ์ความสามารถที่ได้รับอนุญาตให้ทำงานในระบบ (เป็น Allowlist)
-    allowed_capabilities: BTreeSet<String>,
+    /// รายการสิทธิ์ความสามารถที่ได้รับอนุญาตให้ทำงานในระบบ (เป็น Allowlist) - ใช้ HashSet เพื่อ O(1) fast path (Phase 1 Tune-Up)
+    allowed_capabilities: HashSet<String>,
     /// ผลการตัดสินใจเริ่มต้นหากไม่มีข้อกำหนดใดแมตช์ตรงกับข้อมูลการร้องขอ
     default_decision: PolicyDecision,
 }

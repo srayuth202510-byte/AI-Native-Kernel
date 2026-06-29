@@ -305,6 +305,34 @@ impl ComputeScheduler {
         let mut prober = hardware::HardwareProber::new();
         prober.scan_hardware()
     }
+
+    /// จัดการการรันงานพร้อมกลไก Circuit Breaker (Phase 1 Tune-Up)
+    /// หากเป้าหมายหลัก (เช่น GPU/NPU) ทำงานล้มเหลว จะสลับกลับไปใช้ CPU ทันที (Fallback)
+    pub async fn execute_with_circuit_breaker<F, Fut, T, E>(
+        &self,
+        primary_target: ComputeTarget,
+        task: F,
+    ) -> Result<T, E>
+    where
+        F: Fn(ComputeTarget) -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+    {
+        match task(primary_target).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                if primary_target != ComputeTarget::Cpu {
+                    tracing::warn!(
+                        "Circuit Breaker: {:?} target failed, falling back to CPU",
+                        primary_target
+                    );
+                    // Fallback to CPU
+                    task(ComputeTarget::Cpu).await
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
 }
 
 impl Default for ComputeScheduler {

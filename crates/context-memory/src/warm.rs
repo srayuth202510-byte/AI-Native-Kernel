@@ -118,6 +118,18 @@ impl WarmStore {
         opts.create_if_missing(true);
         // เปิดใช้ compression เพื่อประหยัดพื้นที่บน NVMe
         opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
+
+        // --- Tuning RocksDB for NVMe Performance (Phase 1 Tune-Up) ---
+        opts.increase_parallelism(4); // กระจายโหลด I/O ให้ทำงานหลายเธรด (เทียบเท่า max_background_jobs)
+        opts.set_max_write_buffer_number(4); // เพิ่มจำนวน write buffers
+        opts.set_min_write_buffer_number_to_merge(2); // ลด write amplification
+
+        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        // สร้าง Block Cache 64MB เพื่อเร่งความเร็วในการอ่านข้อมูล
+        block_opts.set_block_cache(&rocksdb::Cache::new_lru_cache(64 * 1024 * 1024));
+        opts.set_block_based_table_factory(&block_opts);
+        // -------------------------------------------------------------
+
         let db = rocksdb::DB::open(&opts, &path).expect("ไม่สามารถเปิด RocksDB warm store ได้");
 
         // Scan the existing keys to populate the FIFO order queue and count

@@ -205,9 +205,22 @@ impl IntentBus {
     /// สังเกตการณ์และประมวลผล Intent ในระบบแบบลูปวนซ้ำ โดยจะทำการคัดกรองก่อนส่งให้ `processor` ดำเนินการ
     pub async fn process_intents(&self, processor: &impl IntentProcessor) {
         let mut receiver = self.sender.subscribe();
-        while let Ok(intent) = receiver.recv().await {
-            if self.passes_filters(&intent).await {
-                processor.process(intent).await;
+        loop {
+            match receiver.recv().await {
+                Ok(intent) => {
+                    if self.passes_filters(&intent).await {
+                        processor.process(intent).await;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    // System load is too high, subscriber couldn't keep up
+                    tracing::warn!("IntentBus: Subscriber lagged, skipped {} intents", skipped);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    // Sender channel has been closed (shutdown scenario)
+                    tracing::info!("IntentBus: Channel closed, stopping processor loop");
+                    break;
+                }
             }
         }
     }

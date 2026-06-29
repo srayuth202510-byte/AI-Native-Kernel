@@ -12,6 +12,7 @@ keywords = ["ai", "intent", "bus", "event-driven"]
 tokio = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

@@ -642,9 +642,27 @@ impl AgentScheduler {
             "Executing agent time slice"
         );
 
-        // Simulate agent work - in real implementation this would run the agent's task
-        // For now, we just sleep for the time slice duration
-        tokio::time::sleep(time_slice).await;
+        // Simulate agent work - Wrapped in tokio::spawn to prevent panics from crashing the scheduler
+        let work_handle = tokio::spawn(async move {
+            // Execute actual agent task logic here
+            tokio::time::sleep(time_slice).await;
+        });
+
+        match work_handle.await {
+            Ok(_) => {
+                debug!(agent_id, "Agent time slice completed successfully");
+            }
+            Err(e) if e.is_panic() => {
+                tracing::error!(
+                    agent_id,
+                    "Agent task panicked during execution! Panic isolated."
+                );
+                // In a real system, we would transition the agent to Failed state here
+            }
+            Err(_) => {
+                tracing::warn!(agent_id, "Agent task was cancelled");
+            }
+        }
 
         // Promote context to hot tier if agent has context
         let context_key = format!("agent-{}", agent_id);
