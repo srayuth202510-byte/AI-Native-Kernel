@@ -433,7 +433,7 @@
     "type": "task",
     "title": "Run ignored Qdrant-backed tests against reachable endpoint",
     "desc": "รัน cargo test -p context-memory --lib -- --ignored หรือ scripts/run-qdrant-tests.sh กับ QDRANT_URL จริงเพื่อยืนยัน semantic store path.",
-    "status": "todo",
+    "status": "done",
     "priority": "med",
     "module": "context-memory",
     "assignee": "AI",

@@ -222,7 +222,13 @@ mod tests {
         let mut payload1 = HashMap::new();
         payload1.insert("intent".to_string(), "open browser".into());
 
-        store.upsert("doc-1", vector1.clone(), payload1).await?;
+        store
+            .upsert(
+                "550e8400-e29b-41d4-a716-446655440000",
+                vector1.clone(),
+                payload1,
+            )
+            .await?;
 
         // Search for nearest neighbor
         let results = store.search(vector1, 1).await?;
@@ -240,7 +246,7 @@ mod tests {
             qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u) => u.clone(),
             qdrant_client::qdrant::point_id::PointIdOptions::Num(n) => n.to_string(),
         };
-        assert_eq!(id_val, "doc-1");
+        assert_eq!(id_val, "550e8400-e29b-41d4-a716-446655440000");
         Ok(())
     }
 
@@ -269,9 +275,27 @@ mod tests {
         let mut payload3 = HashMap::new();
         payload3.insert("tag".to_string(), "neutral".into());
 
-        store.upsert("doc-p", vec1.clone(), payload1).await?;
-        store.upsert("doc-n", vec2.clone(), payload2).await?;
-        store.upsert("doc-z", vec3.clone(), payload3).await?;
+        store
+            .upsert(
+                "550e8400-e29b-41d4-a716-446655440001",
+                vec1.clone(),
+                payload1,
+            )
+            .await?;
+        store
+            .upsert(
+                "550e8400-e29b-41d4-a716-446655440002",
+                vec2.clone(),
+                payload2,
+            )
+            .await?;
+        store
+            .upsert(
+                "550e8400-e29b-41d4-a716-446655440003",
+                vec3.clone(),
+                payload3,
+            )
+            .await?;
 
         // ค้นหาแบบใกล้เคียง vec1 มากที่สุด (cosine similarity)
         // ควรจะได้ doc-p เป็นอันดับ 1
@@ -289,7 +313,7 @@ mod tests {
             qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u) => u.clone(),
             qdrant_client::qdrant::point_id::PointIdOptions::Num(n) => n.to_string(),
         };
-        assert_eq!(first_id, "doc-p");
+        assert_eq!(first_id, "550e8400-e29b-41d4-a716-446655440001");
 
         Ok(())
     }

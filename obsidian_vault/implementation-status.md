@@ -53,6 +53,7 @@ Last verified: 2026-06-29
 - **[ANK-012] Warm tier (NVMe): RocksDB store**: RocksDB WarmStore implement แล้วด้วย feature flag `rocksdb-warm`. Default CI ใช้ in-memory (ไม่ต้อง NVMe). เปิดใช้ด้วย --features context-memory/rocksdb-warm. Snappy compression เปิดแล้ว. Cold→Warm load < 50ms ยังไม่ได้วัด benchmark จริง.
 - **[ANK-013] Tier migration: Hot<->Warm<->Cold**: Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.
 - **[ANK-014] Property test: context round-trip lossless**: Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล
+- **[ANK-040] Run ignored Qdrant-backed tests against reachable endpoint**: รัน cargo test -p context-memory --lib -- --ignored หรือ scripts/run-qdrant-tests.sh กับ QDRANT_URL จริงเพื่อยืนยัน semantic store path.
 - **[ANK-043] P2P Context Mesh with real TCP networking**: Gossip-based P2P mesh ใน context-memory ใช้ tokio TCP (TcpListener/TcpStream) พร้อม NodeInfo, capability advertisement, gossip heartbeat, และ KV sync.
 - **[ANK-044] P2P Trust Model + Conflict Resolution + Distributed Sync**: Trust scoring (100-0), conflict resolution สำหรับ records ที่ conflict, distributed context sync/fetch ผ่าน P2P mesh พร้อม fail-closed LSM gating เมื่อ mesh ล้มเหลว.
 - **[ANK-055] RocksDB Warm Tier Persistent Configurable Path**: WarmStore รองรับ configurable RocksDB path (new_with_path); startup key scanning; persistent storage ผ่าน feature flag rocksdb-warm. เปิดใช้ด้วย --features context-memory/rocksdb-warm.
@@ -103,7 +104,7 @@ Last verified: 2026-06-29
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-- **[ANK-040] Run ignored Qdrant-backed tests against reachable endpoint** (todo, med): รัน cargo test -p context-memory --lib -- --ignored หรือ scripts/run-qdrant-tests.sh กับ QDRANT_URL จริงเพื่อยืนยัน semantic store path.
+
 <!-- NOT_IMPLEMENTED_YET_END -->
 
 ## Validation Status
