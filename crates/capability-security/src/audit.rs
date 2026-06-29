@@ -153,8 +153,14 @@ impl AuditEntry {
 pub struct AuditLogger {
     /// พาธสำหรับจัดเก็บไฟล์บันทึกประวัติ (Log File)
     log_path: PathBuf,
-    /// แฮชล่าสุดที่คำนวณและเขียนลงไฟล์แล้ว
-    last_hash: std::sync::Arc<parking_lot::Mutex<Option<String>>>,
+    /// แฮชล่าสุดและ File handle ที่เปิดค้างไว้เพื่อประสิทธิภาพ
+    state: std::sync::Arc<parking_lot::Mutex<AuditState>>,
+}
+
+#[derive(Debug)]
+struct AuditState {
+    last_hash: Option<String>,
+    file: Option<std::fs::File>,
 }
 
 impl AuditLogger {
@@ -163,7 +169,10 @@ impl AuditLogger {
     pub fn new(log_path: PathBuf) -> Self {
         Self {
             log_path,
-            last_hash: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+            state: std::sync::Arc::new(parking_lot::Mutex::new(AuditState {
+                last_hash: None,
+                file: None,
+            })),
         }
     }
 
@@ -186,12 +195,12 @@ impl AuditLogger {
 
     /// บันทึกรายการตรวจสอบลงในไฟล์ล็อก พร้อมทำ Hash Chaining กับประวัติก่อนหน้า
     pub fn record(&self, mut entry: AuditEntry) -> Result<(), AuditError> {
-        let mut cache = self.last_hash.lock();
-        let prev_hash = match &*cache {
+        let mut state = self.state.lock();
+        let prev_hash = match &state.last_hash {
             Some(h) => h.clone(),
             None => {
                 let h = self.get_last_hash_from_file();
-                *cache = Some(h.clone());
+                state.last_hash = Some(h.clone());
                 h
             }
         };
@@ -199,17 +208,23 @@ impl AuditLogger {
         let hash = entry.compute_hash(&prev_hash);
         entry.hash = Some(hash.clone());
 
-        // เปิดไฟล์แบบเขียนต่อท้ายอย่างเดียว (append-only) และสร้างใหม่หากยังไม่มี
-        // ซึ่งเป็นการทำงานรูปแบบ WORM (Write Once Read Many) ในระดับระบบปฏิบัติการเพื่อความปลอดภัยของข้อมูลประวัติ
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)
-            .map_err(AuditError::Open)?;
         let json_str = serde_json::to_string(&entry).map_err(AuditError::Serialize)?;
-        writeln!(file, "{}", json_str).map_err(AuditError::Write)?;
 
-        *cache = Some(hash);
+        // ใช้ File handle ที่เปิดค้างไว้เพื่อหลีกเลี่ยง overhead ในการเปิดปิดไฟล์ทุกครั้ง
+        if state.file.is_none() {
+            let f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.log_path)
+                .map_err(AuditError::Open)?;
+            state.file = Some(f);
+        }
+
+        if let Some(ref mut file) = state.file {
+            writeln!(file, "{}", json_str).map_err(AuditError::Write)?;
+        }
+
+        state.last_hash = Some(hash);
         Ok(())
     }
 
