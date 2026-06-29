@@ -193,10 +193,12 @@ impl TelemetryTTLConfig {
         }
     }
 
+    #[allow(dead_code)]
     fn is_expired(&self, timestamp: Instant, ttl_ms: u64) -> bool {
         timestamp.elapsed().as_millis() as u64 > ttl_ms
     }
 
+    #[allow(dead_code)]
     async fn cleanup_expired_entries<T1, T2, T3, T4>(
         &self,
         _metric_cache: Arc<RwLock<T1>>,
@@ -205,6 +207,12 @@ impl TelemetryTTLConfig {
         _intent_metadata: Arc<RwLock<T4>>,
     ) -> usize {
         0
+    }
+}
+
+impl Default for RetryAndTelemetryManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
