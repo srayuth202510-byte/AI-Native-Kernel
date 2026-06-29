@@ -18,6 +18,8 @@ impl Default for HardwareProber {
 
 impl HardwareProber {
     #[must_use]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new() -> Self {
         let sys = System::new_all();
         let nvml = match Nvml::init() {

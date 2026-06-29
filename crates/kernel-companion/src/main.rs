@@ -1,3 +1,6 @@
+//! เอกสารระดับ Crate สำหรับระบบ
+//!
+//! โมดูลนี้รวบรวมฟังก์ชันการทำงานที่จำเป็นทั้งหมด
 use clap::Parser;
 use kernel_companion::KernelCompanion;
 use kernel_companion::config::Config;

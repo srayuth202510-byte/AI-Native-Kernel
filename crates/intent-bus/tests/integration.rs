@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use intent_bus::{FilterCondition, Intent, IntentBus, IntentFilter, IntentPriority, IntentType};
 
 #[tokio::test]

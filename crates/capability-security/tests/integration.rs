@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use capability_security::{
     CapabilitySecurityManager, CapabilityToken, Scope, policy::PolicyDecision,
 };

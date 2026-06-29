@@ -1,5 +1,8 @@
 #![deny(unsafe_code)]
 
+//! เอกสารระดับ Crate สำหรับระบบ
+//!
+//! โมดูลนี้รวบรวมฟังก์ชันการทำงานที่จำเป็นทั้งหมด
 use agent_scheduler::{AgentScheduler, block::AgentControlBlock};
 use capability_security::{CapabilitySecurityManager, CapabilityToken, Scope};
 use compute_scheduler::{ComputeProfile, ComputeScheduler, ComputeTarget};

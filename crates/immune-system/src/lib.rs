@@ -13,9 +13,17 @@
 //! Cytokine Signal ──── Critical Broadcast → Swarm Mobilization
 //! ```
 
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub mod bcell;
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub mod cytokine;
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub mod macrophage;
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub mod tcell;
 
 pub use bcell::BCellAgent;
@@ -26,13 +34,23 @@ pub use tcell::{TCellAgent, ThreatDecision};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub enum ImmuneError {
     #[error("anomaly detected: {0}")]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     AnomalyDetected(String),
     #[error("quarantine failed: {0}")]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     QuarantineFailed(String),
     #[error("pattern learning failed: {0}")]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     LearningFailed(String),
 }
 
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub type Result<T> = core::result::Result<T, ImmuneError>;

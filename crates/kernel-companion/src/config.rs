@@ -7,24 +7,44 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    /// ข้อมูล `general` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `general` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub general: GeneralConfig,
     #[serde(default)]
+    /// ข้อมูล `kernel_companion` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `kernel_companion` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub kernel_companion: KernelCompanionConfig,
     #[serde(default)]
+    /// ข้อมูล `agent_scheduler` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `agent_scheduler` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub agent_scheduler: AgentSchedulerConfig,
     #[serde(default)]
+    /// ข้อมูล `context_memory` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `context_memory` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub context_memory: ContextMemoryConfig,
     #[serde(default)]
+    /// ข้อมูล `compute_scheduler` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `compute_scheduler` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub compute_scheduler: ComputeSchedulerConfig,
     #[serde(default)]
+    /// ข้อมูล `capability_security` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `capability_security` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub capability_security: CapabilitySecurityConfig,
     #[serde(default)]
+    /// ข้อมูล `intent_bus` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `intent_bus` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub intent_bus: IntentBusConfig,
     #[serde(default)]
+    /// ข้อมูล `immune_system` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `immune_system` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub immune_system: ImmuneSystemConfig,
     #[serde(default)]
+    /// ข้อมูล `ebpf` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `ebpf` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub ebpf: EbpfConfig,
     #[serde(default)]
+    /// ข้อมูล `lsm` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `lsm` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub lsm: LsmConfig,
 }
 
@@ -163,8 +183,12 @@ impl Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `GeneralConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `GeneralConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct GeneralConfig {
     #[serde(default = "default_log_level")]
+    /// ข้อมูล `log_level` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `log_level` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub log_level: String,
 }
 
@@ -181,14 +205,24 @@ fn default_log_level() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `KernelCompanionConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `KernelCompanionConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct KernelCompanionConfig {
     #[serde(default = "default_uds_socket")]
+    /// ข้อมูล `uds_socket_path` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `uds_socket_path` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub uds_socket_path: String,
     #[serde(default = "default_intent_bus_cap")]
+    /// ข้อมูล `intent_bus_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `intent_bus_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub intent_bus_capacity: usize,
     #[serde(default = "default_monitoring_cap")]
+    /// ข้อมูล `monitoring_channel_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `monitoring_channel_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub monitoring_channel_capacity: usize,
     #[serde(default = "default_metrics_addr")]
+    /// ข้อมูล `metrics_server_addr` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `metrics_server_addr` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub metrics_server_addr: String,
 }
 
@@ -217,14 +251,24 @@ fn default_metrics_addr() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `AgentSchedulerConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `AgentSchedulerConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct AgentSchedulerConfig {
     #[serde(default = "default_max_agents")]
+    /// ข้อมูล `max_agents` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `max_agents` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub max_agents: usize,
     #[serde(default = "default_max_restart")]
+    /// ข้อมูล `max_restart_attempts` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `max_restart_attempts` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub max_restart_attempts: u32,
     #[serde(default = "default_supervisor_interval")]
+    /// ข้อมูล `supervisor_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `supervisor_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub supervisor_interval_ms: u64,
     #[serde(default = "default_next_id")]
+    /// ข้อมูล `next_agent_id_start` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `next_agent_id_start` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub next_agent_id_start: u64,
 }
 
@@ -253,18 +297,32 @@ fn default_next_id() -> u64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `ContextMemoryConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `ContextMemoryConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct ContextMemoryConfig {
     #[serde(default = "default_hot_cap")]
+    /// ข้อมูล `hot_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `hot_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub hot_capacity: usize,
     #[serde(default = "default_warm_cap")]
+    /// ข้อมูล `warm_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `warm_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub warm_capacity: usize,
     #[serde(default = "default_p2p_enabled")]
+    /// ข้อมูล `p2p_enabled` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `p2p_enabled` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub p2p_enabled: bool,
     #[serde(default = "default_p2p_listen_addr")]
+    /// ข้อมูล `p2p_listen_addr` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `p2p_listen_addr` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub p2p_listen_addr: String,
     #[serde(default = "default_p2p_bootstrap")]
+    /// ข้อมูล `p2p_bootstrap_nodes` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `p2p_bootstrap_nodes` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub p2p_bootstrap_nodes: Vec<String>,
     #[serde(default = "default_warm_store_path")]
+    /// ข้อมูล `warm_store_path` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `warm_store_path` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub warm_store_path: String,
 }
 
@@ -309,16 +367,28 @@ fn default_warm_store_path() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `ComputeSchedulerConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `ComputeSchedulerConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct ComputeSchedulerConfig {
     #[serde(default = "default_compute_mode")]
+    /// ข้อมูล `default_mode` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `default_mode` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub default_mode: String,
     #[serde(default = "default_alpha")]
+    /// ข้อมูล `adaptive_alpha` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `adaptive_alpha` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub adaptive_alpha: f64,
     #[serde(default = "default_weight_latency")]
+    /// ข้อมูล `weight_latency` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `weight_latency` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub weight_latency: f64,
     #[serde(default = "default_weight_power")]
+    /// ข้อมูล `weight_power` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `weight_power` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub weight_power: f64,
     #[serde(default = "default_weight_cost")]
+    /// ข้อมูล `weight_cost` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `weight_cost` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub weight_cost: f64,
 }
 
@@ -351,10 +421,16 @@ fn default_weight_cost() -> f64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `CapabilitySecurityConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `CapabilitySecurityConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct CapabilitySecurityConfig {
     #[serde(default = "default_audit_log_path")]
+    /// ข้อมูล `audit_log_path` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `audit_log_path` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub audit_log_path: String,
     #[serde(default = "default_max_issue_rate")]
+    /// ข้อมูล `max_issue_rate` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `max_issue_rate` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub max_issue_rate: usize,
 }
 
@@ -375,8 +451,12 @@ fn default_max_issue_rate() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `IntentBusConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `IntentBusConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct IntentBusConfig {
     #[serde(default = "default_intent_bus_capacity")]
+    /// ข้อมูล `default_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `default_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub default_capacity: usize,
 }
 
@@ -393,22 +473,40 @@ fn default_intent_bus_capacity() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `ImmuneSystemConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `ImmuneSystemConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct ImmuneSystemConfig {
     #[serde(default = "default_tcell_interval")]
+    /// ข้อมูล `tcell_check_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `tcell_check_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub tcell_check_interval_ms: u64,
     #[serde(default = "default_bcell_interval")]
+    /// ข้อมูล `bcell_learning_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `bcell_learning_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub bcell_learning_interval_ms: u64,
     #[serde(default = "default_macrophage_interval")]
+    /// ข้อมูล `macrophage_gc_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `macrophage_gc_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub macrophage_gc_interval_ms: u64,
     #[serde(default = "default_max_anomaly")]
+    /// ข้อมูล `max_anomaly_score` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `max_anomaly_score` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub max_anomaly_score: u32,
     #[serde(default = "default_quarantine")]
+    /// ข้อมูล `quarantine_duration_secs` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `quarantine_duration_secs` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub quarantine_duration_secs: u64,
     #[serde(default = "default_rate_threshold")]
+    /// ข้อมูล `rate_threshold` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `rate_threshold` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub rate_threshold: u32,
     #[serde(default = "default_deny_threshold")]
+    /// ข้อมูล `deny_threshold` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `deny_threshold` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub deny_threshold: u32,
     #[serde(default = "default_kill_threshold")]
+    /// ข้อมูล `kill_threshold` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `kill_threshold` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub kill_threshold: u32,
 }
 
@@ -453,10 +551,16 @@ fn default_kill_threshold() -> u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `EbpfConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `EbpfConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct EbpfConfig {
     #[serde(default = "default_ebpf_fallback")]
+    /// ข้อมูล `enable_fallback` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `enable_fallback` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub enable_fallback: bool,
     #[serde(default = "default_tracepoint_program")]
+    /// ข้อมูล `tracepoint_program` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `tracepoint_program` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub tracepoint_program: String,
 }
 
@@ -477,16 +581,26 @@ fn default_tracepoint_program() -> String {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `LsmProfileConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `LsmProfileConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct LsmProfileConfig {
     #[serde(default)]
+    /// ข้อมูล `allowed_syscalls` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `allowed_syscalls` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub allowed_syscalls: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `LsmConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `LsmConfig` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct LsmConfig {
     #[serde(default = "default_lsm_profile")]
+    /// ข้อมูล `active_profile` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `active_profile` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub active_profile: String,
     #[serde(default = "default_lsm_profiles")]
+    /// ข้อมูล `profiles` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `profiles` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub profiles: BTreeMap<String, LsmProfileConfig>,
 }
 

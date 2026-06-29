@@ -13,33 +13,65 @@ use crate::observability::kernel_metrics;
 // ---- Types ----
 
 #[derive(Debug, Error)]
+/// ประเภทข้อมูล Enum `TracerError` สำหรับระบุชนิดของข้อมูล
+/// ประเภทข้อมูล Enum `TracerError` สำหรับระบุชนิดของข้อมูล
 pub enum TracerError {
     #[error("eBPF program load failed: {0}")]
+    /// ข้อมูล `LoadFailed(String)` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `LoadFailed(String)` สำหรับการกำหนดค่าหรือสถานะภายใน
     LoadFailed(String),
     #[error("tracepoint attach failed: {0}")]
+    /// ข้อมูล `AttachFailed(String)` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `AttachFailed(String)` สำหรับการกำหนดค่าหรือสถานะภายใน
     AttachFailed(String),
     #[error("ring buffer error: {0}")]
+    /// ข้อมูล `RingBufferError(String)` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `RingBufferError(String)` สำหรับการกำหนดค่าหรือสถานะภายใน
     RingBufferError(String),
     #[error("tracer cancelled")]
+    /// ข้อมูล `Cancelled` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `Cancelled` สำหรับการกำหนดค่าหรือสถานะภายใน
     Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// โครงสร้างข้อมูล `SyscallEvent` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `SyscallEvent` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct SyscallEvent {
+    /// ข้อมูล `syscall_nr` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `syscall_nr` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub syscall_nr: u64,
+    /// ข้อมูล `syscall_name` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `syscall_name` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub syscall_name: String,
+    /// ข้อมูล `pid` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `pid` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub pid: u32,
+    /// ข้อมูล `uid` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `uid` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub uid: u32,
+    /// ข้อมูล `timestamp_ns` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `timestamp_ns` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub timestamp_ns: u64,
+    /// ข้อมูล `decision` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `decision` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub decision: PolicyDecision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// ประเภทข้อมูล Enum `PolicyDecision` สำหรับระบุชนิดของข้อมูล
+/// ประเภทข้อมูล Enum `PolicyDecision` สำหรับระบุชนิดของข้อมูล
 pub enum PolicyDecision {
+    /// ข้อมูล `Allow` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `Allow` สำหรับการกำหนดค่าหรือสถานะภายใน
     Allow,
+    /// ข้อมูล `Deny` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `Deny` สำหรับการกำหนดค่าหรือสถานะภายใน
     Deny,
 }
 
+/// ประเภทข้อมูลย่อย (Alias) `SyscallEventReceiver` เพื่อความสะดวกในการอ่านรหัส
+/// ประเภทข้อมูลย่อย (Alias) `SyscallEventReceiver` เพื่อความสะดวกในการอ่านรหัส
 pub type SyscallEventReceiver = mpsc::Receiver<SyscallEvent>;
 
 /// Cache invalidation events sent from the daemon to the tracer task.
@@ -51,11 +83,17 @@ pub enum CacheInvalidation {
     Syscall(u64),
 }
 
+/// ประเภทข้อมูลย่อย (Alias) `CacheInvalidationReceiver` เพื่อความสะดวกในการอ่านรหัส
+/// ประเภทข้อมูลย่อย (Alias) `CacheInvalidationReceiver` เพื่อความสะดวกในการอ่านรหัส
 pub type CacheInvalidationReceiver = tokio::sync::mpsc::Receiver<CacheInvalidation>;
+/// ประเภทข้อมูลย่อย (Alias) `CacheInvalidationSender` เพื่อความสะดวกในการอ่านรหัส
+/// ประเภทข้อมูลย่อย (Alias) `CacheInvalidationSender` เพื่อความสะดวกในการอ่านรหัส
 pub type CacheInvalidationSender = tokio::sync::mpsc::Sender<CacheInvalidation>;
 
 // ---- SyscallTracer ----
 
+/// โครงสร้างข้อมูล `SyscallTracer` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `SyscallTracer` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct SyscallTracer {
     policy: Arc<LsmPolicyEngine>,
     event_tx: mpsc::Sender<SyscallEvent>,
@@ -65,6 +103,8 @@ pub struct SyscallTracer {
 
 impl SyscallTracer {
     #[must_use]
+    /// ฟังก์ชัน `new` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `new` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn new(policy: Arc<LsmPolicyEngine>) -> (Self, SyscallEventReceiver) {
         let (event_tx, event_rx) = mpsc::channel(4096);
         let (_invalidation_tx, invalidation_rx) = tokio::sync::mpsc::channel(64);
@@ -94,6 +134,8 @@ impl SyscallTracer {
     }
 
     #[instrument(skip(self, cancel))]
+    /// ข้อมูล `async fn run(` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `async fn run(` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub async fn run(
         self,
         cancel: CancellationToken,
@@ -328,6 +370,8 @@ impl SyscallTracer {
     }
 
     #[instrument(skip(self), fields(syscall_nr, pid, uid))]
+    /// ฟังก์ชัน `process_syscall_event` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `process_syscall_event` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn process_syscall_event(&self, syscall_nr: u64, pid: u32, uid: u32) -> SyscallEvent {
         let syscall_name = self
             .syscall_table
@@ -503,24 +547,34 @@ fn load_bpf_program_bytes() -> Result<Vec<u8>> {
 
 // ---- CancellationToken ----
 
+/// โมดูล `tokio_util_cancel` จัดการระบบย่อยที่เกี่ยวข้อง
+/// โมดูล `tokio_util_cancel` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod tokio_util_cancel {
     #[derive(Clone, Default)]
+    /// โครงสร้างข้อมูล `CancellationToken` ใช้สำหรับเก็บสถานะและการตั้งค่า
+    /// โครงสร้างข้อมูล `CancellationToken` ใช้สำหรับเก็บสถานะและการตั้งค่า
     pub struct CancellationToken {
         cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl CancellationToken {
         #[must_use]
+        /// ฟังก์ชัน `new` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+        /// ฟังก์ชัน `new` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
         pub fn new() -> Self {
             Self::default()
         }
 
+        /// ฟังก์ชัน `cancel` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+        /// ฟังก์ชัน `cancel` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
         pub fn cancel(&self) {
             self.cancelled
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
 
         #[must_use]
+        /// ฟังก์ชัน `is_cancelled` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+        /// ฟังก์ชัน `is_cancelled` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
         pub fn is_cancelled(&self) -> bool {
             self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -531,6 +585,8 @@ use tokio_util_cancel::CancellationToken;
 
 // ---- x86_64 syscall table ----
 
+/// ฟังก์ชัน `build_syscall_table` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+/// ฟังก์ชัน `build_syscall_table` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
 pub fn build_syscall_table() -> HashMap<u64, &'static str> {
     let mut table = HashMap::new();
     table.insert(0, "read");

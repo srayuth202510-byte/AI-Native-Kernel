@@ -1,3 +1,7 @@
+//! เอกสารระดับ Crate สำหรับระบบ
+//!
+//! โมดูลนี้รวบรวมฟังก์ชันการทำงานที่จำเป็นทั้งหมด
+#![allow(missing_docs)]
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use intent_bus::IntentType;
 use kernel_companion::KernelCompanion;

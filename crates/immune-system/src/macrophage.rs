@@ -27,6 +27,8 @@ pub struct MacrophageAgent {
 
 impl MacrophageAgent {
     #[must_use]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new(
         intent_bus: Arc<IntentBus>,
         context_memory: Arc<ContextMemoryManager>,
@@ -109,8 +111,14 @@ impl MacrophageAgent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct SweepStats {
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub collected: u64,
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub collected_context: u64,
 }
 

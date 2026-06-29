@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use intent_bus::{FilterCondition, Intent, IntentBus, IntentFilter, IntentPriority, IntentType};
 use tokio::runtime::Runtime;

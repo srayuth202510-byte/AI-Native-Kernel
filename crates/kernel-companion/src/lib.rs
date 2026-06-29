@@ -21,12 +21,24 @@ use tokio::task;
 use tokio::task::JoinHandle;
 use tracing::{info, instrument, warn};
 
+/// โมดูล `config` จัดการระบบย่อยที่เกี่ยวข้อง
+/// โมดูล `config` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod config;
+/// โมดูล `ebpf` จัดการระบบย่อยที่เกี่ยวข้อง
+/// โมดูล `ebpf` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod ebpf;
+/// โมดูล `lsm` จัดการระบบย่อยที่เกี่ยวข้อง
+/// โมดูล `lsm` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod lsm;
+/// โมดูล `metrics_server` จัดการระบบย่อยที่เกี่ยวข้อง
+/// โมดูล `metrics_server` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod metrics_server;
 pub mod nlp;
+/// โมดูล `observability` จัดการระบบย่อยที่เกี่ยวข้อง
+/// โมดูล `observability` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod observability;
+/// โมดูล `uds` จัดการระบบย่อยที่เกี่ยวข้อง
+/// โมดูล `uds` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod uds;
 
 pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
@@ -728,6 +740,8 @@ impl KernelCompanion {
         Arc::clone(&self.capability_security)
     }
 
+    /// ฟังก์ชัน `authorize_process_token` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `authorize_process_token` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn authorize_process_token(
         &mut self,
         pid: u32,
@@ -754,6 +768,8 @@ impl KernelCompanion {
     }
 
     #[must_use]
+    /// ฟังก์ชัน `is_pid_authorized` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `is_pid_authorized` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn is_pid_authorized(&self, pid: u32) -> bool {
         self.attachment
             .lock()

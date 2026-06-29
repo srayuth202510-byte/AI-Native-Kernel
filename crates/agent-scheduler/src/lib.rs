@@ -6,10 +6,15 @@
 
 #![deny(unsafe_code)]
 
+/// โมดูลย่อยที่จัดการโครงสร้างของ Agent (AgentControlBlock, AgentState)
 pub mod block;
+/// โมดูลย่อยสำหรับข้อผิดพลาดต่างๆ ภายใน Agent Scheduler
 pub mod error;
+/// โมดูลย่อยที่จัดการคิวตามลำดับความสำคัญของ Agent
 pub mod priority;
+/// โมดูลย่อยหลักที่รับผิดชอบการสร้าง จัดการ และยุติการทำงานของ Agent
 pub mod scheduler;
+/// โมดูลย่อยสำหรับดูแลความน่าเชื่อถือและการเริ่มต้นใหม่ของ Agent เมื่อมีข้อผิดพลาด
 pub mod supervisor;
 
 pub use crate::error::SchedulerError;

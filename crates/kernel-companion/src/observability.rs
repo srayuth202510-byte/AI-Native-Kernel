@@ -16,17 +16,35 @@ static TRACING_INIT: OnceLock<()> = OnceLock::new();
 const KNOWN_EBPF_MODES: [&str; 2] = ["real", "simulation"];
 
 #[derive(Debug)]
+/// โครงสร้างข้อมูล `KernelMetrics` ใช้สำหรับเก็บสถานะและการตั้งค่า
+/// โครงสร้างข้อมูล `KernelMetrics` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct KernelMetrics {
+    /// ข้อมูล `lsm_policy_decisions_total` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `lsm_policy_decisions_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub lsm_policy_decisions_total: IntCounterVec,
+    /// ข้อมูล `lsm_blocked_syscalls` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `lsm_blocked_syscalls` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub lsm_blocked_syscalls: IntGauge,
+    /// ข้อมูล `ebpf_attach_attempts_total` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `ebpf_attach_attempts_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub ebpf_attach_attempts_total: IntCounterVec,
+    /// ข้อมูล `ebpf_active_mode` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `ebpf_active_mode` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub ebpf_active_mode: IntGaugeVec,
+    /// ข้อมูล `syscall_events_total` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `syscall_events_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub syscall_events_total: IntCounterVec,
+    /// ข้อมูล `syscall_event_drops_total` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `syscall_event_drops_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub syscall_event_drops_total: IntCounterVec,
+    /// ข้อมูล `cache_invalidations_total` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `cache_invalidations_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub cache_invalidations_total: IntCounterVec,
 }
 
 impl KernelMetrics {
+    /// ฟังก์ชัน `register` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `register` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn register(registry: &Registry) -> Result<Arc<Self>, prometheus::Error> {
         let lsm_policy_decisions_total = IntCounterVec::new(
             Opts::new(
@@ -100,22 +118,30 @@ impl KernelMetrics {
         }))
     }
 
+    /// ฟังก์ชัน `record_lsm_decision` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `record_lsm_decision` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_lsm_decision(&self, decision: &str, reason: &str) {
         self.lsm_policy_decisions_total
             .with_label_values(&[decision, reason])
             .inc();
     }
 
+    /// ฟังก์ชัน `set_blocked_syscalls` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `set_blocked_syscalls` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn set_blocked_syscalls(&self, count: usize) {
         self.lsm_blocked_syscalls.set(count as i64);
     }
 
+    /// ฟังก์ชัน `record_attach_attempt` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `record_attach_attempt` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_attach_attempt(&self, component: &str, result: &str) {
         self.ebpf_attach_attempts_total
             .with_label_values(&[component, result])
             .inc();
     }
 
+    /// ฟังก์ชัน `set_active_mode` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `set_active_mode` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn set_active_mode(&self, component: &str, mode: &str) {
         for known_mode in KNOWN_EBPF_MODES {
             self.ebpf_active_mode
@@ -124,18 +150,24 @@ impl KernelMetrics {
         }
     }
 
+    /// ฟังก์ชัน `record_syscall_event` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `record_syscall_event` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_syscall_event(&self, decision: &str, syscall: &str) {
         self.syscall_events_total
             .with_label_values(&[decision, syscall])
             .inc();
     }
 
+    /// ฟังก์ชัน `record_syscall_drop` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `record_syscall_drop` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_syscall_drop(&self, reason: &str) {
         self.syscall_event_drops_total
             .with_label_values(&[reason])
             .inc();
     }
 
+    /// ฟังก์ชัน `record_cache_invalidation` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `record_cache_invalidation` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_cache_invalidation(&self, scope: &str) {
         self.cache_invalidations_total
             .with_label_values(&[scope])
@@ -144,6 +176,8 @@ impl KernelMetrics {
 }
 
 #[must_use]
+/// ฟังก์ชัน `kernel_metrics` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+/// ฟังก์ชัน `kernel_metrics` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
 pub fn kernel_metrics() -> Arc<KernelMetrics> {
     Arc::clone(KERNEL_METRICS.get_or_init(|| {
         KernelMetrics::register(prometheus::default_registry())
@@ -151,6 +185,8 @@ pub fn kernel_metrics() -> Arc<KernelMetrics> {
     }))
 }
 
+/// ฟังก์ชัน `init_tracing` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+/// ฟังก์ชัน `init_tracing` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
 pub fn init_tracing(level: &str) -> Result<(), SetGlobalDefaultError> {
     if TRACING_INIT.get().is_some() {
         return Ok(());

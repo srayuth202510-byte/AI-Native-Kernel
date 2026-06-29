@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use context_memory::warm::WarmStore;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;

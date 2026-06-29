@@ -1,3 +1,10 @@
+//! # การทดสอบประสิทธิภาพ (Benchmarks) สำหรับ Agent Scheduler
+//!
+//! โมดูลนี้ประกอบไปด้วยการทดสอบประสิทธิภาพการทำงานของ Agent Scheduler
+//! เช่น การสร้าง Agent ใหม่, การทำงานตลอดวงจรชีวิต, และการมอบสิทธิ (Capabilities)
+
+#![allow(missing_docs)]
+
 use agent_scheduler::AgentScheduler;
 use agent_scheduler::block::AgentControlBlock;
 use capability_security::{CapabilitySecurityManager, CapabilityToken, Scope};

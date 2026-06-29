@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use context_memory::ContextMemoryManager;
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 

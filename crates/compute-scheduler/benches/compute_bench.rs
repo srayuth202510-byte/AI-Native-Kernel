@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use compute_scheduler::{ComputeProfile, ComputeScheduler, ComputeTarget};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 

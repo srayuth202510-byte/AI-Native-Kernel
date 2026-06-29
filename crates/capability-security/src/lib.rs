@@ -1,8 +1,16 @@
+//! เอกสารกำกับโค้ดระดับโมดูล/เครต (เพิ่มอัตโนมัติ)
+//! เอกสารกำกับโค้ดระดับโมดูล/เครต (เพิ่มอัตโนมัติ)
 #![deny(unsafe_code)]
 
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub mod audit;
 pub mod metrics;
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub mod policy;
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub mod token;
 
 pub use metrics::{SecurityMetrics, render_metrics};
@@ -15,6 +23,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 use thiserror::Error;
 
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub type Result<T> = core::result::Result<T, CapabilityError>;
 
 /// ข้อผิดพลาดประเภทต่างๆ ที่เกี่ยวข้องกับการตรวจสอบและจัดการสิทธิ์การเข้าถึง (Capability)
@@ -113,6 +123,8 @@ impl CapabilitySecurityManager {
     }
 
     #[must_use]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn with_rate_limit(max_issue_rate: usize) -> Self {
         let metrics = SecurityMetrics::register(prometheus::default_registry()).ok();
         Self {
@@ -134,6 +146,8 @@ impl CapabilitySecurityManager {
     }
 
     #[must_use]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new_with_log_path_and_rate(log_path: std::path::PathBuf, max_issue_rate: usize) -> Self {
         let metrics = SecurityMetrics::register(prometheus::default_registry()).ok();
         Self {

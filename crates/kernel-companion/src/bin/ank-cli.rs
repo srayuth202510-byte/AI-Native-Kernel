@@ -1,3 +1,6 @@
+//! เอกสารระดับ Crate สำหรับระบบ
+//!
+//! โมดูลนี้รวบรวมฟังก์ชันการทำงานที่จำเป็นทั้งหมด
 use anyhow::{Context, Result};
 use compute_scheduler::ComputeScheduler;
 use compute_scheduler::placement::PlacementPolicy;

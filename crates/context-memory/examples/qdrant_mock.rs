@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use ::qdrant_client::qdrant::collections_server::{Collections, CollectionsServer};
 use ::qdrant_client::qdrant::points_server::{Points, PointsServer};
 use ::qdrant_client::qdrant::qdrant_server::{Qdrant, QdrantServer};

@@ -3,11 +3,15 @@ use tracing::{debug, info, warn};
 
 // ---- Intel Gaudi Runtime ----
 
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct IntelGaudiRuntime {
     profile: NpuProfile,
 }
 
 impl IntelGaudiRuntime {
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::intel_gaudi3(),
@@ -68,11 +72,15 @@ impl NpuRuntime for IntelGaudiRuntime {
 
 // ---- Google TPU Runtime ----
 
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct TpuRuntime {
     profile: NpuProfile,
 }
 
 impl TpuRuntime {
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::google_tpu_v5e(),
@@ -138,11 +146,15 @@ impl NpuRuntime for TpuRuntime {
 
 // ---- Apple Silicon Neural Engine Runtime ----
 
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct AppleNpuRuntime {
     profile: NpuProfile,
 }
 
 impl AppleNpuRuntime {
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::apple_m4_ne(),
@@ -205,11 +217,15 @@ impl NpuRuntime for AppleNpuRuntime {
 
 // ---- Qualcomm Hexagon Runtime ----
 
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct HexagonRuntime {
     profile: NpuProfile,
 }
 
 impl HexagonRuntime {
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::qualcomm_hexagon(),
@@ -269,11 +285,15 @@ impl NpuRuntime for HexagonRuntime {
 
 // ---- AMD XDNA Runtime ----
 
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct XdnaRuntime {
     profile: NpuProfile,
 }
 
 impl XdnaRuntime {
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::amd_xdna2(),

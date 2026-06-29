@@ -18,6 +18,8 @@ use tracing::{debug, instrument, warn};
 #[derive(Debug, Error)]
 pub enum TCellError {
     #[error("threshold config error: {0}")]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     ConfigError(String),
 }
 
@@ -80,11 +82,15 @@ pub struct TCellAgent {
 
 impl TCellAgent {
     #[must_use]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new(rate_threshold: u64, deny_threshold: u32) -> Self {
         Self::with_kill_threshold(rate_threshold, deny_threshold, 15)
     }
 
     #[must_use]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn with_kill_threshold(
         rate_threshold: u64,
         deny_threshold: u32,

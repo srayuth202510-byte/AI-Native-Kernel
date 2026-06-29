@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use context_memory::p2p_mesh::P2PMeshManager;
 use context_memory::{ContextError, ContextMemoryManager};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};

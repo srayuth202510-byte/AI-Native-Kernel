@@ -1,3 +1,6 @@
+//! เอกสารระดับ Crate สำหรับระบบ
+//!
+//! โมดูลนี้รวบรวมฟังก์ชันการทำงานที่จำเป็นทั้งหมด
 use agent_scheduler::{
     block::{AgentControlBlock, AgentState},
     supervisor::SupervisorService,

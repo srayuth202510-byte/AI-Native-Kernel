@@ -1,3 +1,10 @@
+//! # การทดสอบการทำงานร่วมกัน (Integration Tests) สำหรับ Agent Scheduler
+//!
+//! โมดูลนี้ประกอบไปด้วยการทดสอบแบบ Integration สำหรับ Agent Scheduler
+//! ทดสอบการทำงานร่วมกันของคอมโพเนนต์ต่างๆ ในสภาพแวดล้อมจำลอง
+
+#![allow(missing_docs)]
+
 use agent_scheduler::AgentScheduler;
 use agent_scheduler::block::AgentControlBlock;
 use capability_security::{CapabilitySecurityManager, CapabilityToken, Scope};

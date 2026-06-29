@@ -230,6 +230,8 @@ impl LsmAttachment {
         self.bpf.is_some()
     }
 
+    /// ฟังก์ชัน `allow_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `allow_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn allow_pid(&mut self, pid: u32) -> Result<()> {
         if let Some(map) = self.allowed_pids.as_mut() {
             map.insert(pid, 1, 0)?;
@@ -238,6 +240,8 @@ impl LsmAttachment {
         Ok(())
     }
 
+    /// ฟังก์ชัน `deny_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `deny_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn deny_pid(&mut self, pid: u32) -> Result<()> {
         if let Some(map) = self.allowed_pids.as_mut() {
             let _ = map.remove(&pid);
@@ -247,11 +251,15 @@ impl LsmAttachment {
     }
 
     #[must_use]
+    /// ฟังก์ชัน `allows_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `allows_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn allows_pid(&self, pid: u32) -> bool {
         self.allowed_pid_cache.contains(&pid)
     }
 
     #[must_use]
+    /// ฟังก์ชัน `allowed_pids` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// ฟังก์ชัน `allowed_pids` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn allowed_pids(&self) -> HashSet<u32> {
         self.allowed_pid_cache.clone()
     }
