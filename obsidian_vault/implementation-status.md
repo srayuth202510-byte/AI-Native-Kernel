@@ -57,6 +57,7 @@ Last verified: 2026-06-29
 - **[ANK-043] P2P Context Mesh with real TCP networking**: Gossip-based P2P mesh ใน context-memory ใช้ tokio TCP (TcpListener/TcpStream) พร้อม NodeInfo, capability advertisement, gossip heartbeat, และ KV sync.
 - **[ANK-044] P2P Trust Model + Conflict Resolution + Distributed Sync**: Trust scoring (100-0), conflict resolution สำหรับ records ที่ conflict, distributed context sync/fetch ผ่าน P2P mesh พร้อม fail-closed LSM gating เมื่อ mesh ล้มเหลว.
 - **[ANK-055] RocksDB Warm Tier Persistent Configurable Path**: WarmStore รองรับ configurable RocksDB path (new_with_path); startup key scanning; persistent storage ผ่าน feature flag rocksdb-warm. เปิดใช้ด้วย --features context-memory/rocksdb-warm.
+- **[ANK-058] KV Cache Paging & Eviction Model for VRAM Tier**: พัฒนาโครงสร้างข้อมูล KvCachePage สำหรับจัดเก็บ key/value tensors และจัดระบบ Paging สลับหน่วยความจำของหน้าบริบทย้ายเข้า-ออกระหว่าง RAM (Hot) และ VRAM (Vram) เพื่อความเสถียรของ Multi-tenant GPU.
 
 ### compute-scheduler
 
@@ -64,6 +65,8 @@ Last verified: 2026-06-29
 - **[ANK-016] Real device-aware placement policy**: เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.
 - **[ANK-045] llama.cpp + ONNX Runtime Integration**: InferenceRuntime enum (LlamaCpp/OnnxRuntime/TensorRtLlm) ใน compute-scheduler พร้อม mock execution model สำหรับ CPU/NPU/GPU placement decision.
 - **[ANK-046] GPU/NPU Hardware Detection + Phase 2 Placement Policy**: HardwareProber ใช้ sysinfo + nvml-wrapper เพื่อสแกน CPU/GPU/NPU จริง; PlacementPolicy รองรับ WorkloadClass (KernelLogic/SmallLlm/LargeLlm/VectorIndexing) พร้อม async event flow.
+- **[ANK-057] llama.cpp + ONNX Runtime Dynamic FFI Linkers**: พัฒนาระบบโหลดสัญลักษณ์ไลบรารีภายนอกแบบไดนามิก (Dynamic FFI loader via dlopen/dlsym) สำหรับ ONNX Runtime และ llama.cpp เพื่อความยืดหยุ่นในการ Compile และตัด Dependencies ส่วนเกิน.
+- **[ANK-059] Multi-tenant GPU VRAM Budget Manager & Circuit Breaker**: ออกแบบ GpuVramManager ในการจอง ตรวจสอบ และจำกัดการใช้ VRAM ของแต่ละ Agent โดยมีการตัดการทำงานของระบบ Circuit Breaker เมื่อปริมาณ VRAM เกินค่าขีดจำกัดความปลอดภัย (เช่น 90.0%) เพื่อป้องกัน GPU OOM.
 
 ### capability-security
 

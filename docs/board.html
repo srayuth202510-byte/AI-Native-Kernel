@@ -1046,11 +1046,44 @@ const SEED = [
         "module": "infra",
         "assignee": "AI",
         "due": ""
+    },
+    {
+        "id": "ANK-057",
+        "type": "feature",
+        "title": "llama.cpp + ONNX Runtime Dynamic FFI Linkers",
+        "desc": "พัฒนาระบบโหลดสัญลักษณ์ไลบรารีภายนอกแบบไดนามิก (Dynamic FFI loader via dlopen/dlsym) สำหรับ ONNX Runtime และ llama.cpp เพื่อความยืดหยุ่นในการ Compile และตัด Dependencies ส่วนเกิน.",
+        "status": "done",
+        "priority": "high",
+        "module": "compute-scheduler",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-058",
+        "type": "feature",
+        "title": "KV Cache Paging & Eviction Model for VRAM Tier",
+        "desc": "พัฒนาโครงสร้างข้อมูล KvCachePage สำหรับจัดเก็บ key/value tensors และจัดระบบ Paging สลับหน่วยความจำของหน้าบริบทย้ายเข้า-ออกระหว่าง RAM (Hot) และ VRAM (Vram) เพื่อความเสถียรของ Multi-tenant GPU.",
+        "status": "done",
+        "priority": "high",
+        "module": "context-memory",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-059",
+        "type": "feature",
+        "title": "Multi-tenant GPU VRAM Budget Manager & Circuit Breaker",
+        "desc": "ออกแบบ GpuVramManager ในการจอง ตรวจสอบ และจำกัดการใช้ VRAM ของแต่ละ Agent โดยมีการตัดการทำงานของระบบ Circuit Breaker เมื่อปริมาณ VRAM เกินค่าขีดจำกัดความปลอดภัย (เช่น 90.0%) เพื่อป้องกัน GPU OOM.",
+        "status": "done",
+        "priority": "critical",
+        "module": "compute-scheduler",
+        "assignee": "AI",
+        "due": ""
     }
 ];
 // SEED_END
 
-let state = { tasks: [], nextSeq: 57, view: "kanban", filters: { module: "all" } };
+let state = { tasks: [], nextSeq: 60, view: "kanban", filters: { module: "all" } };
 
 function load() {
     try {
