@@ -1,9 +1,14 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::vectors_config::Config;
 use qdrant_client::qdrant::{CreateCollection, Distance, VectorParams, VectorsConfig};
 use qdrant_client::qdrant::{PointStruct, SearchPoints, UpsertPoints};
 use std::collections::HashMap;
+use std::time::Duration;
+use tokio::time::timeout;
+
+/// Timeout สำหรับ Qdrant HTTP calls
+const QDRANT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// ตัวจัดการพื้นที่จัดเก็บและค้นหาตามความหมาย (Semantic Store)
 /// ใช้ Qdrant สำหรับค้นหาด้วย Vector (Cosine Similarity)
@@ -17,10 +22,14 @@ impl SemanticStore {
     pub async fn new(url: &str, collection_name: &str, vector_size: u64) -> Result<Self> {
         let client = Qdrant::from_url(url).build()?;
 
-        // เตรียมสร้าง Collection หากยังไม่มี (สำหรับ MVP)
-        if !client.collection_exists(collection_name).await? {
-            client
-                .create_collection(CreateCollection {
+        // เตรียมสร้าง Collection หากยังไม่มี (สำหรับ MVP) - with timeout
+        let exists = timeout(QDRANT_TIMEOUT, client.collection_exists(collection_name))
+            .await
+            .context("Qdrant: collection_exists timeout")?;
+        if !exists? {
+            timeout(
+                QDRANT_TIMEOUT,
+                client.create_collection(CreateCollection {
                     collection_name: collection_name.to_string(),
                     vectors_config: Some(VectorsConfig {
                         config: Some(Config::Params(VectorParams {
@@ -30,8 +39,10 @@ impl SemanticStore {
                         })),
                     }),
                     ..Default::default()
-                })
-                .await?;
+                }),
+            )
+            .await
+            .context("Qdrant: create_collection timeout")??;
         }
 
         Ok(Self {
@@ -48,14 +59,17 @@ impl SemanticStore {
         payload: HashMap<String, qdrant_client::qdrant::Value>,
     ) -> Result<()> {
         let point = PointStruct::new(id.to_string(), vector, payload);
-        self.client
-            .upsert_points(UpsertPoints {
+        timeout(
+            QDRANT_TIMEOUT,
+            self.client.upsert_points(UpsertPoints {
                 collection_name: self.collection_name.clone(),
                 wait: Some(true),
                 points: vec![point],
                 ..Default::default()
-            })
-            .await?;
+            }),
+        )
+        .await
+        .context("Qdrant: upsert_points timeout")??;
         Ok(())
     }
 
@@ -65,16 +79,18 @@ impl SemanticStore {
         vector: Vec<f32>,
         limit: u64,
     ) -> Result<Vec<qdrant_client::qdrant::ScoredPoint>> {
-        let result = self
-            .client
-            .search_points(SearchPoints {
+        let result = timeout(
+            QDRANT_TIMEOUT,
+            self.client.search_points(SearchPoints {
                 collection_name: self.collection_name.clone(),
                 vector,
                 limit,
                 with_payload: Some(true.into()),
                 ..Default::default()
-            })
-            .await?;
+            }),
+        )
+        .await
+        .context("Qdrant: search_points timeout")??;
         Ok(result.result)
     }
 
@@ -118,8 +134,9 @@ impl SemanticStore {
             DeletePoints, PointsIdsList, PointsSelector, points_selector::PointsSelectorOneOf,
         };
 
-        self.client
-            .delete_points(DeletePoints {
+        timeout(
+            QDRANT_TIMEOUT,
+            self.client.delete_points(DeletePoints {
                 collection_name: self.collection_name.clone(),
                 wait: Some(true),
                 points: Some(PointsSelector {
@@ -128,8 +145,11 @@ impl SemanticStore {
                     })),
                 }),
                 ..Default::default()
-            })
-            .await?;
+            }),
+        )
+        .await
+        .context("Qdrant: delete_points timeout")?
+        .map_err(|e| anyhow::anyhow!(e))?;
         Ok(())
     }
 }

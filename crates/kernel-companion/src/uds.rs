@@ -13,10 +13,15 @@ use nix::unistd::{Gid, Uid};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::task;
+use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
+
+/// Timeout สำหรับ UDS I/O operations
+const UDS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// เริ่มต้น Unix Domain Socket Server สำหรับรับ Intent จากภายนอก
 /// และรองรับการตอบกลับข้อมูลสืบค้นหรือคำสั่งควบคุมความปลอดภัยของ CLI แบบสองทาง (Bidirectional)
@@ -75,9 +80,9 @@ pub async fn start_uds_server(
                         break;
                     }
                 }
-                accept_res = listener.accept() => {
+                accept_res = timeout(UDS_TIMEOUT, listener.accept()) => {
                     match accept_res {
-                        Ok((mut socket, addr)) => {
+                        Ok(Ok((mut socket, addr))) => {
                             let authenticated = match auth_manager.as_ref() {
                                 Some(_) => match check_socket_permissions(&mut socket).await {
                                     Ok(true) => true,
@@ -109,9 +114,9 @@ pub async fn start_uds_server(
 
                                 loop {
                                     line.clear();
-                                    match buf_reader.read_line(&mut line).await {
-                                        Ok(0) => break, // EOF
-                                        Ok(_) => {
+                                    match timeout(UDS_TIMEOUT, buf_reader.read_line(&mut line)).await {
+                                        Ok(Ok(0)) => break, // EOF
+                                        Ok(Ok(_)) => {
                                             if let Ok(intent) = serde_json::from_str::<Intent>(&line) {
                                                 debug!("Received intent via UDS: {:?}", intent.id);
 
@@ -140,9 +145,14 @@ pub async fn start_uds_server(
                                                         }
                                                         if let Some(ref cs) = compute_scheduler {
                                                             let cs = Arc::clone(cs);
-                                                            let hardware_profiles = task::spawn_blocking(move || cs.scan_real_hardware())
-                                                                .await
-                                                                .unwrap_or_default();
+                                                            let hardware_profiles = match timeout(
+                                                                UDS_TIMEOUT,
+                                                                task::spawn_blocking(move || cs.scan_real_hardware())
+                                                            )
+                                                            .await {
+                                                                Ok(Ok(profiles)) => profiles,
+                                                                _ => Vec::new(),
+                                                            };
                                                             for (target, profile) in hardware_profiles {
                                                                 hardware_targets.push(serde_json::json!({
                                                                     "target": format!("{:?}", target),
@@ -181,8 +191,12 @@ pub async fn start_uds_server(
                                                             "p2p_enabled": p2p_enabled,
                                                         });
                                                         let resp_json = format!("{}\n", response);
-                                                        let _ = writer.write_all(resp_json.as_bytes()).await;
-                                                        let _ = writer.flush().await;
+                                                        timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
+                                                            .await
+                                                            .ok();
+                                                        timeout(UDS_TIMEOUT, writer.flush())
+                                                            .await
+                                                            .ok();
                                                         continue;
                                                     // กรณีดึงรายการ PID ที่กำลังโดนกักกัน
                                                     } else if cmd == "list-quarantine" {
@@ -194,8 +208,12 @@ pub async fn start_uds_server(
                                                             "quarantined_pids": pids
                                                         });
                                                         let resp_json = format!("{}\n", response);
-                                                        let _ = writer.write_all(resp_json.as_bytes()).await;
-                                                        let _ = writer.flush().await;
+                                                        timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
+                                                            .await
+                                                            .ok();
+                                                        timeout(UDS_TIMEOUT, writer.flush())
+                                                            .await
+                                                            .ok();
                                                         continue;
                                                     // กรณีตั้งค่า Threshold ความปลอดภัยของ T-Cell
                                                     } else if cmd == "set-threshold" {
@@ -216,8 +234,12 @@ pub async fn start_uds_server(
                                                             "message": if success { "Thresholds updated successfully" } else { "Failed to parse rate or deny from metadata" }
                                                         });
                                                         let resp_json = format!("{}\n", response);
-                                                        let _ = writer.write_all(resp_json.as_bytes()).await;
-                                                        let _ = writer.flush().await;
+                                                        timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
+                                                            .await
+                                                            .ok();
+                                                        timeout(UDS_TIMEOUT, writer.flush())
+                                                            .await
+                                                            .ok();
                                                         continue;
                                                     // กรณีสลับ LSM allowlist profile runtime
                                                     } else if cmd == "set-lsm-profile" {
@@ -257,8 +279,12 @@ pub async fn start_uds_server(
                                                             "available_profiles": available_profiles,
                                                         });
                                                         let resp_json = format!("{}\n", response);
-                                                        let _ = writer.write_all(resp_json.as_bytes()).await;
-                                                        let _ = writer.flush().await;
+                                                        timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
+                                                            .await
+                                                            .ok();
+                                                        timeout(UDS_TIMEOUT, writer.flush())
+                                                            .await
+                                                            .ok();
                                                         continue;
                                                     }
                                                 }
@@ -275,6 +301,10 @@ pub async fn start_uds_server(
                                             error!("UDS read error: {}", e);
                                             break;
                                         }
+                                        Ok(Err(e)) => {
+                                            error!("UDS read failed: {}", e);
+                                            break;
+                                        }
                                     }
                                 }
                             });
@@ -282,6 +312,9 @@ pub async fn start_uds_server(
                         }
                         Err(e) => {
                             error!("UDS accept error: {}", e);
+                        }
+                        Ok(Err(e)) => {
+                            error!("UDS accept failed: {}", e);
                         }
                     }
                 }

@@ -11,6 +11,11 @@ use tokio::time::{Duration, sleep, timeout};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+/// Connection timeout for external I/O operations (connect, accept, read, write)
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+/// Read/write timeout for individual I/O operations
+const RW_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -175,8 +180,9 @@ impl P2PMeshManager {
 
     /// เชื่อมต่อไปยัง peer ด้วย TCP
     pub async fn connect_to_peer(self: Arc<Self>, addr: SocketAddr) -> Result<()> {
-        let stream = TcpStream::connect(addr)
+        let stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(addr))
             .await
+            .context("P2P: connection timeout")?
             .context(format!("P2P: cannot connect to {addr}"))?;
         let peer_addr = stream.peer_addr().ok().unwrap_or(addr);
         debug!(%peer_addr, "P2P: outbound connection established");
@@ -572,8 +578,10 @@ async fn handle_connection(
         let mut reader = BufReader::new(owned_reader);
         let mut line = String::new();
 
-        // 1. อ่าน handshake
-        reader.read_line(&mut line).await?;
+        // 1. อ่าน handshake (with timeout)
+        timeout(RW_TIMEOUT, reader.read_line(&mut line))
+            .await
+            .context("P2P: handshake read timeout")??;
         let hs: P2PMessage = serde_json::from_str(line.trim())?;
         if hs.msg_type != MessageType::Handshake {
             anyhow::bail!("expected Handshake, got {:?}", hs.msg_type);
@@ -604,7 +612,7 @@ async fn handle_connection(
         }
         info!(node_id = %hs.from, %peer_addr, "P2P: registered via inbound handshake");
 
-        // 2. ส่ง handshake response
+        // 2. ส่ง handshake response (with timeout)
         let resp = P2PMessage {
             from: state.local_id.clone(),
             from_addr: state.local_addr,
@@ -614,9 +622,15 @@ async fn handle_connection(
             timestamp_millis: now_millis(),
         };
         let resp_json = serde_json::to_string(&resp)?;
-        owned_writer.write_all(resp_json.as_bytes()).await?;
-        owned_writer.write_all(b"\n").await?;
-        owned_writer.flush().await?;
+        timeout(RW_TIMEOUT, owned_writer.write_all(resp_json.as_bytes()))
+            .await
+            .context("P2P: handshake write timeout")??;
+        timeout(RW_TIMEOUT, owned_writer.write_all(b"\n"))
+            .await
+            .context("P2P: handshake newline write timeout")??;
+        timeout(RW_TIMEOUT, owned_writer.flush())
+            .await
+            .context("P2P: handshake flush timeout")??;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         state.peers.write().await.insert(hs.from.clone(), tx);
@@ -654,7 +668,7 @@ async fn handle_connection(
         let mut reader = BufReader::new(owned_reader);
         let mut line = String::new();
 
-        // outbound: ส่ง handshake
+        // outbound: ส่ง handshake (with timeout)
         let hs = P2PMessage {
             from: state.local_id.clone(),
             from_addr: state.local_addr,
@@ -664,12 +678,20 @@ async fn handle_connection(
             timestamp_millis: now_millis(),
         };
         let hs_json = serde_json::to_string(&hs)?;
-        owned_writer.write_all(hs_json.as_bytes()).await?;
-        owned_writer.write_all(b"\n").await?;
-        owned_writer.flush().await?;
+        timeout(RW_TIMEOUT, owned_writer.write_all(hs_json.as_bytes()))
+            .await
+            .context("P2P: outbound handshake write timeout")??;
+        timeout(RW_TIMEOUT, owned_writer.write_all(b"\n"))
+            .await
+            .context("P2P: outbound handshake newline write timeout")??;
+        timeout(RW_TIMEOUT, owned_writer.flush())
+            .await
+            .context("P2P: outbound handshake flush timeout")??;
 
-        // อ่าน handshake response
-        reader.read_line(&mut line).await?;
+        // อ่าน handshake response (with timeout)
+        timeout(RW_TIMEOUT, reader.read_line(&mut line))
+            .await
+            .context("P2P: outbound handshake read timeout")??;
         let hs_resp: P2PMessage = serde_json::from_str(line.trim())?;
         if hs_resp.msg_type != MessageType::Handshake {
             anyhow::bail!("expected Handshake response, got {:?}", hs_resp.msg_type);
@@ -711,9 +733,13 @@ async fn handle_connection(
             let mut buf = String::new();
             loop {
                 buf.clear();
-                match reader.read_line(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => on_message(&buf, &node_id, &read_state).await,
+                match timeout(RW_TIMEOUT, reader.read_line(&mut buf)).await {
+                    Ok(Ok(0)) | Ok(Err(_)) => break,
+                    Ok(Ok(_)) => on_message(&buf, &node_id, &read_state).await,
+                    Err(_) => {
+                        warn!("P2P: outbound read timeout, closing connection");
+                        break;
+                    }
                 }
             }
             peers.write().await.remove(&node_id);
@@ -721,13 +747,21 @@ async fn handle_connection(
 
         let write_task = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
-                if owned_writer.write_all(msg.as_bytes()).await.is_err() {
+                if timeout(RW_TIMEOUT, owned_writer.write_all(msg.as_bytes()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
-                if owned_writer.write_all(b"\n").await.is_err() {
+                if timeout(RW_TIMEOUT, owned_writer.write_all(b"\n"))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
-                let _ = owned_writer.flush().await;
+                if timeout(RW_TIMEOUT, owned_writer.flush()).await.is_err() {
+                    break;
+                }
             }
         });
 
