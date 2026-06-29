@@ -265,14 +265,10 @@ impl KernelCompanion {
                     loop {
                         tokio::select! {
                             _ = tokio::time::sleep(expiry_interval) => {
-                                let tokens = cap_sec.get_tokens();
-                                let mut pid_tokens: std::collections::HashMap<u32, Vec<capability_security::CapabilityToken>> = std::collections::HashMap::new();
-                                for token in &tokens {
-                                    if let Scope::Process(pid) = token.scope {
-                                        pid_tokens.entry(pid).or_default().push(token.clone());
-                                    }
-                                }
+                                // 1. ทำความสะอาด Token ที่หมดอายุ และขยะอื่นๆ ในระบบ
+                                cap_sec.garbage_collect();
 
+                                // 2. ดึงรายการ PID ที่ยังได้รับอนุญาตอยู่ใน BPF Map มาเพื่อตรวจสอบ
                                 let current_allowed_pids = {
                                     if let Some(attachment) = attachment_for_expiry.lock().as_ref() {
                                         attachment.allowed_pids()
@@ -281,16 +277,13 @@ impl KernelCompanion {
                                     }
                                 };
 
+                                // 3. สำหรับแต่ละ PID ที่ได้รับอนุญาต ตรวจสอบว่ายังมี Token ที่ใช้งานได้อยู่หรือไม่
                                 for pid in current_allowed_pids {
                                     if pid == std::process::id() {
                                         continue;
                                     }
 
-                                    let has_valid_token = if let Some(tokens_for_pid) = pid_tokens.get(&pid) {
-                                        tokens_for_pid.iter().any(|t| t.is_valid() && !cap_sec.is_revoked(t.id))
-                                    } else {
-                                        false
-                                    };
+                                    let has_valid_token = cap_sec.has_valid_token_for_pid(pid);
 
                                     if !has_valid_token {
                                         if let Some(attachment) = attachment_for_expiry.lock().as_mut() {

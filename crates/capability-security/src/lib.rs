@@ -234,6 +234,48 @@ impl CapabilitySecurityManager {
         self.revoked_read().contains(&token_id)
     }
 
+    /// ตรวจสอบว่ามี Token ที่ยื่นคำขอและยังใช้งานได้อยู่สำหรับ Process ID นี้หรือไม่
+    /// เป็นการคืนค่า `true` แบบรวดเร็วโดยไม่ต้องคืนค่า Object และไม่ต้อง Clone (O(1) หรือใกล้เคียง)
+    #[must_use]
+    pub fn has_valid_token_for_pid(&self, pid: u32) -> bool {
+        let tokens = self.tokens_read();
+        let revoked = self.revoked_read();
+        for token in tokens.values() {
+            if let Scope::Process(p) = token.scope {
+                if p == pid && token.is_valid() && !revoked.contains(&token.id) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// ทำความสะอาดหน่วยความจำ (Garbage Collection) เพื่อป้องกัน Memory Leak
+    /// จะลบ Token ที่หมดอายุ, คิวเรทลิมิตที่เกิน 1 วินาที และ ID การเพิกถอนที่ไม่มี Token อยู่ในระบบแล้ว
+    pub fn garbage_collect(&self) {
+        let mut tokens = self.tokens_write();
+        let mut revoked = self.revoked_write();
+        let mut issue_rate = self.issue_rate_write();
+        let now_time = Instant::now();
+
+        // 1. ลบ Token ที่หมดอายุ
+        tokens.retain(|_, token| token.is_valid());
+
+        // 2. ลบ ID การเพิกถอน ที่ตัว Token หายไปจาก HashMap แล้ว
+        revoked.retain(|id| tokens.contains_key(id));
+
+        // 3. ลบเรทลิมิตคิวที่ไม่มีกิจกรรมภายใน 1 วินาทีที่ผ่านมา
+        issue_rate.retain(|_, queue| {
+            while queue
+                .front()
+                .is_some_and(|t| now_time.duration_since(*t).as_secs_f64() > 1.0)
+            {
+                queue.pop_front();
+            }
+            !queue.is_empty()
+        });
+    }
+
     /// จำนวนโทเค็นที่ถูกเพิกถอนทั้งหมด
     #[must_use]
     pub fn revoked_count(&self) -> usize {
