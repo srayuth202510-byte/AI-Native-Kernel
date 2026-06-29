@@ -23,6 +23,7 @@ pub struct KernelMetrics {
     pub ebpf_active_mode: IntGaugeVec,
     pub syscall_events_total: IntCounterVec,
     pub syscall_event_drops_total: IntCounterVec,
+    pub cache_invalidations_total: IntCounterVec,
 }
 
 impl KernelMetrics {
@@ -72,12 +73,21 @@ impl KernelMetrics {
             &["reason"],
         )?;
 
+        let cache_invalidations_total = IntCounterVec::new(
+            Opts::new(
+                "ank_cache_invalidations_total",
+                "Syscall decision cache invalidations grouped by scope",
+            ),
+            &["scope"],
+        )?;
+
         registry.register(Box::new(lsm_policy_decisions_total.clone()))?;
         registry.register(Box::new(lsm_blocked_syscalls.clone()))?;
         registry.register(Box::new(ebpf_attach_attempts_total.clone()))?;
         registry.register(Box::new(ebpf_active_mode.clone()))?;
         registry.register(Box::new(syscall_events_total.clone()))?;
         registry.register(Box::new(syscall_event_drops_total.clone()))?;
+        registry.register(Box::new(cache_invalidations_total.clone()))?;
 
         Ok(Arc::new(Self {
             lsm_policy_decisions_total,
@@ -86,6 +96,7 @@ impl KernelMetrics {
             ebpf_active_mode,
             syscall_events_total,
             syscall_event_drops_total,
+            cache_invalidations_total,
         }))
     }
 
@@ -122,6 +133,12 @@ impl KernelMetrics {
     pub fn record_syscall_drop(&self, reason: &str) {
         self.syscall_event_drops_total
             .with_label_values(&[reason])
+            .inc();
+    }
+
+    pub fn record_cache_invalidation(&self, scope: &str) {
+        self.cache_invalidations_total
+            .with_label_values(&[scope])
             .inc();
     }
 }

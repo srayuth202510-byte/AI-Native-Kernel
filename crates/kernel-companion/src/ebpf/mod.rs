@@ -42,24 +42,55 @@ pub enum PolicyDecision {
 
 pub type SyscallEventReceiver = mpsc::Receiver<SyscallEvent>;
 
+/// Cache invalidation events sent from the daemon to the tracer task.
+#[derive(Debug, Clone, Copy)]
+pub enum CacheInvalidation {
+    /// Invalidate all entries (profile changed).
+    Full,
+    /// Invalidate a specific syscall entry (antibody added/removed).
+    Syscall(u64),
+}
+
+pub type CacheInvalidationReceiver = tokio::sync::mpsc::Receiver<CacheInvalidation>;
+pub type CacheInvalidationSender = tokio::sync::mpsc::Sender<CacheInvalidation>;
+
 // ---- SyscallTracer ----
 
 pub struct SyscallTracer {
     policy: Arc<LsmPolicyEngine>,
     event_tx: mpsc::Sender<SyscallEvent>,
     syscall_table: HashMap<u64, &'static str>,
+    cache_invalidation_rx: Arc<tokio::sync::Mutex<Option<CacheInvalidationReceiver>>>,
 }
 
 impl SyscallTracer {
     #[must_use]
     pub fn new(policy: Arc<LsmPolicyEngine>) -> (Self, SyscallEventReceiver) {
         let (event_tx, event_rx) = mpsc::channel(4096);
+        let (_invalidation_tx, invalidation_rx) = tokio::sync::mpsc::channel(64);
         let tracer = Self {
             policy,
             event_tx,
             syscall_table: build_syscall_table(),
+            cache_invalidation_rx: Arc::new(tokio::sync::Mutex::new(Some(invalidation_rx))),
         };
         (tracer, event_rx)
+    }
+
+    /// Create a SyscallTracer with a cache invalidation sender handle.
+    /// Returns (tracer, event_rx, invalidation_tx).
+    pub fn with_cache_invalidation(
+        policy: Arc<LsmPolicyEngine>,
+    ) -> (Self, SyscallEventReceiver, CacheInvalidationSender) {
+        let (event_tx, event_rx) = mpsc::channel(4096);
+        let (invalidation_tx, invalidation_rx) = tokio::sync::mpsc::channel(64);
+        let tracer = Self {
+            policy,
+            event_tx,
+            syscall_table: build_syscall_table(),
+            cache_invalidation_rx: Arc::new(tokio::sync::Mutex::new(Some(invalidation_rx))),
+        };
+        (tracer, event_rx, invalidation_tx)
     }
 
     #[instrument(skip(self, cancel))]
@@ -126,6 +157,30 @@ impl SyscallTracer {
         metrics.set_active_mode("tracer", "real");
         info!("eBPF tracepoint sys_enter attached — polling ring buffer");
 
+        // ── Extract syscall decision cache map ──
+        let mut cache = SyscallDecisionCache::from_bpf(&mut bpf);
+        if cache.is_some() {
+            info!("syscall_decision_cache map found — kernel-space caching active");
+        } else {
+            warn!("syscall_decision_cache map not found — caching disabled (old BPF object?)");
+        }
+
+        // ── Pre-populate cache with current policy decisions ──
+        if let Some(ref mut cache) = cache {
+            for (&nr, name) in &self.syscall_table {
+                let decision = self.policy.decision_for_syscall(name);
+                let pd = match decision {
+                    LsmDecision::Allow => PolicyDecision::Allow,
+                    LsmDecision::Deny => PolicyDecision::Deny,
+                };
+                cache.populate(nr, pd);
+            }
+            info!(
+                "syscall decision cache pre-populated with {} entries",
+                self.syscall_table.len()
+            );
+        }
+
         let map = bpf
             .take_map("syscall_events")
             .ok_or_else(|| TracerError::RingBufferError("map syscall_events not found".into()))?;
@@ -151,34 +206,89 @@ impl SyscallTracer {
 
         let poll_interval = std::time::Duration::from_millis(1);
 
-        while !cancel.is_cancelled() {
-            for state in buffers.iter_mut() {
-                match state.buf.read_events(&mut state.out_bufs) {
-                    Ok(events) if events.read > 0 => {
-                        for buf in state.out_bufs.iter() {
-                            if let Some(raw) = parse_raw_event(buf) {
-                                let event =
-                                    self.process_syscall_event(raw.syscall_nr, raw.pid, raw.uid);
-                                if self.event_tx.try_send(event).is_err() {
-                                    metrics.record_syscall_drop("channel_full");
-                                    debug!("event channel full — dropping syscall event");
+        // ── Main polling loop: handle perf events + cache invalidation ──
+        let mut invalidation_rx = self.cache_invalidation_rx.lock().await.take();
+        loop {
+            if cancel.is_cancelled() {
+                info!("SyscallTracer received cancel signal");
+                break;
+            }
+
+            tokio::select! {
+                // Handle cache invalidation from daemon
+                Some(invalidation) = async {
+                    invalidation_rx.as_mut()?.recv().await
+                } => {
+                    if let Some(ref mut cache) = cache {
+                        match invalidation {
+                            CacheInvalidation::Full => {
+                                cache.invalidate_all();
+                                metrics.record_cache_invalidation("full");
+                                // Re-populate with current policy
+                                for (&nr, name) in &self.syscall_table {
+                                    let decision = self.policy.decision_for_syscall(name);
+                                    let pd = match decision {
+                                        LsmDecision::Allow => PolicyDecision::Allow,
+                                        LsmDecision::Deny => PolicyDecision::Deny,
+                                    };
+                                    cache.populate(nr, pd);
+                                }
+                                info!("cache invalidated and re-populated with {} entries", self.syscall_table.len());
+                            }
+                            CacheInvalidation::Syscall(nr) => {
+                                cache.invalidate_entry(nr);
+                                metrics.record_cache_invalidation("syscall");
+                                // Re-evaluate this specific syscall
+                                if let Some(name) = self.syscall_table.get(&nr) {
+                                    let decision = self.policy.decision_for_syscall(name);
+                                    let pd = match decision {
+                                        LsmDecision::Allow => PolicyDecision::Allow,
+                                        LsmDecision::Deny => PolicyDecision::Deny,
+                                    };
+                                    cache.populate(nr, pd);
                                 }
                             }
                         }
-                        if events.lost > 0 {
-                            debug!(lost = events.lost, "perf events lost");
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        debug!(cpu = state.cpu_id, error = %e, "read_events error");
                     }
                 }
+                // Handle perf buffer events
+                _ = async {
+                    for state in buffers.iter_mut() {
+                        match state.buf.read_events(&mut state.out_bufs) {
+                            Ok(events) if events.read > 0 => {
+                                for buf in state.out_bufs.iter() {
+                                    if let Some(raw) = parse_raw_event(buf) {
+                                        let event =
+                                            self.process_syscall_event(raw.syscall_nr, raw.pid, raw.uid);
+
+                                        // ── Populate cache for future hits ──
+                                        if let Some(ref mut cache) = cache {
+                                            cache.populate(raw.syscall_nr, event.decision);
+                                        }
+
+                                        if self.event_tx.try_send(event).is_err() {
+                                            metrics.record_syscall_drop("channel_full");
+                                            debug!("event channel full — dropping syscall event");
+                                        }
+                                    }
+                                }
+                                if events.lost > 0 {
+                                    debug!(lost = events.lost, "perf events lost");
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                debug!(error = %e, "read_events error");
+                            }
+                        }
+                    }
+                } => {
+                    tokio::time::sleep(poll_interval).await;
+                }
             }
-            tokio::time::sleep(poll_interval).await;
         }
 
-        info!("SyscallTracer eBPF loop stopped (cancel)");
+        info!("SyscallTracer eBPF loop stopped");
         Ok(())
     }
 
@@ -263,6 +373,64 @@ struct PerfBufferState {
     cpu_id: u32,
     buf: aya::maps::perf::PerfEventArrayBuffer<aya::maps::MapData>,
     out_bufs: Vec<BytesMut>,
+}
+
+// ---- Syscall Decision Cache ----
+
+/// BPF hash map wrapper for caching syscall allow/deny decisions in kernel-space.
+/// Key: syscall_nr (u64), Value: decision (u8, 1=allow, 2=deny).
+/// Eliminates userspace round-trip for repeat syscalls.
+pub struct SyscallDecisionCache {
+    map: aya::maps::HashMap<aya::maps::MapData, u64, u8>,
+}
+
+/// Cache decision values matching the BPF C defines.
+const DECISION_ALLOW: u8 = 1;
+const DECISION_DENY: u8 = 2;
+
+impl SyscallDecisionCache {
+    /// Create a new cache wrapper from an aya::Bpf instance.
+    /// Returns None if the map doesn't exist (e.g., old BPF object).
+    pub fn from_bpf(bpf: &mut aya::Bpf) -> Option<Self> {
+        let map = bpf.take_map("syscall_decision_cache")?;
+        let map: aya::maps::HashMap<_, u64, u8> = map.try_into().ok()?;
+        Some(Self { map })
+    }
+
+    /// Write a decision into the kernel BPF cache map.
+    /// After userspace evaluates a syscall, call this to populate the cache
+    /// so subsequent occurrences are resolved in-kernel without perf buffer round-trip.
+    pub fn populate(&mut self, syscall_nr: u64, decision: PolicyDecision) {
+        let val = match decision {
+            PolicyDecision::Allow => DECISION_ALLOW,
+            PolicyDecision::Deny => DECISION_DENY,
+        };
+        let _ = self.map.insert(syscall_nr, val, 0);
+    }
+
+    /// Invalidate the entire cache map.
+    /// Called when the active policy profile changes or antibodies are updated.
+    pub fn invalidate_all(&mut self) {
+        // Iterate and remove all entries — aya HashMap doesn't have a clear() method.
+        // We collect keys first to avoid borrow issues.
+        let keys: Vec<u64> = self
+            .map
+            .iter()
+            .filter_map(|r| r.ok())
+            .map(|(k, _)| k)
+            .collect();
+        let count = keys.len();
+        for key in &keys {
+            let _ = self.map.remove(key);
+        }
+        info!("syscall decision cache invalidated ({count} entries removed)");
+    }
+
+    /// Remove a single syscall from the cache.
+    /// Called when a specific antibody is added/removed.
+    pub fn invalidate_entry(&mut self, syscall_nr: u64) {
+        let _ = self.map.remove(&syscall_nr);
+    }
 }
 
 // ---- Raw event struct matching BPF C definition ----
@@ -880,5 +1048,42 @@ mod tests {
                 eprintln!("SKIP validate_tracepoint_attach_to_kernel: attach failed: {e}");
             }
         }
+    }
+
+    /// Validate that the BPF program contains the syscall_decision_cache map.
+    /// This test verifies the BPF object structure without requiring kernel privileges.
+    #[test]
+    fn validate_bpf_has_decision_cache_map() {
+        let bpf_bytes = match load_bpf_o("syscall-tracer") {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP validate_bpf_has_decision_cache_map: {e}");
+                return;
+            }
+        };
+
+        let mut bpf = match aya::Bpf::load(&bpf_bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP validate_bpf_has_decision_cache_map: aya load failed: {e}");
+                return;
+            }
+        };
+
+        // Verify the syscall_decision_cache map exists
+        let map = bpf.take_map("syscall_decision_cache");
+        assert!(
+            map.is_some(),
+            "syscall_decision_cache map must exist in BPF object"
+        );
+
+        // Verify we can create a SyscallDecisionCache wrapper
+        let cache = SyscallDecisionCache::from_bpf(&mut bpf);
+        assert!(
+            cache.is_some(),
+            "SyscallDecisionCache::from_bpf must succeed"
+        );
+
+        eprintln!("PASS: BPF object contains syscall_decision_cache map");
     }
 }
