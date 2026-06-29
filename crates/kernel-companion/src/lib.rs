@@ -12,7 +12,7 @@ use capability_security::CapabilitySecurityManager;
 use capability_security::Scope;
 use capability_security::audit::{AuditEntry, AuditLogger};
 use compute_scheduler::placement::{PlacementPolicy, WorkloadClass};
-use compute_scheduler::{ComputeProfile, ComputeScheduler, ComputeTarget};
+use compute_scheduler::{ComputeProfile, ComputeScheduler};
 use context_memory::ContextMemoryManager;
 use context_memory::p2p_mesh::{NodeTelemetry, P2PMeshManager};
 use immune_system::{BCellAgent, MacrophageAgent, TCellAgent, ThreatDecision};
@@ -117,6 +117,10 @@ pub struct KernelCompanion {
     intent_bridge: Option<Arc<IntentBridge>>,
     /// handle ของ telemetry sync task ระหว่าง p2p mesh กับ scheduler
     telemetry_task: Option<JoinHandle<()>>,
+    /// handle ของ uds server task
+    uds_task: Option<JoinHandle<()>>,
+    /// cancellation token ของ uds server task
+    uds_cancel: Option<tokio_util_cancel::CancellationToken>,
     /// P2P Gossip Mesh manager
     p2p_mesh: Option<Arc<P2PMeshManager>>,
     /// handle ของ P2P mesh listener task
@@ -234,6 +238,8 @@ impl KernelCompanion {
             intent_bridge_cancel: None,
             intent_bridge: None,
             telemetry_task: None,
+            uds_task: None,
+            uds_cancel: None,
             p2p_mesh: None,
             p2p_listener_task: None,
             p2p_gossip_task: None,
@@ -606,14 +612,25 @@ impl KernelCompanion {
                                         // Scan hardware and place
                                         let policy = PlacementPolicy::new((*compute_scheduler).clone());
                                         let profiles = compute_scheduler.scan_real_hardware().await;
-                                        let target = policy.place(wl, &profiles).unwrap_or(ComputeTarget::Cpu);
-
-                                        // Publish response
-                                        let resp_payload = serde_json::json!({
-                                            "action": "PlacementResponse",
-                                            "agent_id": agent_id,
-                                            "compute_target": format!("{:?}", target),
-                                        }).to_string();
+                                        let target_res = policy.place(wl, &profiles);
+                                        let resp_payload = match target_res {
+                                            Ok(target) => serde_json::json!({
+                                                "action": "PlacementResponse",
+                                                "agent_id": agent_id,
+                                                "success": true,
+                                                "compute_target": format!("{:?}", target),
+                                            }),
+                                            Err(e) => {
+                                                warn!("Placement failed for agent {}: {:?}", agent_id, e);
+                                                serde_json::json!({
+                                                    "action": "PlacementResponse",
+                                                    "agent_id": agent_id,
+                                                     "success": false,
+                                                     "error": format!("{:?}", e),
+                                                })
+                                            }
+                                        }
+                                        .to_string();
 
                                         let resp_intent = Intent::new(
                                             uuid::Uuid::new_v4().to_string(),
@@ -870,7 +887,8 @@ impl KernelCompanion {
             }
 
             let cancel_uds = tokio_util_cancel::CancellationToken::new();
-            let _ = uds::start_uds_server(
+            self.uds_cancel = Some(cancel_uds.clone());
+            let uds_task = uds::start_uds_server(
                 Arc::clone(&self.intent_bus),
                 Some(Arc::clone(&self.tcell)),
                 Some(Arc::clone(&self.lsm_engine)),
@@ -882,7 +900,8 @@ impl KernelCompanion {
                 cancel_uds,
                 Some(Arc::clone(&self.capability_security)),
             )
-            .await;
+            .await?;
+            self.uds_task = Some(uds_task);
 
             let metrics_addr = self.config.kernel_companion.metrics_server_addr.clone();
             let cancel_metrics = tokio_util_cancel::CancellationToken::new();
@@ -941,6 +960,12 @@ impl KernelCompanion {
         }
         if let Some(cancel) = self.intent_bridge_cancel.take() {
             cancel.cancel();
+        }
+        if let Some(cancel) = self.uds_cancel.take() {
+            cancel.cancel();
+        }
+        if let Some(task) = self.uds_task.take() {
+            let _ = task.await;
         }
         if let Some(task) = self.routing_task.take() {
             let _ = task.await;
@@ -1108,7 +1133,11 @@ mod tests {
 
     #[tokio::test]
     async fn boot_attaches_and_shutdown_detaches() {
-        let mut companion = KernelCompanion::new();
+        let mut config = Config::default();
+        config.kernel_companion.uds_socket_path =
+            format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
+        config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+        let mut companion = KernelCompanion::with_config(&config);
 
         companion.boot().await.expect("boot should succeed");
         assert!(companion.is_attached());
@@ -1119,7 +1148,11 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_boot_does_not_duplicate_routing_tasks() {
-        let mut companion = KernelCompanion::new();
+        let mut config = Config::default();
+        config.kernel_companion.uds_socket_path =
+            format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
+        config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+        let mut companion = KernelCompanion::with_config(&config);
 
         companion.boot().await.expect("first boot should succeed");
         companion.boot().await.expect("second boot should succeed");

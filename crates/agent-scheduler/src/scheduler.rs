@@ -622,6 +622,22 @@ impl AgentScheduler {
                         {
                             let agent_id =
                                 data.get("agent_id").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                            let success = data
+                                .get("success")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true);
+                            if !success {
+                                let mut agents = self.agents.write().await;
+                                if let Some(agent) = agents.get_mut(&agent_id) {
+                                    agent.state = AgentState::Failed;
+                                    let _ = self
+                                        .monitoring_tx
+                                        .send(AgentEvent::AgentFailed(agent.clone()));
+                                }
+                                return Ok(());
+                            }
+
                             let target_str = data
                                 .get("compute_target")
                                 .and_then(|v| v.as_str())

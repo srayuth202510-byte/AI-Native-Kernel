@@ -37,7 +37,7 @@ pub async fn start_uds_server(
     socket_path: &str,
     cancel: CancellationToken,
     auth_manager: Option<Arc<CapabilitySecurityManager>>,
-) -> Result<()> {
+) -> Result<tokio::task::JoinHandle<()>> {
     // ลบไฟล์ซ็อกเก็ตเก่าถ้ามี
     let _ = tokio::fs::remove_file(socket_path).await;
 
@@ -71,7 +71,7 @@ pub async fn start_uds_server(
     let context_memory = context_memory.clone();
     let p2p_mesh = p2p_mesh.clone();
 
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
@@ -319,7 +319,7 @@ pub async fn start_uds_server(
         }
     });
 
-    Ok(())
+    Ok(task)
 }
 
 async fn check_socket_permissions(socket: &mut tokio::net::UnixStream) -> Result<bool> {
@@ -408,7 +408,7 @@ mod tests {
         let mut sub = intent_bus.subscribe();
         let cancel = CancellationToken::new();
 
-        start_uds_server(
+        let _uds_task = start_uds_server(
             Arc::clone(&intent_bus),
             None,
             None,

@@ -142,7 +142,11 @@ async fn int_capability_token_lifecycle() {
 
 #[tokio::test]
 async fn int_lsm_fail_closed_updates_pid_allowlist_from_token_validation() {
-    let mut companion = kernel_companion::KernelCompanion::new();
+    let mut config = kernel_companion::config::Config::default();
+    config.kernel_companion.uds_socket_path =
+        format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
+    config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    let mut companion = kernel_companion::KernelCompanion::with_config(&config);
     companion.boot().await.expect("boot should succeed");
 
     let pid = 34_567u32;
@@ -172,6 +176,7 @@ async fn int_lsm_fail_closed_updates_pid_allowlist_from_token_validation() {
     assert!(!companion.is_pid_authorized(pid));
 
     companion.shutdown().await;
+    let _ = tokio::fs::remove_file(&config.kernel_companion.uds_socket_path).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -693,6 +698,7 @@ async fn int_nlp_to_compute_placement_pipeline() {
     let mut config = kernel_companion::config::Config::default();
     config.kernel_companion.uds_socket_path =
         format!("/tmp/nlp-test-{}.sock", uuid::Uuid::new_v4());
+    config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
 
     let mut companion = kernel_companion::KernelCompanion::with_config(&config);
     companion.boot().await.expect("boot should succeed");
@@ -700,11 +706,11 @@ async fn int_nlp_to_compute_placement_pipeline() {
     let intent_bus = companion.intent_bus();
     let agent_scheduler = companion.agent_scheduler();
 
-    // NaturalLanguage intent matching LargeLlm
+    // NaturalLanguage intent matching SmallLlm
     let nl_intent = Intent::new(
         "nl-test",
         intent_bus::IntentType::NaturalLanguage,
-        "run a large reasoning model on high speed gpu",
+        "spawn agent running small llm model on cpu or npu edge inference",
         intent_bus::IntentPriority::Medium,
         "user",
     );
@@ -725,12 +731,11 @@ async fn int_nlp_to_compute_placement_pipeline() {
         running_agent.expect("agent should be automatically spawned via NLP intent routing");
     assert_eq!(
         agent.workload_class,
-        compute_scheduler::placement::WorkloadClass::LargeLlm
+        compute_scheduler::placement::WorkloadClass::SmallLlm
     );
-    // GPU placement is preferred for LargeLlm, but on CPU-only test hosts it falls back to CPU
     assert!(
-        agent.compute_target == Some(ComputeTarget::Gpu)
-            || agent.compute_target == Some(ComputeTarget::Cpu)
+        agent.compute_target == Some(ComputeTarget::Cpu)
+            || agent.compute_target == Some(ComputeTarget::Npu)
     );
 
     companion.shutdown().await;
@@ -749,6 +754,7 @@ async fn int_p2p_mesh_discovery_pipeline() {
         format!("/tmp/p2p-test-a-{}.sock", uuid::Uuid::new_v4());
     config_a.context_memory.p2p_enabled = true;
     config_a.context_memory.p2p_listen_addr = "127.0.0.1:29091".to_string();
+    config_a.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
 
     let mut config_b = kernel_companion::config::Config::default();
     config_b.kernel_companion.uds_socket_path =
@@ -756,6 +762,7 @@ async fn int_p2p_mesh_discovery_pipeline() {
     config_b.context_memory.p2p_enabled = true;
     config_b.context_memory.p2p_listen_addr = "127.0.0.1:29092".to_string();
     config_b.context_memory.p2p_bootstrap_nodes = vec!["127.0.0.1:29091".to_string()];
+    config_b.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
 
     // Boot Node A
     let mut companion_a = kernel_companion::KernelCompanion::with_config(&config_a);
@@ -801,7 +808,11 @@ async fn int_p2p_mesh_discovery_pipeline() {
 
 #[tokio::test]
 async fn int_lsm_token_revocation_and_expiration_propagation() {
-    let mut companion = kernel_companion::KernelCompanion::new();
+    let mut config = kernel_companion::config::Config::default();
+    config.kernel_companion.uds_socket_path =
+        format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
+    config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    let mut companion = kernel_companion::KernelCompanion::with_config(&config);
     companion.boot().await.expect("boot should succeed");
 
     let pid_expire = 11111u32;
@@ -853,11 +864,16 @@ async fn int_lsm_token_revocation_and_expiration_propagation() {
     assert!(!companion.is_pid_authorized(pid_expire));
 
     companion.shutdown().await;
+    let _ = tokio::fs::remove_file(&config.kernel_companion.uds_socket_path).await;
 }
 
 #[tokio::test]
 async fn int_polymorphic_agent_dna_and_lsm_mutation() {
-    let mut companion = kernel_companion::KernelCompanion::new();
+    let mut config = kernel_companion::config::Config::default();
+    config.kernel_companion.uds_socket_path =
+        format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
+    config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    let mut companion = kernel_companion::KernelCompanion::with_config(&config);
     companion.boot().await.expect("boot should succeed");
 
     let scheduler = companion.agent_scheduler();
@@ -923,4 +939,5 @@ async fn int_polymorphic_agent_dna_and_lsm_mutation() {
     assert_eq!(decision_global, kernel_companion::LsmDecision::Allow);
 
     companion.shutdown().await;
+    let _ = tokio::fs::remove_file(&config.kernel_companion.uds_socket_path).await;
 }
