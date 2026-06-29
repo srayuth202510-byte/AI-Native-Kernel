@@ -116,15 +116,16 @@
         <h1>AI-Native Kernel</h1>
         <div class="subtitle">Next Generation Operating System Kernel for AI Era &mdash; Rust Implementation Plan</div>
         <div class="meta-grid">
-            <div class="meta-item"><strong>Version:</strong> 3.0 (Graphified)</div>
+            <div class="meta-item"><strong>Version:</strong> 3.1 (Integrated Cognitive Flow)</div>
             <div class="meta-item"><strong>Language:</strong> Rust (Edition 2024)</div>
             <div class="meta-item"><strong>Status:</strong> Ready for Prototype (Phase 1 MVP)</div>
         </div>
     </div>
 
     <div class="changelog">
-        <p><strong>บันทึกการแก้ไข (v2.0 &rarr; v3.0):</strong></p>
+        <p><strong>บันทึกการแก้ไข (v3.0 &rarr; v3.1):</strong></p>
         <ul>
+            <li>บูรณาการ <strong>Cognitive AI System Flow</strong> (จากแผนภาพ <a href="AiSystem.png">AiSystem.png</a>) เข้ากับ Kernel Runtime (โมดูลตรวจตรรกะ, ความจำ, และการปรับตาม RL)</li>
             <li>แทนที่ ASCII diagrams ทั้งหมดด้วย <strong>Mermaid graphs</strong> (render ในเบราว์เซอร์)</li>
             <li>เพิ่ม <strong>Crate Dependency Graph</strong> &mdash; โครงสร้าง workspace</li>
             <li>เพิ่ม <strong>Agent State Machine</strong> &mdash; lifecycle transitions</li>
@@ -283,6 +284,39 @@ sequenceDiagram
 </div>
         <div class="graph-caption">รูปที่ 3 &mdash; ลำดับการตัดสินใจเมื่อ Agent ร้องขอ syscall (default = DENY)</div>
     </div>
+
+    <h3>2.4 Integrated Cognitive System Flow (LLM + Neural-Symbolic + RL)</h3>
+    <p>การบูรณาการระบบคิดและวางแผนระดับสูง (Cognitive Architecture) ร่วมกับกลไกระดับต่ำ (Low-level Kernel Runtime) แสดงได้ตามโครงสร้างลูปการทำงานดังนี้:</p>
+    
+    <div class="graph-container">
+<div class="mermaid">
+flowchart TB
+    subgraph COGNITIVE["Cognitive Layer (การวางแผนและบริบท)"]
+        UI[Natural Language Intent] --> IB[Intent Bus]
+        IB --> |Goal| PLAN[LLM Planner: วางแผนงานย่อย]
+        PLAN <--> |ย้ายบริบท| CTX[Context Memory Manager: RAM/RocksDB]
+        PLAN --> |เสนอการกระทำ| REASON[Neural-Symbolic Reasoner: ตรวจตรรกะและกฎ]
+    end
+
+    subgraph SECURITY["Security Layer (ด่านตรวจสิทธิ์)"]
+        REASON --> |ผ่าน: Consistent| POLICY[LSM Policy Engine: fail-DENY]
+        REASON --> |ไม่ผ่าน: Inconsistent| ADJ[แก้ไขแผน/ขอคำปรึกษาเพิ่มเติม]
+        ADJ --> |ปรับแผนใหม่| PLAN
+        POLICY <--> |Verify| TOKEN[Capability Token]
+    end
+
+    subgraph KERNEL_LAYER["Kernel & Hardware Layer (การรันระบบจริง)"]
+        POLICY --> |อนุมัติ| EXEC[Agent Executor / Runner]
+        EXEC --> |เรียกใช้เครื่องมือ / Syscall| EBPF[eBPF & LSM Hooks]
+        EBPF --> |Telemetry / Latency| SCHED[Compute Scheduler: Cost Function]
+        SCHED --> |EWMA Feedback| RL[RL Agent: ปรับปรุงการจัดสรรทรัพยากร]
+        RL --> |นโยบายใหม่| EXEC
+    end
+</div>
+        <div class="graph-caption">รูปที่ 3.5 &mdash; ลูปการทำงานแบบ Closed-Loop ตั้งแต่วางแผน ตรวจตรรกะ จนถึงระดับประมวลผลและการเรียนรู้จากรางวัล (Reward)</div>
+    </div>
+
+    <p>เมื่อนำแนวคิดจากแผนภาพ <a href="AiSystem.png">AiSystem.png</a> บูรณาการเข้ากับ Kernel: <strong>LSM Policy Engine</strong> ของเราจะรับหน้าที่เป็นตรรกะของ Neural-Symbolic Reasoner เพื่อยืนยันความปลอดภัยในระบบ, <strong>Context Memory Manager</strong> รับบทบาทเป็น Memory Layer สลับบริบท, และ <strong>Compute Scheduler</strong> ร่วมกับ EWMA จะทำหน้าที่เป็น RL Agent คอยเรียนรู้และปรับปรุงการตัดสินใจในการเข้าใช้ Hardware (CPU/GPU/NPU) อย่างดีที่สุด</p>
 
     <!-- ============================================================ -->
     <!-- 3. MODULES                                                   -->
