@@ -165,6 +165,9 @@ pub enum IntentBusError {
     /// เกิดข้อผิดพลาดเมื่อไม่สามารถส่งข้อมูลลงในช่องสัญญาณได้ (เช่น ไม่มี Subscriber รอรับอยู่)
     #[error("intent bus send failed")]
     SendFailed,
+    /// เกิดข้อผิดพลาดเมื่อ Intent ไม่ผ่านการคัดกรองจากตัวกรอง
+    #[error("intent was rejected by filters")]
+    Filtered,
 }
 
 impl IntentFilter {
@@ -215,6 +218,9 @@ impl IntentBus {
     /// ส่งและเผยแพร่ Intent เข้าสู่ระบบส่งข้อมูล (Broadcast channel)
     /// คืนค่า `Ok(())` หากส่งสำเร็จ หรือส่งข้อผิดพลาดหากล้มเหลว
     pub async fn publish(&self, intent: Intent) -> Result<(), IntentBusError> {
+        if !self.passes_filters(&intent).await {
+            return Err(IntentBusError::Filtered);
+        }
         self.sender
             .send(intent)
             .map(|_| ())
@@ -459,7 +465,10 @@ mod tests {
             "user",
         );
 
-        bus.publish(ignored).await.expect("publish should succeed");
+        assert!(matches!(
+            bus.publish(ignored).await,
+            Err(IntentBusError::Filtered)
+        ));
         bus.publish(accepted).await.expect("publish should succeed");
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
