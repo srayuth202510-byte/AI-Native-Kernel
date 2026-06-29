@@ -1,4 +1,5 @@
 // We allow unsafe code in this crate to interface with C-FFI bindings (ONNX Runtime, llama.cpp)
+pub mod llama;
 pub mod onnx;
 
 /// โมดูลจัดการคิวและการมัดรวมงานเพื่อส่งเข้า GPU (Batching Manager)
