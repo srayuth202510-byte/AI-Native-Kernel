@@ -1,6 +1,7 @@
 // We allow unsafe code in this crate to interface with C-FFI bindings (ONNX Runtime, llama.cpp)
 pub mod llama;
 pub mod onnx;
+pub mod vram_manager;
 
 /// โมดูลจัดการคิวและการมัดรวมงานเพื่อส่งเข้า GPU (Batching Manager)
 pub mod batching;
@@ -253,6 +254,8 @@ pub struct ComputeProfile {
 pub struct ComputeScheduler {
     /// ค่าน้ำหนักปรับตัวที่ใช้ในการคำนวณคะแนนต้นทุน ถูกป้องกันด้วย RwLock เพื่อความปลอดภัยในการทำงานหลายเธรด
     weights: std::sync::Arc<RwLock<AdaptiveWeights>>,
+    /// ตัวจัดการงบประมาณ VRAM และ Circuit Breaker
+    pub vram_manager: std::sync::Arc<crate::vram_manager::GpuVramManager>,
 }
 
 impl ComputeScheduler {
@@ -261,6 +264,7 @@ impl ComputeScheduler {
     pub fn new() -> Self {
         Self {
             weights: std::sync::Arc::new(RwLock::new(AdaptiveWeights::default())),
+            vram_manager: std::sync::Arc::new(crate::vram_manager::GpuVramManager::default()),
         }
     }
 
@@ -269,6 +273,7 @@ impl ComputeScheduler {
     pub fn with_weights(weights: AdaptiveWeights) -> Self {
         Self {
             weights: std::sync::Arc::new(RwLock::new(weights)),
+            vram_manager: std::sync::Arc::new(crate::vram_manager::GpuVramManager::default()),
         }
     }
 
@@ -540,5 +545,38 @@ mod tests {
                 .any(|(target, _)| *target == ComputeTarget::Cpu),
             "ต้องมีผลลัพธ์ของ CPU อยู่ในรายการวัดผล"
         );
+    }
+
+    #[test]
+    fn test_vram_reservation_and_circuit_breaker() {
+        use crate::vram_manager::{GpuVramManager, VramError};
+
+        // Create VramManager with 1000 MB mock VRAM, 80% circuit breaker threshold (800 MB)
+        let vram_mgr = GpuVramManager::new(1000 * 1024 * 1024, 80.0);
+
+        // 1. Successful reservation (300 MB)
+        assert!(vram_mgr.reserve_vram("agent-1", 300 * 1024 * 1024).is_ok());
+        assert_eq!(vram_mgr.current_usage(), 300 * 1024 * 1024);
+
+        // 2. Successful reservation (400 MB) -> Total 700 MB (70%)
+        assert!(vram_mgr.reserve_vram("agent-2", 400 * 1024 * 1024).is_ok());
+        assert_eq!(vram_mgr.current_usage(), 700 * 1024 * 1024);
+
+        // 3. Circuit breaker triggers on 200 MB -> Total would be 900 MB (90% > 80% threshold)
+        let res = vram_mgr.reserve_vram("agent-3", 200 * 1024 * 1024);
+        assert_eq!(
+            res,
+            Err(VramError::CircuitBreakerTriggered {
+                threshold_percent: 80.0
+            })
+        );
+
+        // 4. Release VRAM for agent-1
+        vram_mgr.release_vram("agent-1");
+        assert_eq!(vram_mgr.current_usage(), 400 * 1024 * 1024);
+
+        // 5. Total capacity and physical free check
+        assert_eq!(vram_mgr.total_capacity(), 1000 * 1024 * 1024);
+        assert!(vram_mgr.physical_free_vram() <= 1000 * 1024 * 1024);
     }
 }
