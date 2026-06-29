@@ -77,20 +77,22 @@ Before any commit:
 
 #### Add Context tier migration
 ```
-1. Implement migration in context-memory/src/<tier>.rs
-2. Add timeout on I/O (NVMe, VRAM load)
-3. Property test: round-trip Hot→Warm→Cold→Warm→Hot must be lossless
-4. Add tracing span for latency measurement (compare vs Performance Budget)
-5. Fallback to next tier on I/O error (circuit breaker)
+1. Implement migration in context-memory/src/<tier>.rs (e.g. vram.rs, hot.rs, warm.rs, cold.rs)
+2. Use KvCachePage specifically for LLM context paging (K/V tensors) to optimize VRAM space
+3. Add timeout on I/O (NVMe, VRAM load)
+4. Property test: round-trip Hot→Warm→Cold→Warm→Hot must be lossless
+5. Add tracing span for latency measurement (compare vs Performance Budget)
+6. Fallback to next tier on I/O error (circuit breaker)
 ```
 
 #### Add Compute target
 ```
 1. Implement target adapter in compute-scheduler/src/<target>.rs
-2. Add to Decision Matrix in plan §3 Module 3
+2. Implement Dynamic FFI loader (dlopen/dlsym/dlclose) for AI engines (llama.cpp, ONNX Runtime) to keep workspace portable
 3. Run via Compute Scheduler with timeout (GPU inference: 60s, NPU: 30s)
-4. Add circuit breaker: disable backend on OOM/driver hang, fallback to CPU
-5. Benchmark: record actual latency/power/cost for EWMA weight update
+4. Use GpuVramManager to reserve and track multi-tenant VRAM usages to prevent GPU OOM crash
+5. Add circuit breaker: fail-deny allocation when VRAM crosses safe threshold (e.g. 90%)
+6. Benchmark: record actual latency/power/cost for EWMA weight update
 ```
 
 ## Security Patterns
@@ -219,10 +221,10 @@ cargo add <crate_name>
 - `constant_time_eq` - constant-time comparison
 - `uuid` - agent/token IDs
 
-### Phase 2+ crates (deferred)
-- `llama-cpp` - LLM inference (CPU/NPU)
-- `tensorrt` / `cudarc` - GPU inference
-- `ort` (ONNX Runtime) - NPU inference
+### Phase 2+ dynamic FFI integrations
+- `libllama.so` - Dynamically loaded llama.cpp C-FFI backend (CPU/NPU)
+- `libonnxruntime.so` - Dynamically loaded ONNX Runtime C-FFI backend (NPU/CPU)
+- `nvml-wrapper` - Used for real-time GPU VRAM discovery & hardware telemetry
 
 ## Testing Strategy
 
@@ -275,15 +277,18 @@ match aya::Bpf::load(code) {
 
 ### GPU OOM / Compute backend failure
 ```rust
-// Circuit breaker + fallback to CPU
-match gpu.infer(&batch).await {
-    Ok(out) => out,
-    Err(ComputeError::Oom) => {
-        tracing::warn!("GPU OOM - circuit breaker opening");
-        gpu_circuit_breaker.open();
-        cpu.infer(&batch).await?  // fallback
+// GPU Circuit Breaker / VRAM Allocation Guard
+match vram_manager.reserve_vram(&agent_id, requested_bytes) {
+    Ok(()) => {
+        // Proceed with GPU model load and inference
     }
-    Err(e) => return Err(e.into()),
+    Err(VramError::CircuitBreakerTriggered { threshold_percent }) => {
+        tracing::warn!(agent_id = %agent_id, threshold = %threshold_percent, "Circuit breaker triggered - falling back to CPU");
+        // Fallback to CPU execution or demote lower-priority agent's context
+    }
+    Err(VramError::OutOfMemory { .. }) => {
+        // Handle hard OOM
+    }
 }
 ```
 
@@ -328,11 +333,14 @@ Target metrics (measured in `benches/` via Criterion):
 
 ## Phase Context
 
-**Phase 1 (MVP) - current focus:**
+**Phase 1 (MVP) & Phase 2 (AI Runtime) - current focus:**
 - eBPF syscall tracer (read-only) on Linux x86_64
 - Agent runtime (max 10 concurrent)
 - Capability/LSM policy engine + WORM audit log
-- Context Memory 2-tier (RAM + NVMe)
+- Context Memory 4-tier (VRAM + RAM + NVMe + Cold Disk) with KvCachePage paging
+- Adaptive Compute Scheduler (GPU/NPU/CPU) with EWMA weights
+- Dynamic C-FFI linking for ONNX Runtime and llama.cpp
+- GPU VRAM Budget Manager & Circuit Breaker protection
 - See `docs/ai_native_kernel_plan_v2.html` §1.1 (scope) and §10 (success criteria)
 
-**Phase 2+:** VRAM paging, Adaptive Compute Scheduler (GPU/NPU), Semantic FS, Distributed OS
+**Phase 3+:** Semantic FS, Distributed OS, multi-node clustering.
