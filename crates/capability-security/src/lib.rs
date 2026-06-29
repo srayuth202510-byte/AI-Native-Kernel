@@ -54,7 +54,7 @@ pub enum CapabilityError {
 }
 
 #[derive(Clone)]
-struct RevocationCallback(std::sync::Arc<dyn Fn(u64) + Send + Sync>);
+struct RevocationCallback(std::sync::Arc<dyn Fn(u64, Scope) + Send + Sync>);
 
 impl std::fmt::Debug for RevocationCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -76,9 +76,9 @@ pub struct CapabilitySecurityManager {
     audit_logger: AuditLogger,
     /// ตัววัดผลความปลอดภัย (Prometheus Metrics)
     metrics: Option<std::sync::Arc<SecurityMetrics>>,
-    /// ประวัติเวลาที่ออกโทเค็นล่าสุด (rate limiting)
-    issue_rate: RwLock<VecDeque<Instant>>,
-    /// อัตราสูงสุดที่อนุญาตให้ออกโทเค็นต่อวินาที
+    /// ประวัติเวลาที่ออกโทเค็นล่าสุด แยกตาม Scope (rate limiting per scope)
+    issue_rate: RwLock<HashMap<Scope, VecDeque<Instant>>>,
+    /// อัตราสูงสุดที่อนุญาตให้ออกโทเค็นต่อวินาทีต่อแต่ละ Scope
     max_issue_rate: usize,
     /// Callback สำหรับการแจ้งเตือนเมื่อโทเค็นถูกเพิกถอน (Revocation callback)
     revocation_callback: RwLock<Option<RevocationCallback>>,
@@ -112,7 +112,7 @@ impl CapabilitySecurityManager {
         self.revoked.write()
     }
 
-    fn issue_rate_write(&self) -> RwLockWriteGuard<'_, VecDeque<Instant>> {
+    fn issue_rate_write(&self) -> RwLockWriteGuard<'_, HashMap<Scope, VecDeque<Instant>>> {
         self.issue_rate.write()
     }
 
@@ -133,7 +133,7 @@ impl CapabilitySecurityManager {
             policy_engine: PolicyEngine::default(),
             audit_logger: AuditLogger::default(),
             metrics,
-            issue_rate: RwLock::new(VecDeque::new()),
+            issue_rate: RwLock::new(HashMap::new()),
             max_issue_rate,
             revocation_callback: RwLock::new(None),
         }
@@ -156,7 +156,7 @@ impl CapabilitySecurityManager {
             policy_engine: PolicyEngine::default(),
             audit_logger: AuditLogger::new(log_path),
             metrics,
-            issue_rate: RwLock::new(VecDeque::new()),
+            issue_rate: RwLock::new(HashMap::new()),
             max_issue_rate,
             revocation_callback: RwLock::new(None),
         }
@@ -164,10 +164,12 @@ impl CapabilitySecurityManager {
 
     /// ออกโทเค็นความสามารถ (Capability Token) ใหม่ บันทึกลงในระบบเพื่อใช้งาน และบันทึกประวัติ (Audit Log)
     ///
-    /// Rate limit: ควบคุมโดย `max_issue_rate` (ค่าเริ่มต้น 100/วินาที) เพื่อป้องกัน audit log flooding
+    /// Rate limit: ควบคุมโดย `max_issue_rate` ต่อ 1 วินาที แยกตาม Scope ป้องกัน audit log flooding
     pub fn issue_token(&self, token: CapabilityToken) -> Result<()> {
         let now = Instant::now();
-        let mut rate_queue = self.issue_rate_write();
+        let mut rate_map = self.issue_rate_write();
+        let rate_queue = rate_map.entry(token.scope).or_insert_with(VecDeque::new);
+
         rate_queue.push_back(now);
         while rate_queue
             .front()
@@ -178,7 +180,7 @@ impl CapabilitySecurityManager {
         if self.max_issue_rate > 0 && rate_queue.len() > self.max_issue_rate {
             return Err(CapabilityError::RateLimited);
         }
-        drop(rate_queue);
+        drop(rate_map);
 
         self.audit_logger
             .record(AuditEntry::issued(token.id))
@@ -196,8 +198,11 @@ impl CapabilitySecurityManager {
     pub fn revoke_token(&self, token_id: u64) -> Result<()> {
         self.revoked_write().insert(token_id);
 
-        if let Some(ref callback) = *self.revocation_callback.read() {
-            (callback.0)(token_id);
+        let scope_opt = self.tokens_read().get(&token_id).map(|t| t.scope);
+        if let Some(scope) = scope_opt {
+            if let Some(ref callback) = *self.revocation_callback.read() {
+                (callback.0)(token_id, scope);
+            }
         }
 
         self.audit_logger
@@ -212,7 +217,7 @@ impl CapabilitySecurityManager {
     /// ลงทะเบียน Callback สำหรับประมวลผลเมื่อโทเค็นถูกเพิกถอน (เช่น ลบ PID ใน allowed_pids)
     pub fn register_revocation_callback(
         &self,
-        callback: std::sync::Arc<dyn Fn(u64) + Send + Sync>,
+        callback: std::sync::Arc<dyn Fn(u64, Scope) + Send + Sync>,
     ) {
         *self.revocation_callback.write() = Some(RevocationCallback(callback));
     }
@@ -686,6 +691,60 @@ mod tests {
             1,
             "should have exactly one revoked entry"
         );
+
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn test_issue_token_rate_limit_per_scope() {
+        let log_path = std::env::temp_dir().join("test_audit_rate_limit.log");
+        let _ = std::fs::remove_file(&log_path);
+
+        // Rate limit 2 tokens per second
+        let manager = CapabilitySecurityManager::new_with_log_path_and_rate(log_path.clone(), 2);
+
+        // Issuing 2 tokens in Scope A should succeed
+        manager
+            .issue_token(CapabilityToken::new(
+                1,
+                Scope::Process(100),
+                vec![],
+                Duration::from_secs(60),
+                [1; 32],
+            ))
+            .unwrap();
+        manager
+            .issue_token(CapabilityToken::new(
+                2,
+                Scope::Process(100),
+                vec![],
+                Duration::from_secs(60),
+                [2; 32],
+            ))
+            .unwrap();
+
+        // The 3rd token in Scope A should fail due to rate limiting
+        assert_eq!(
+            manager.issue_token(CapabilityToken::new(
+                3,
+                Scope::Process(100),
+                vec![],
+                Duration::from_secs(60),
+                [3; 32]
+            )),
+            Err(CapabilityError::RateLimited)
+        );
+
+        // But issuing in a different Scope (B) should succeed (its own bucket)
+        manager
+            .issue_token(CapabilityToken::new(
+                4,
+                Scope::Process(200),
+                vec![],
+                Duration::from_secs(60),
+                [4; 32],
+            ))
+            .unwrap();
 
         let _ = std::fs::remove_file(&log_path);
     }

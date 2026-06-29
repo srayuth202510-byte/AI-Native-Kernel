@@ -241,18 +241,14 @@ impl KernelCompanion {
 
             // ── Register capability revocation callback ──
             {
-                let cap_manager_clone = Arc::clone(&self.capability_security);
                 let attachment_clone = Arc::clone(&self.attachment);
-                self.capability_security.register_revocation_callback(Arc::new(move |token_id| {
-                    let tokens = cap_manager_clone.get_tokens();
-                    if let Some(token) = tokens.iter().find(|t| t.id == token_id) {
-                        if let Scope::Process(pid) = token.scope {
-                            if let Some(attachment) = attachment_clone.lock().as_mut() {
-                                if let Err(e) = attachment.deny_pid(pid) {
-                                    tracing::error!("Failed to deny PID {} upon token revocation: {:?}", pid, e);
-                                } else {
-                                    tracing::warn!("LSM: Revoked PID {} from allowed_pids because token {} was revoked", pid, token_id);
-                                }
+                self.capability_security.register_revocation_callback(Arc::new(move |token_id, scope| {
+                    if let Scope::Process(pid) = scope {
+                        if let Some(attachment) = attachment_clone.lock().as_mut() {
+                            if let Err(e) = attachment.deny_pid(pid) {
+                                tracing::error!("Failed to deny PID {} upon token revocation: {:?}", pid, e);
+                            } else {
+                                tracing::warn!("LSM: Revoked PID {} from allowed_pids because token {} was revoked", pid, token_id);
                             }
                         }
                     }

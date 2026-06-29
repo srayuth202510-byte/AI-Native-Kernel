@@ -53,7 +53,7 @@ impl CapabilityToken {
 }
 
 /// ขอบเขตในการบังคับใช้สิทธิ์ของโทเค็นความสามารถ
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroize, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash, Zeroize, Serialize, Deserialize)]
 pub enum Scope {
     /// ขอบเขตระดับโปรเซส (Process-level) พร้อมระบุ PID
     Process(u32),

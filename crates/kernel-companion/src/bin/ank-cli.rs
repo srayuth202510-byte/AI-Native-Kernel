@@ -13,7 +13,6 @@ use tokio::net::UnixStream;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
-    // หากไม่มีการระบุอาร์กิวเมนต์ที่จำเป็น ให้พิมพ์คำแนะนำการใช้งาน CLI
     if args.len() < 2 {
         println!("AI-Native Kernel CLI (ank-cli)");
         println!("Usage:");
@@ -22,6 +21,9 @@ async fn main() -> Result<()> {
         println!("  ank-cli list-quarantine         Lists currently quarantined process IDs");
         println!("  ank-cli set-threshold <r> <d> [k] Sets T-Cell rate, deny & kill thresholds");
         println!("  ank-cli set-lsm-profile <name>  Switches active LSM profile");
+        println!(
+            "  ank-cli verify-audit <log>      Verifies the cryptographic hash chain of an audit log"
+        );
         return Ok(());
     }
 
@@ -101,6 +103,54 @@ async fn main() -> Result<()> {
                 Ok(target) => println!("เลือกอุปกรณ์สำหรับงาน {}: {:?}", args[2], target),
                 Err(e) => println!("ไม่สามารถวางงานได้: {:?}", e),
             }
+        }
+        "verify-audit" => {
+            if args.len() < 3 {
+                println!("Usage: ank-cli verify-audit <log_file>");
+                return Ok(());
+            }
+            let log_path = std::path::PathBuf::from(&args[2]);
+            if !log_path.exists() {
+                eprintln!("Error: Log file not found at {:?}", log_path);
+                std::process::exit(1);
+            }
+
+            let logger = capability_security::audit::AuditLogger::new(log_path);
+            let entries = logger.entries();
+            println!("Validating {} audit entries...", entries.len());
+
+            if entries.is_empty() {
+                println!("Success: Audit log is empty.");
+                return Ok(());
+            }
+
+            let mut prev_hash = String::new();
+            for (idx, entry) in entries.iter().enumerate() {
+                let recorded_hash = match entry.hash.as_deref() {
+                    Some(h) => h,
+                    None => {
+                        eprintln!(
+                            "ERROR: Chain broken at Entry Index {} (Token ID {}). Missing hash field.",
+                            idx, entry.token_id
+                        );
+                        std::process::exit(1);
+                    }
+                };
+                let computed = entry.compute_hash(&prev_hash);
+                if computed != recorded_hash {
+                    eprintln!(
+                        "ERROR: Cryptographic signature mismatch at Entry Index {} (Token ID {}).",
+                        idx, entry.token_id
+                    );
+                    eprintln!("Expected (Computed): {}", computed);
+                    eprintln!("Found (Recorded): {}", recorded_hash);
+                    std::process::exit(1);
+                }
+                prev_hash = recorded_hash.to_string();
+            }
+
+            println!("SUCCESS: Cryptographic audit log is valid. WORM property intact.");
+            return Ok(());
         }
         _ => {
             // คำสั่งอื่นๆ นอกเหนือจากนี้ ให้ส่งเป็น payload ทั่วไป
