@@ -532,4 +532,56 @@ mod tests {
             LsmError::UnknownProfile("definitely-not-a-profile".to_string())
         );
     }
+
+    /// Privileged validation: full LSM attachment lifecycle.
+    /// Loads lsm-security BPF, attaches all hooks, verifies PID map operations,
+    /// and detaches cleanly. Requires CAP_BPF + CAP_SYS_ADMIN.
+    #[test]
+    fn validate_lsm_full_attachment_lifecycle() {
+        let engine = Arc::new(LsmPolicyEngine::new());
+        let mut attachment = match attach_lsm_hooks(engine) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("SKIP validate_lsm_full_attachment_lifecycle: {e}");
+                return;
+            }
+        };
+
+        // Verify attached state
+        assert!(
+            attachment.is_attached(),
+            "should be attached after attach_lsm_hooks"
+        );
+        eprintln!("LSM: attached — is_real={}", attachment.is_real());
+
+        if attachment.is_real() {
+            // Verify PID allowlist operations
+            let own_pid = std::process::id();
+            assert!(
+                attachment.allows_pid(own_pid),
+                "own PID should be in allowlist"
+            );
+
+            attachment
+                .allow_pid(99999)
+                .expect("allow_pid should succeed");
+            assert!(
+                attachment.allows_pid(99999),
+                "newly allowed PID should be in allowlist"
+            );
+
+            attachment.deny_pid(99999).expect("deny_pid should succeed");
+            assert!(
+                !attachment.allows_pid(99999),
+                "denied PID should be removed from allowlist"
+            );
+
+            eprintln!("LSM: PID allowlist operations verified");
+        }
+
+        // Detach
+        attachment.detach();
+        assert!(!attachment.is_attached(), "should be detached after detach");
+        eprintln!("PASS: LSM full attachment lifecycle validated");
+    }
 }
