@@ -173,6 +173,7 @@ impl AgentScheduler {
             capability_security,
             3,
             100,
+            100,
             1024,
         )
     }
@@ -185,6 +186,7 @@ impl AgentScheduler {
         capability_security: Arc<CapabilitySecurityManager>,
         max_restarts: u32,
         restart_backoff_ms: u64,
+        monitoring_interval_ms: u64,
         monitoring_capacity: usize,
     ) -> Self {
         let agents = Arc::new(RwLock::new(HashMap::new()));
@@ -192,6 +194,7 @@ impl AgentScheduler {
             agents.clone(),
             max_restarts,
             restart_backoff_ms,
+            monitoring_interval_ms,
         ));
         let (monitoring_tx, _) = broadcast::channel(monitoring_capacity);
         let run_queue = Arc::new(RwLock::new(PriorityQueue::new()));

@@ -159,6 +159,7 @@ impl KernelCompanion {
             Arc::clone(&capability_security),
             config.agent_scheduler.max_restart_attempts,
             config.retry_telemetry.retry_initial_backoff_ms,
+            config.agent_scheduler.supervisor_interval_ms,
             config.kernel_companion.monitoring_channel_capacity,
         ));
 

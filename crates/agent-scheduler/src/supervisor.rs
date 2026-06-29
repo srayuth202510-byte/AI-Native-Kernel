@@ -13,6 +13,8 @@ pub struct SupervisorService {
     max_restarts: u32,
     /// ค่าตั้งต้นของเวลารอคอยแบบทวีคูณ (Backoff Delay) หน่วยเป็นมิลลิวินาที
     restart_backoff_ms: u64,
+    /// ช่วงเวลาการตรวจตรา (Monitoring Interval) หน่วยเป็นมิลลิวินาที
+    monitoring_interval_ms: u64,
 }
 
 impl SupervisorService {
@@ -22,11 +24,13 @@ impl SupervisorService {
         agents: Arc<RwLock<HashMap<u64, AgentControlBlock>>>,
         max_restarts: u32,
         restart_backoff_ms: u64,
+        monitoring_interval_ms: u64,
     ) -> Self {
         Self {
             agents,
             max_restarts,
             restart_backoff_ms,
+            monitoring_interval_ms,
         }
     }
 
@@ -110,7 +114,9 @@ impl SupervisorService {
 
     /// เริ่มต้นลูปตรวจตราจนกว่าจะได้รับสัญญาณหยุด
     pub async fn start_monitoring_loop_until(&self, mut shutdown_rx: watch::Receiver<bool>) {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(
+            self.monitoring_interval_ms,
+        ));
 
         loop {
             tokio::select! {
@@ -159,7 +165,7 @@ mod tests {
         agent.state = AgentState::Failed;
         agents.write().await.insert(1, agent);
 
-        let supervisor = SupervisorService::new(agents.clone(), 3, 1);
+        let supervisor = SupervisorService::new(agents.clone(), 3, 1, 100);
 
         // ดึงสำเนาข้อมูล Agent ออกมาก่อนเพื่อปล่อย Read Lock ทันทีโดยไม่ค้างไว้
         let agent_to_monitor = {
@@ -184,7 +190,7 @@ mod tests {
         agent.restart_attempts = 3;
         agents.write().await.insert(2, agent);
 
-        let supervisor = SupervisorService::new(agents.clone(), 3, 1);
+        let supervisor = SupervisorService::new(agents.clone(), 3, 1, 100);
 
         // ดึงสำเนาข้อมูล Agent ออกมาก่อนเพื่อปล่อย Read Lock ทันทีโดยไม่ค้างไว้
         let agent_to_monitor = {
@@ -208,7 +214,7 @@ mod tests {
         agent.state = AgentState::Running;
         agents.write().await.insert(3, agent);
 
-        let supervisor = SupervisorService::new(agents.clone(), 5, 1);
+        let supervisor = SupervisorService::new(agents.clone(), 5, 1, 100);
 
         // รันลูปเฝ้าระวังของ Supervisor ไว้ในเบื้องหลัง
         let supervisor_clone = supervisor.clone();

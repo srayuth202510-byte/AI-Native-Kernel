@@ -59,7 +59,7 @@ async fn chaos_supervisor_recovers_mass_failures() {
         }
     }
 
-    let supervisor = SupervisorService::new(agents.clone(), 3, 1);
+    let supervisor = SupervisorService::new(agents.clone(), 3, 1, 100);
 
     // จำลองการทำงานของ Monitor Loop เพื่อพยายามกู้คืนทุกตัว
     let snapshot = {
