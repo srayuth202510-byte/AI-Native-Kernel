@@ -48,6 +48,17 @@ pub mod uds;
 pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
 pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
 
+fn infer_bridge_addr(
+    peer_addr: std::net::SocketAddr,
+    local_bridge_addr: &str,
+) -> Option<std::net::SocketAddr> {
+    let bridge_addr = local_bridge_addr.parse::<std::net::SocketAddr>().ok()?;
+    Some(std::net::SocketAddr::new(
+        peer_addr.ip(),
+        bridge_addr.port(),
+    ))
+}
+
 /// โครงสร้างหลักของ KernelCompanion ที่ทำหน้าที่ประสานงานระหว่างส่วนประกอบต่าง ๆ ของระบบ
 pub struct KernelCompanion {
     /// ระบบตรวจสอบและตัดสินใจเชิงนโยบายความปลอดภัย LSM (LSM Policy Engine)
@@ -710,8 +721,9 @@ impl KernelCompanion {
                 let bridge = self.intent_bridge.clone();
                 let local_node_id = self.config.agent_scheduler.local_node_id.clone();
                 let max_agents = self.config.agent_scheduler.max_agents;
+                let local_bridge_listen_addr = self.config.intent_bus.bridge_listen_addr.clone();
                 let bridge_addr = if self.config.intent_bus.bridge_enabled {
-                    Some(self.config.intent_bus.bridge_listen_addr.clone())
+                    Some(local_bridge_listen_addr.clone())
                 } else {
                     None
                 };
@@ -764,6 +776,12 @@ impl KernelCompanion {
                                             (bridge.as_ref(), telemetry.bridge_addr.as_deref())
                                         {
                                             if let Ok(socket_addr) = addr.parse() {
+                                                bridge.upsert_peer(peer.id.clone(), socket_addr).await;
+                                            }
+                                        } else if let Some(bridge) = bridge.as_ref() {
+                                            if let Some(socket_addr) =
+                                                infer_bridge_addr(peer.addr, &local_bridge_listen_addr)
+                                            {
                                                 bridge.upsert_peer(peer.id.clone(), socket_addr).await;
                                             }
                                         }
@@ -1003,6 +1021,7 @@ impl Default for KernelCompanion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[test]
     fn classify_intent_returns_expected_queue_class() {
@@ -1016,6 +1035,16 @@ mod tests {
         assert_eq!(
             companion.classify_intent(&IntentType::Interrupt),
             "realtime"
+        );
+    }
+
+    #[test]
+    fn infer_bridge_addr_reuses_peer_ip_and_local_bridge_port() {
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)), 9091);
+        let derived = infer_bridge_addr(peer_addr, "127.0.0.1:9191").expect("valid bridge addr");
+        assert_eq!(
+            derived,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)), 9191)
         );
     }
 
