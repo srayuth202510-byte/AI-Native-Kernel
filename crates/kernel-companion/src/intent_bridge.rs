@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
 use tokio::time::{Duration, timeout};
 use tracing::{debug, info, warn};
 
@@ -25,7 +26,7 @@ struct RoutedIntentAck {
 #[derive(Debug, Clone)]
 pub struct IntentBridge {
     local_node_id: String,
-    peers: Arc<HashMap<String, SocketAddr>>,
+    peers: Arc<RwLock<HashMap<String, SocketAddr>>>,
     connect_timeout: Duration,
     request_timeout: Duration,
 }
@@ -50,18 +51,27 @@ impl IntentBridge {
 
         Self {
             local_node_id: local_node_id.into(),
-            peers: Arc::new(peer_map),
+            peers: Arc::new(RwLock::new(peer_map)),
             connect_timeout,
             request_timeout,
         }
     }
 
-    #[must_use]
-    pub fn peer_configs(&self) -> Vec<(String, SocketAddr)> {
+    pub async fn peer_configs(&self) -> Vec<(String, SocketAddr)> {
         self.peers
+            .read()
+            .await
             .iter()
             .map(|(node_id, addr)| (node_id.clone(), *addr))
             .collect()
+    }
+
+    pub async fn upsert_peer(&self, node_id: impl Into<String>, addr: SocketAddr) {
+        self.peers.write().await.insert(node_id.into(), addr);
+    }
+
+    pub async fn remove_peer(&self, node_id: &str) {
+        self.peers.write().await.remove(node_id);
     }
 
     pub async fn start_listener(
@@ -159,6 +169,8 @@ impl IntentBridge {
     async fn forward_intent(&self, target_node: &str, intent: Intent) -> Result<()> {
         let target_addr = self
             .peers
+            .read()
+            .await
             .get(target_node)
             .copied()
             .ok_or_else(|| anyhow!("unknown intent bridge peer: {target_node}"))?;

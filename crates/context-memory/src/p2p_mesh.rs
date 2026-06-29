@@ -101,6 +101,9 @@ pub enum MessageType {
     /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     IdentityMap,
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    NodeTelemetry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,6 +154,17 @@ pub struct RecordFetchResponse {
     pub owner_node: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeTelemetry {
+    pub node_id: String,
+    pub available_agent_slots: usize,
+    pub max_agents: usize,
+    pub running_agents: usize,
+    pub capabilities: Vec<String>,
+    pub bridge_addr: Option<String>,
+    pub timestamp_millis: u64,
+}
+
 type PendingFetchSender = oneshot::Sender<Option<Vec<u8>>>;
 type PendingFetchMap = Arc<RwLock<HashMap<String, PendingFetchSender>>>;
 
@@ -175,6 +189,7 @@ pub struct P2PMeshManager {
     peers: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>,
     records: Arc<RwLock<HashMap<String, RecordSyncPayload>>>,
     pending_fetches: PendingFetchMap,
+    telemetries: Arc<RwLock<HashMap<String, NodeTelemetry>>>,
 }
 
 fn is_alive(node: &NodeInfo) -> bool {
@@ -185,12 +200,23 @@ impl P2PMeshManager {
     /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new(addr: SocketAddr) -> Self {
-        let node_id = Uuid::new_v4().to_string();
+        Self::new_with_node_config(
+            addr,
+            Uuid::new_v4().to_string(),
+            vec!["semantic".to_string(), "filesystem".to_string()],
+        )
+    }
+
+    pub fn new_with_node_config(
+        addr: SocketAddr,
+        node_id: String,
+        capabilities: Vec<String>,
+    ) -> Self {
         let local_node = NodeInfo {
             id: node_id,
             addr,
             last_seen_millis: now_millis(),
-            capabilities: vec!["semantic".to_string(), "filesystem".to_string()],
+            capabilities,
             trust_score: 100,
         };
 
@@ -205,6 +231,7 @@ impl P2PMeshManager {
             peers: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(HashMap::new())),
             pending_fetches: Arc::new(RwLock::new(HashMap::new())),
+            telemetries: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -456,6 +483,27 @@ impl P2PMeshManager {
         nodes.get(node_id).map(|n| n.trust_score).unwrap_or(100)
     }
 
+    pub async fn publish_node_telemetry(&self, telemetry: NodeTelemetry) -> Result<()> {
+        self.telemetries
+            .write()
+            .await
+            .insert(telemetry.node_id.clone(), telemetry.clone());
+
+        let message = P2PMessage {
+            from: self.local_node.id.clone(),
+            from_addr: self.local_node.addr,
+            to: None,
+            msg_type: MessageType::NodeTelemetry,
+            data: serde_json::to_vec(&telemetry)?,
+            timestamp_millis: now_millis(),
+        };
+        self.broadcast_message(message).await
+    }
+
+    pub async fn get_telemetry_snapshot(&self) -> HashMap<String, NodeTelemetry> {
+        self.telemetries.read().await.clone()
+    }
+
     async fn broadcast_message(&self, message: P2PMessage) -> Result<()> {
         let payload = serde_json::to_string(&message)?;
         let peers = self.peers.read().await;
@@ -474,6 +522,7 @@ struct SharedState {
     peers: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>,
     records: Arc<RwLock<HashMap<String, RecordSyncPayload>>>,
     pending_fetches: PendingFetchMap,
+    telemetries: Arc<RwLock<HashMap<String, NodeTelemetry>>>,
     local_id: String,
     local_addr: SocketAddr,
 }
@@ -513,6 +562,33 @@ async fn on_message(line: &str, node_id: &str, state: &SharedState) {
                         ..n
                     });
                 }
+            }
+            return;
+        }
+
+        if msg.msg_type == MessageType::NodeTelemetry {
+            if let Ok(telemetry) = serde_json::from_slice::<NodeTelemetry>(&msg.data) {
+                state
+                    .telemetries
+                    .write()
+                    .await
+                    .insert(telemetry.node_id.clone(), telemetry.clone());
+                let mut nodes = state.known_nodes.write().await;
+                nodes
+                    .entry(telemetry.node_id.clone())
+                    .and_modify(|node| {
+                        node.last_seen_millis = now_millis();
+                        if !telemetry.capabilities.is_empty() {
+                            node.capabilities = telemetry.capabilities.clone();
+                        }
+                    })
+                    .or_insert(NodeInfo {
+                        id: telemetry.node_id,
+                        addr: msg.from_addr,
+                        last_seen_millis: now_millis(),
+                        capabilities: telemetry.capabilities,
+                        trust_score: 100,
+                    });
             }
             return;
         }
@@ -676,6 +752,7 @@ async fn handle_connection(
         peers: Arc::clone(&mgr.peers),
         records: Arc::clone(&mgr.records),
         pending_fetches: Arc::clone(&mgr.pending_fetches),
+        telemetries: Arc::clone(&mgr.telemetries),
         local_id: mgr.local_node.id.clone(),
         local_addr: mgr.local_node.addr,
     };
@@ -1011,6 +1088,7 @@ mod tests {
             peers: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(HashMap::new())),
             pending_fetches: Arc::new(RwLock::new(HashMap::new())),
+            telemetries: Arc::new(RwLock::new(HashMap::new())),
             local_id: "local".to_string(),
             local_addr: test_addr(9059),
         };
@@ -1051,6 +1129,7 @@ mod tests {
             peers: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(HashMap::new())),
             pending_fetches: Arc::new(RwLock::new(HashMap::new())),
+            telemetries: Arc::new(RwLock::new(HashMap::new())),
             local_id: "local".to_string(),
             local_addr: test_addr(9069),
         };
@@ -1311,6 +1390,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn telemetry_roundtrip_updates_snapshot() {
+        let known_nodes = Arc::new(RwLock::new(HashMap::new()));
+        let telemetries = Arc::new(RwLock::new(HashMap::new()));
+        let state = SharedState {
+            known_nodes: Arc::clone(&known_nodes),
+            peers: Arc::new(RwLock::new(HashMap::new())),
+            records: Arc::new(RwLock::new(HashMap::new())),
+            pending_fetches: Arc::new(RwLock::new(HashMap::new())),
+            telemetries: Arc::clone(&telemetries),
+            local_id: "local".to_string(),
+            local_addr: test_addr(9098),
+        };
+        let telemetry = NodeTelemetry {
+            node_id: "node-telemetry".to_string(),
+            available_agent_slots: 7,
+            max_agents: 10,
+            running_agents: 3,
+            capabilities: vec!["small".to_string()],
+            bridge_addr: Some("127.0.0.1:9191".to_string()),
+            timestamp_millis: now_millis(),
+        };
+        let msg = P2PMessage {
+            from: "node-telemetry".to_string(),
+            from_addr: test_addr(9191),
+            to: None,
+            msg_type: MessageType::NodeTelemetry,
+            data: serde_json::to_vec(&telemetry).unwrap(),
+            timestamp_millis: now_millis(),
+        };
+
+        on_message(
+            &serde_json::to_string(&msg).unwrap(),
+            "node-telemetry",
+            &state,
+        )
+        .await;
+
+        let snapshot = telemetries.read().await;
+        assert_eq!(
+            snapshot
+                .get("node-telemetry")
+                .unwrap()
+                .available_agent_slots,
+            7
+        );
+        let nodes = known_nodes.read().await;
+        assert_eq!(
+            nodes.get("node-telemetry").unwrap().capabilities,
+            vec!["small".to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn test_conflict_resolution_rules() {
         let known_nodes = Arc::new(RwLock::new(HashMap::new()));
         let records = Arc::new(RwLock::new(HashMap::new()));
@@ -1319,6 +1451,7 @@ mod tests {
             peers: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::clone(&records),
             pending_fetches: Arc::new(RwLock::new(HashMap::new())),
+            telemetries: Arc::new(RwLock::new(HashMap::new())),
             local_id: "local".to_string(),
             local_addr: test_addr(9099),
         };

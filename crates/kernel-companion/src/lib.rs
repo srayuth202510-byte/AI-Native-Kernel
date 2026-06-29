@@ -13,10 +13,12 @@ use capability_security::audit::{AuditEntry, AuditLogger};
 use compute_scheduler::placement::{PlacementPolicy, WorkloadClass};
 use compute_scheduler::{ComputeProfile, ComputeScheduler, ComputeTarget};
 use context_memory::ContextMemoryManager;
-use context_memory::p2p_mesh::P2PMeshManager;
+use context_memory::p2p_mesh::{NodeTelemetry, P2PMeshManager};
 use immune_system::{BCellAgent, MacrophageAgent, TCellAgent, ThreatDecision};
 use intent_bus::{Intent, IntentBus, IntentType};
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tokio::task;
 use tokio::task::JoinHandle;
@@ -96,6 +98,10 @@ pub struct KernelCompanion {
     intent_bridge_forwarder_task: Option<JoinHandle<()>>,
     /// cancellation token ของ network intent bridge
     intent_bridge_cancel: Option<tokio_util_cancel::CancellationToken>,
+    /// shared network intent bridge state
+    intent_bridge: Option<Arc<IntentBridge>>,
+    /// handle ของ telemetry sync task ระหว่าง p2p mesh กับ scheduler
+    telemetry_task: Option<JoinHandle<()>>,
     /// P2P Gossip Mesh manager
     p2p_mesh: Option<Arc<P2PMeshManager>>,
     /// handle ของ P2P mesh listener task
@@ -186,6 +192,8 @@ impl KernelCompanion {
             intent_bridge_listener_task: None,
             intent_bridge_forwarder_task: None,
             intent_bridge_cancel: None,
+            intent_bridge: None,
+            telemetry_task: None,
             p2p_mesh: None,
             p2p_listener_task: None,
             p2p_gossip_task: None,
@@ -578,7 +586,7 @@ impl KernelCompanion {
             }));
 
             if self.config.intent_bus.bridge_enabled {
-                let bridge = IntentBridge::new(
+                let bridge = Arc::new(IntentBridge::new(
                     self.config.agent_scheduler.local_node_id.clone(),
                     &self.config.intent_bus.bridge_peers,
                     std::time::Duration::from_millis(
@@ -587,15 +595,16 @@ impl KernelCompanion {
                     std::time::Duration::from_millis(
                         self.config.intent_bus.bridge_request_timeout_ms,
                     ),
-                );
+                ));
                 let bridge_cancel = tokio_util_cancel::CancellationToken::new();
                 let bridge_listener_cancel = bridge_cancel.clone();
                 let bridge_forwarder_cancel = bridge_cancel.clone();
-                let bridge_listener = bridge.clone();
-                let bridge_forwarder = bridge.clone();
+                let bridge_listener = Arc::clone(&bridge);
+                let bridge_forwarder = Arc::clone(&bridge);
                 let bridge_bus_listener = Arc::clone(&self.intent_bus);
                 let bridge_bus_forwarder = Arc::clone(&self.intent_bus);
                 self.intent_bridge_cancel = Some(bridge_cancel);
+                self.intent_bridge = Some(Arc::clone(&bridge));
 
                 match self
                     .config
@@ -644,7 +653,11 @@ impl KernelCompanion {
                     .p2p_listen_addr
                     .parse::<std::net::SocketAddr>()
                 {
-                    let p2p_mgr = Arc::new(P2PMeshManager::new(addr));
+                    let p2p_mgr = Arc::new(P2PMeshManager::new_with_node_config(
+                        addr,
+                        self.config.agent_scheduler.local_node_id.clone(),
+                        Vec::new(),
+                    ));
                     let p2p_listener_mgr = Arc::clone(&p2p_mgr);
                     let p2p_gossip_mgr = Arc::clone(&p2p_mgr);
 
@@ -690,6 +703,92 @@ impl KernelCompanion {
                         self.config.context_memory.p2p_listen_addr
                     );
                 }
+            }
+
+            if let Some(p2p_mgr) = self.p2p_mesh.clone() {
+                let scheduler = Arc::clone(&self.agent_scheduler);
+                let bridge = self.intent_bridge.clone();
+                let local_node_id = self.config.agent_scheduler.local_node_id.clone();
+                let max_agents = self.config.agent_scheduler.max_agents;
+                let bridge_addr = if self.config.intent_bus.bridge_enabled {
+                    Some(self.config.intent_bus.bridge_listen_addr.clone())
+                } else {
+                    None
+                };
+                let mut telemetry_shutdown_rx = shutdown_tx.subscribe();
+                self.telemetry_task = Some(tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                                let total_agents = scheduler.total_agents().await;
+                                let running_agents = scheduler.get_running_agents().await.len();
+                                let telemetry = NodeTelemetry {
+                                    node_id: local_node_id.clone(),
+                                    available_agent_slots: max_agents.saturating_sub(total_agents),
+                                    max_agents,
+                                    running_agents,
+                                    capabilities: Vec::new(),
+                                    bridge_addr: bridge_addr.clone(),
+                                    timestamp_millis: SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .map(|duration| duration.as_millis() as u64)
+                                        .unwrap_or(0),
+                                };
+                                let _ = p2p_mgr.publish_node_telemetry(telemetry).await;
+
+                                let snapshot = p2p_mgr.get_telemetry_snapshot().await;
+                                let alive_peers = p2p_mgr.get_alive_peers().await;
+                                let active_ids: HashSet<String> = alive_peers
+                                    .iter()
+                                    .map(|peer| peer.id.clone())
+                                    .collect();
+
+                                for peer in alive_peers {
+                                    if peer.id == local_node_id {
+                                        continue;
+                                    }
+                                    if let Some(telemetry) = snapshot.get(&peer.id) {
+                                        scheduler
+                                            .upsert_remote_node(RemoteNodeState::new(
+                                                peer.id.clone(),
+                                                telemetry.available_agent_slots,
+                                                peer.trust_score,
+                                                if telemetry.capabilities.is_empty() {
+                                                    peer.capabilities.clone()
+                                                } else {
+                                                    telemetry.capabilities.clone()
+                                                },
+                                            ))
+                                            .await;
+                                        if let (Some(bridge), Some(addr)) =
+                                            (bridge.as_ref(), telemetry.bridge_addr.as_deref())
+                                        {
+                                            if let Ok(socket_addr) = addr.parse() {
+                                                bridge.upsert_peer(peer.id.clone(), socket_addr).await;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                let known_remote_nodes = scheduler.remote_nodes().await;
+                                for remote in known_remote_nodes {
+                                    if active_ids.contains(&remote.node_id) {
+                                        continue;
+                                    }
+                                    scheduler.remove_remote_node(&remote.node_id).await;
+                                    if let Some(bridge) = bridge.as_ref() {
+                                        bridge.remove_peer(&remote.node_id).await;
+                                    }
+                                }
+                            }
+                            changed = telemetry_shutdown_rx.changed() => {
+                                if changed.is_err() || *telemetry_shutdown_rx.borrow() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }));
             }
 
             let cancel_uds = tokio_util_cancel::CancellationToken::new();
@@ -775,6 +874,9 @@ impl KernelCompanion {
             let _ = task.await;
         }
         if let Some(task) = self.compute_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.telemetry_task.take() {
             let _ = task.await;
         }
         if let Some(task) = self.intent_bridge_listener_task.take() {

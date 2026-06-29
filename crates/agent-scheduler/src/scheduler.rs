@@ -261,6 +261,16 @@ impl AgentScheduler {
         self.remote_nodes.read().await.values().cloned().collect()
     }
 
+    /// ลบ remote node ออกจาก candidate set
+    pub async fn remove_remote_node(&self, node_id: &str) {
+        self.remote_nodes.write().await.remove(node_id);
+    }
+
+    /// จำนวน agent ทั้งหมดที่ scheduler กำลังติดตามอยู่
+    pub async fn total_agents(&self) -> usize {
+        self.agents.read().await.len()
+    }
+
     /// จองและจัดสรร ID ใหม่ให้แก่ Agent (Thread-safe)
     pub async fn allocate_agent_id(&self) -> u64 {
         let mut next_agent_id = self.next_agent_id.write().await;
