@@ -411,7 +411,7 @@
     "type": "task",
     "title": "Timeout hardening for external I/O paths",
     "desc": "ครอบ tokio::time::timeout ให้ external calls ที่ยังเหลือ เช่น Qdrant, TCP peer connect/accept/read paths และ network-facing endpoints ให้ตรงกับ AGENTS.md.",
-    "status": "todo",
+    "status": "done",
     "priority": "high",
     "module": "infra",
     "assignee": "AI",

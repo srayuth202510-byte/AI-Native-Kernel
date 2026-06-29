@@ -94,6 +94,7 @@ Last verified: 2026-06-29
 - **[ANK-030] Local toolchain bootstrap + workspace validation**: ใช้ scripts/use-local-toolchain.sh เพื่อ expose rustc/cargo แล้ว และยืนยันว่า workspace fmt/check/clippy/test ผ่านใน environment ปัจจุบัน.
 - **[ANK-035] Security: upgrade protobuf 2.28 → 3.7 (RUSTSEC-2024-0437)**: อัปเดต prometheus 0.13 → 0.14 เพื่อแก้ vulnerability ใน protobuf 2.28.0 (RUSTSEC-2024-0437). cargo audit clean.
 - **[ANK-036] Security: cargo-vet initialized + passing**: ติดตั้ง cargo-vet, รัน cargo vet init, ยืนยัน supply chain audit ผ่าน (149 exempted).
+- **[ANK-038] Timeout hardening for external I/O paths**: ครอบ tokio::time::timeout ให้ external calls ที่ยังเหลือ เช่น Qdrant, TCP peer connect/accept/read paths และ network-facing endpoints ให้ตรงกับ AGENTS.md.
 - **[ANK-039] CI-equivalent clippy validation (--all-targets --all-features)**: ผ่านแล้ว — cargo clippy --all-targets --all-features clean (0 errors, 0 lint warnings). เหลือแค่ info log จาก prebuilt eBPF objects.
 - **[ANK-056] Cross-Crate Pipeline Integration Tests**: 11 cross-crate integration tests ครอบคลุม end-to-end pipeline: intent → scheduler → capability → LSM decision → audit log, พร้อม fault injection สำหรับทุก Failure Domain.
 <!-- IMPLEMENTED_NOW_END -->
@@ -102,7 +103,6 @@ Last verified: 2026-06-29
 
 <!-- NOT_IMPLEMENTED_YET_START -->
 - **[ANK-037] Privileged eBPF/LSM validation with fallback disabled** (todo, critical): ยืนยัน real attach/enforcement บน host ที่มี kernel prerequisites ครบ และรันด้วย --no-bpf-fallback เพื่อพิสูจน์ fail-closed production path.
-- **[ANK-038] Timeout hardening for external I/O paths** (todo, high): ครอบ tokio::time::timeout ให้ external calls ที่ยังเหลือ เช่น Qdrant, TCP peer connect/accept/read paths และ network-facing endpoints ให้ตรงกับ AGENTS.md.
 - **[ANK-040] Run ignored Qdrant-backed tests against reachable endpoint** (todo, med): รัน cargo test -p context-memory --lib -- --ignored หรือ scripts/run-qdrant-tests.sh กับ QDRANT_URL จริงเพื่อยืนยัน semantic store path.
 <!-- NOT_IMPLEMENTED_YET_END -->
 
