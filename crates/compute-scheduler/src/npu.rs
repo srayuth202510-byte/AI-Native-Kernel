@@ -1,5 +1,9 @@
 use crate::{NpuProfile, NpuRuntime, NpuVendor};
+use std::time::Duration;
+use tokio::time::timeout;
 use tracing::{debug, info, warn};
+
+const NPU_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---- Intel Gaudi Runtime ----
 
@@ -43,7 +47,7 @@ impl NpuRuntime for IntelGaudiRuntime {
         // Check for Intel Gaudi device via sysfs
         let gaudi_paths = ["/sys/class/accel/accel0/device/vendor", "/dev/accel0"];
         for path in &gaudi_paths {
-            if tokio::fs::metadata(path).await.is_ok() {
+            if let Ok(Ok(_)) = timeout(NPU_PROBE_TIMEOUT, tokio::fs::metadata(path)).await {
                 debug!("Intel Gaudi detected at {}", path);
                 return true;
             }
@@ -118,7 +122,7 @@ impl NpuRuntime for TpuRuntime {
         }
         let tpu_paths = ["/dev/accel0", "/dev/tpu0"];
         for path in &tpu_paths {
-            if tokio::fs::metadata(path).await.is_ok() {
+            if let Ok(Ok(_)) = timeout(NPU_PROBE_TIMEOUT, tokio::fs::metadata(path)).await {
                 debug!("Google TPU detected at {}", path);
                 return true;
             }
@@ -257,7 +261,7 @@ impl NpuRuntime for HexagonRuntime {
         // Check for Hexagon DSP device
         let hexagon_paths = ["/dev/cdsp0", "/dev/dsp0", "/sys/class/dsp/dsp0"];
         for path in &hexagon_paths {
-            if tokio::fs::metadata(path).await.is_ok() {
+            if let Ok(Ok(_)) = timeout(NPU_PROBE_TIMEOUT, tokio::fs::metadata(path)).await {
                 debug!("Qualcomm Hexagon detected at {}", path);
                 return true;
             }
@@ -325,10 +329,12 @@ impl NpuRuntime for XdnaRuntime {
         // Check for AMD XDNA device
         let xdna_paths = ["/dev/accel0", "/sys/class/accel/accel0/device/vendor"];
         for path in &xdna_paths {
-            if tokio::fs::metadata(path).await.is_ok() {
+            if let Ok(Ok(_)) = timeout(NPU_PROBE_TIMEOUT, tokio::fs::metadata(path)).await {
                 // Additional check: verify vendor ID is AMD (0x1022)
                 if path.ends_with("vendor") {
-                    if let Ok(content) = tokio::fs::read_to_string(path).await {
+                    if let Ok(Ok(content)) =
+                        timeout(NPU_PROBE_TIMEOUT, tokio::fs::read_to_string(path)).await
+                    {
                         if content.trim() == "0x1022" {
                             debug!("AMD XDNA detected");
                             return true;

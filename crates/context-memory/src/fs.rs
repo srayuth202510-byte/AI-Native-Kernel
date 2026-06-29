@@ -3,7 +3,11 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs as tokio_fs;
+use tokio::time::timeout;
+
+const SFS_IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// ตัวแทนของข้อมูลไฟล์ในระบบ Semantic File System
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,8 +39,9 @@ impl SemanticFileSystem {
         vector_size: usize,
     ) -> Result<Self> {
         let base_dir = base_dir.as_ref().to_path_buf();
-        tokio_fs::create_dir_all(&base_dir)
+        timeout(SFS_IO_TIMEOUT, tokio_fs::create_dir_all(&base_dir))
             .await
+            .context("SFS: base directory creation timeout")?
             .context("Failed to create base directory for SFS")?;
 
         Ok(Self {
@@ -52,14 +57,16 @@ impl SemanticFileSystem {
 
         // 1. ตรวจสอบและสร้างโฟลเดอร์สำหรับไฟล์ย่อย
         if let Some(parent) = file_path.parent() {
-            tokio_fs::create_dir_all(parent)
+            timeout(SFS_IO_TIMEOUT, tokio_fs::create_dir_all(parent))
                 .await
+                .context("SFS: parent directory creation timeout")?
                 .context("Failed to create parent directories for file")?;
         }
 
         // 2. เขียนไฟล์จริงลงดิสก์
-        tokio_fs::write(&file_path, content)
+        timeout(SFS_IO_TIMEOUT, tokio_fs::write(&file_path, content))
             .await
+            .context("SFS: file write timeout")?
             .context("Failed to write physical file content")?;
 
         // 3. คำนวณ Embedding เวกเตอร์อย่างง่ายจากคำศัพท์ (Simple Keyword Hash Embedder)
@@ -88,8 +95,9 @@ impl SemanticFileSystem {
     /// อ่านเนื้อหาไฟล์เต็มจากดิสก์
     pub async fn read_file(&self, relative_path: &str) -> Result<String> {
         let file_path = self.base_dir.join(relative_path);
-        let content = tokio_fs::read_to_string(&file_path)
+        let content = timeout(SFS_IO_TIMEOUT, tokio_fs::read_to_string(&file_path))
             .await
+            .context("SFS: file read timeout")?
             .context("Failed to read file from disk")?;
         Ok(content)
     }
@@ -98,8 +106,9 @@ impl SemanticFileSystem {
     pub async fn delete_file(&self, relative_path: &str) -> Result<()> {
         let file_path = self.base_dir.join(relative_path);
         if file_path.exists() {
-            tokio_fs::remove_file(&file_path)
+            timeout(SFS_IO_TIMEOUT, tokio_fs::remove_file(&file_path))
                 .await
+                .context("SFS: file remove timeout")?
                 .context("Failed to remove file from disk")?;
         }
 

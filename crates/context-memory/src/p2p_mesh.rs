@@ -288,7 +288,9 @@ impl P2PMeshManager {
         );
 
         loop {
-            let (stream, peer_addr) = listener.accept().await?;
+            let (stream, peer_addr) = timeout(CONNECTION_TIMEOUT, listener.accept())
+                .await
+                .context("P2P: accept timeout")??;
             debug!(%peer_addr, "P2P: inbound connection");
             let this = Arc::clone(&self);
             tokio::spawn(async move {
@@ -826,9 +828,13 @@ async fn handle_connection(
             let mut buf = String::new();
             loop {
                 buf.clear();
-                match reader.read_line(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => on_message(&buf, &node_id, &read_state).await,
+                match timeout(RW_TIMEOUT, reader.read_line(&mut buf)).await {
+                    Ok(Ok(0)) | Ok(Err(_)) => break,
+                    Ok(Ok(_)) => on_message(&buf, &node_id, &read_state).await,
+                    Err(_) => {
+                        warn!("P2P: inbound read timeout, closing connection");
+                        break;
+                    }
                 }
             }
             peers.write().await.remove(&node_id);
