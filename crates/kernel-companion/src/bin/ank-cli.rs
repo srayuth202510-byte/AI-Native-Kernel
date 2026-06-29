@@ -161,7 +161,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    let socket_path = "/tmp/ank-companion.sock";
+    let config = kernel_companion::config::Config::load().unwrap_or_default();
+    let socket_path = &config.kernel_companion.uds_socket_path;
     // เชื่อมต่อเข้ากับ Unix Domain Socket Server ของ Kernel Companion
     let mut stream = UnixStream::connect(socket_path)
         .await

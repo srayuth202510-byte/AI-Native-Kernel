@@ -454,18 +454,99 @@ impl AgentScheduler {
                         return Ok(());
                     }
 
-                    let workload_str = intent
-                        .metadata
-                        .get("workload")
-                        .map(|s| s.as_str())
-                        .unwrap_or("small");
-                    let wl = match workload_str {
-                        "kernel" => WorkloadClass::KernelLogic,
-                        "small" => WorkloadClass::SmallLlm,
-                        "large" => WorkloadClass::LargeLlm,
-                        "vector" => WorkloadClass::VectorIndexing,
-                        _ => WorkloadClass::SmallLlm,
-                    };
+                    let wl;
+                    let mut capabilities_list = Vec::new();
+                    let mut priority_val = Priority::Batch;
+                    let mut timeout_val = 300;
+
+                    if let Some(payload_str) = intent.metadata.get("payload") {
+                        if let Ok(payload_json) =
+                            serde_json::from_str::<serde_json::Value>(payload_str)
+                        {
+                            if let Some(workload_or_profile) = payload_json
+                                .get("workload")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| {
+                                    payload_json.get("compute_profile").and_then(|v| v.as_str())
+                                })
+                            {
+                                wl = match workload_or_profile {
+                                    "kernel" => WorkloadClass::KernelLogic,
+                                    "small" | "battery" => WorkloadClass::SmallLlm,
+                                    "large" | "throughput" => WorkloadClass::LargeLlm,
+                                    "vector" => WorkloadClass::VectorIndexing,
+                                    _ => WorkloadClass::SmallLlm,
+                                };
+                            } else {
+                                let workload_str = intent
+                                    .metadata
+                                    .get("workload")
+                                    .map(|s| s.as_str())
+                                    .unwrap_or("small");
+                                wl = match workload_str {
+                                    "kernel" => WorkloadClass::KernelLogic,
+                                    "small" => WorkloadClass::SmallLlm,
+                                    "large" => WorkloadClass::LargeLlm,
+                                    "vector" => WorkloadClass::VectorIndexing,
+                                    _ => WorkloadClass::SmallLlm,
+                                };
+                            }
+
+                            if let Some(caps) =
+                                payload_json.get("capabilities").and_then(|v| v.as_array())
+                            {
+                                for cap in caps {
+                                    if let Some(cap_str) = cap.as_str() {
+                                        capabilities_list.push(cap_str.to_string());
+                                    }
+                                }
+                            }
+
+                            if let Some(timeout_secs) =
+                                payload_json.get("timeout_secs").and_then(|v| v.as_u64())
+                            {
+                                timeout_val = timeout_secs;
+                            }
+
+                            if let Some(prio) =
+                                payload_json.get("priority").and_then(|v| v.as_str())
+                            {
+                                priority_val = match prio {
+                                    "eco" | "Eco" => Priority::Eco,
+                                    "batch" | "Batch" => Priority::Batch,
+                                    "interactive" | "Interactive" => Priority::Interactive,
+                                    "realtime" | "RealTime" => Priority::RealTime,
+                                    _ => Priority::Batch,
+                                };
+                            }
+                        } else {
+                            let workload_str = intent
+                                .metadata
+                                .get("workload")
+                                .map(|s| s.as_str())
+                                .unwrap_or("small");
+                            wl = match workload_str {
+                                "kernel" => WorkloadClass::KernelLogic,
+                                "small" => WorkloadClass::SmallLlm,
+                                "large" => WorkloadClass::LargeLlm,
+                                "vector" => WorkloadClass::VectorIndexing,
+                                _ => WorkloadClass::SmallLlm,
+                            };
+                        }
+                    } else {
+                        let workload_str = intent
+                            .metadata
+                            .get("workload")
+                            .map(|s| s.as_str())
+                            .unwrap_or("small");
+                        wl = match workload_str {
+                            "kernel" => WorkloadClass::KernelLogic,
+                            "small" => WorkloadClass::SmallLlm,
+                            "large" => WorkloadClass::LargeLlm,
+                            "vector" => WorkloadClass::VectorIndexing,
+                            _ => WorkloadClass::SmallLlm,
+                        };
+                    }
 
                     let spawn_locally = self.should_spawn_locally(&intent).await?;
                     let agent_id = if let Some(agent_id) = intent
@@ -483,8 +564,23 @@ impl AgentScheduler {
                         return Ok(());
                     }
 
-                    let agent = AgentControlBlock::new_unplaced(agent_id, wl);
+                    let mut agent = AgentControlBlock::new_unplaced(agent_id, wl);
+                    agent.priority = priority_val;
                     self.spawn_agent(agent).await?;
+
+                    if !capabilities_list.is_empty() {
+                        let token = CapabilityToken::new(
+                            uuid::Uuid::new_v4().as_bytes()[..8]
+                                .try_into()
+                                .map(u64::from_ne_bytes)
+                                .unwrap_or_else(|_| uuid::Uuid::new_v4().as_u128() as u64),
+                            capability_security::Scope::Global,
+                            capabilities_list,
+                            Duration::from_secs(timeout_val),
+                            [0u8; 32],
+                        );
+                        let _ = self.grant_capability(agent_id, token).await;
+                    }
 
                     let req_payload = serde_json::json!({
                         "action": "PlacementRequest",

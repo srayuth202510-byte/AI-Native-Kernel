@@ -134,3 +134,56 @@ async fn grant_capability_then_terminate() {
         Err(agent_scheduler::SchedulerError::AgentNotFound)
     ));
 }
+
+#[tokio::test]
+async fn route_intent_spawn_agent_with_payload_parameters() {
+    let scheduler = scheduler();
+    let mut subscriber = scheduler.intent_bus().subscribe();
+
+    let payload_json = serde_json::json!({
+        "agent_name": "test-agent-123",
+        "workload": "large",
+        "priority": "Interactive",
+        "capabilities": ["read", "execute"],
+        "timeout_secs": 100
+    })
+    .to_string();
+
+    let intent = Intent::new(
+        "intent-spawn-with-payload",
+        IntentType::Command,
+        "spawn-agent",
+        IntentPriority::High,
+        "test-client",
+    )
+    .with_metadata("payload", payload_json);
+
+    scheduler
+        .route_intent(intent)
+        .await
+        .expect("route_intent should succeed");
+
+    // Wait for PlacementRequest
+    let request = timeout(Duration::from_millis(100), subscriber.receive())
+        .await
+        .expect("should receive PlacementRequest")
+        .unwrap();
+
+    let data: serde_json::Value = serde_json::from_str(&request.payload).unwrap();
+    assert_eq!(data["action"], "PlacementRequest");
+    let agent_id = data["agent_id"].as_u64().unwrap();
+
+    // Verify properties of the spawned agent
+    let agent = scheduler.get_agent(agent_id).await.unwrap();
+    assert_eq!(
+        agent.workload_class,
+        compute_scheduler::placement::WorkloadClass::LargeLlm
+    );
+    assert_eq!(
+        agent.priority,
+        agent_scheduler::priority::Priority::Interactive
+    );
+    assert_eq!(agent.capabilities.len(), 1);
+    assert!(agent.capabilities[0].allows("read"));
+    assert!(agent.capabilities[0].allows("execute"));
+}

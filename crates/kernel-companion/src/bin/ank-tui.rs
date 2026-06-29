@@ -19,8 +19,6 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-const SOCKET_PATH: &str = "/tmp/ank-companion.sock";
-
 struct DashboardData {
     status: String,
     running_agents: u64,
@@ -74,9 +72,11 @@ impl DashboardData {
 }
 
 async fn fetch_status() -> Result<DashboardData, String> {
-    let mut stream = UnixStream::connect(SOCKET_PATH)
+    let config = kernel_companion::config::Config::load().unwrap_or_default();
+    let socket_path = &config.kernel_companion.uds_socket_path;
+    let mut stream = UnixStream::connect(socket_path)
         .await
-        .map_err(|e| format!("Connection failed: {}", e))?;
+        .map_err(|e| format!("Connection failed to UDS at {}: {}", socket_path, e))?;
 
     let intent = Intent::new(
         "tui-status",
