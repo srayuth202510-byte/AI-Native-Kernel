@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
 use tracing::{debug, instrument, warn};
+pub use vram::KvCachePage;
 
 /// ข้อผิดพลาดที่เกี่ยวข้องกับระบบจัดการหน่วยความจำบริบท
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -240,6 +241,54 @@ impl ContextMemoryManager {
             Ok(())
         } else {
             warn!("ไม่พบข้อมูลใน VRAM");
+            Err(ContextError::NotFound)
+        }
+    }
+
+    /// ย้ายหน้า KV Cache จากหน่วยความจำหลักระบบไปยัง VRAM ของ GPU/NPU
+    /// หาก VRAM เต็ม จะถอดถอนหน้าเก่าที่สุดตามลำดับ LRU กลับลงมายัง RAM และส่งคืนหน้านั้น
+    #[instrument(skip(self, page), fields(sequence_id = %page.sequence_id, size = page.size_bytes()))]
+    pub fn page_kv_to_vram(&self, page: KvCachePage) -> Result<Option<KvCachePage>> {
+        let key = format!("kv_seq_{}", page.sequence_id);
+        let value = serde_json::to_vec(&page).map_err(|_| ContextError::NotFound)?;
+
+        // บันทึกเวลา
+        self.timestamps.write().insert(key.clone(), Instant::now());
+
+        // ใส่ข้อมูลใน VRAM
+        let evicted = self.vram.write().insert(key, value);
+
+        // หากมีการถอดถอนหน้า VRAM เดิมออกมา ให้ย้ายกลับลง RAM (Hot Tier)
+        let mut evicted_page = None;
+        if let Some((evicted_key, evicted_value)) = evicted {
+            let page: KvCachePage =
+                serde_json::from_slice(&evicted_value).map_err(|_| ContextError::NotFound)?;
+            warn!(
+                tier = "ram",
+                key = %evicted_key,
+                "VRAM เต็มในการโหลด KV cache — ถอดถอนหน้าเก่าลง RAM"
+            );
+            // บันทึกกลับลง Hot Store/RAM
+            self.put(evicted_key, evicted_value);
+            evicted_page = Some(page);
+        }
+
+        Ok(evicted_page)
+    }
+
+    /// ดึงหน้า KV Cache จาก VRAM กลับลงมายัง RAM
+    #[instrument(skip(self), fields(sequence_id = %sequence_id))]
+    pub fn page_kv_to_ram(&self, sequence_id: &str) -> Result<KvCachePage> {
+        let key = format!("kv_seq_{}", sequence_id);
+        let vram_value = self.vram.write().remove(&key);
+        if let Some(value) = vram_value {
+            let page: KvCachePage =
+                serde_json::from_slice(&value).map_err(|_| ContextError::NotFound)?;
+            debug!(tier = "vram->ram", sequence_id = %sequence_id, "ดึงหน้า KV Cache กลับลง RAM");
+            self.put(key, value);
+            Ok(page)
+        } else {
+            warn!(sequence_id = %sequence_id, "ไม่พบหน้า KV Cache ใน VRAM");
             Err(ContextError::NotFound)
         }
     }
@@ -654,5 +703,33 @@ mod tests {
     fn page_to_ram_nonexistent_returns_not_found() {
         let memory = ContextMemoryManager::new();
         assert_eq!(memory.page_to_ram("ghost"), Err(ContextError::NotFound));
+    }
+
+    #[test]
+    fn kv_cache_paging_and_eviction() {
+        // Create memory manager with 100 bytes of VRAM capacity
+        let memory = ContextMemoryManager::with_vram_and_capacity(100, 2, 2);
+
+        // Create two pages of 60 bytes each (2 * 1 * 1 * 15 * 2 * 1 = 60 bytes)
+        let page_a = KvCachePage::new("agent-a".to_string(), 15, 1, 1, 2, 1);
+        let page_b = KvCachePage::new("agent-b".to_string(), 15, 1, 1, 2, 1);
+
+        assert_eq!(page_a.size_bytes(), 60);
+
+        // Page A to VRAM
+        let evicted = memory.page_kv_to_vram(page_a.clone()).unwrap();
+        assert!(evicted.is_none(), "no eviction should occur yet");
+        assert_eq!(memory.tier_of("kv_seq_agent-a"), Some("vram"));
+
+        // Page B to VRAM (causes A to evict because 60 + 60 = 120 > 100 capacity)
+        let evicted = memory.page_kv_to_vram(page_b.clone()).unwrap();
+        assert_eq!(evicted.unwrap().sequence_id, "agent-a");
+        assert_eq!(memory.tier_of("kv_seq_agent-b"), Some("vram"));
+        assert_eq!(memory.tier_of("kv_seq_agent-a"), Some("hot")); // Evicted to RAM
+
+        // Pull B back from VRAM to RAM
+        let page_b_back = memory.page_kv_to_ram("agent-b").unwrap();
+        assert_eq!(page_b_back.sequence_id, "agent-b");
+        assert_eq!(memory.tier_of("kv_seq_agent-b"), Some("hot"));
     }
 }

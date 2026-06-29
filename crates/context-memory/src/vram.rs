@@ -1,6 +1,44 @@
-#![deny(unsafe_code)]
-
 use std::collections::HashMap;
+
+/// โครงสร้างแทนข้อมูล KV Cache ของโมเดล AI (เช่น LLM)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct KvCachePage {
+    pub sequence_id: String,
+    pub num_tokens: usize,
+    pub num_layers: usize,
+    pub num_heads: usize,
+    pub head_dim: usize,
+    pub element_size_bytes: usize,
+    pub data: Vec<u8>,
+}
+
+impl KvCachePage {
+    #[must_use]
+    pub fn new(
+        sequence_id: String,
+        num_tokens: usize,
+        num_layers: usize,
+        num_heads: usize,
+        head_dim: usize,
+        element_size_bytes: usize,
+    ) -> Self {
+        let size = 2 * num_layers * num_heads * num_tokens * head_dim * element_size_bytes;
+        Self {
+            sequence_id,
+            num_tokens,
+            num_layers,
+            num_heads,
+            head_dim,
+            element_size_bytes,
+            data: vec![0xABu8; size], // simulated initial values
+        }
+    }
+
+    #[must_use]
+    pub fn size_bytes(&self) -> usize {
+        self.data.len()
+    }
+}
 
 /// พื้นที่เก็บข้อมูลกราฟิกจำลอง (VRAM Store) สำหรับ GPU/NPU context pages
 #[derive(Debug, Clone)]
