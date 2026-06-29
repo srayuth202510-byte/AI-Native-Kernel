@@ -116,22 +116,20 @@
         <h1>AI-Native Kernel</h1>
         <div class="subtitle">Next Generation Operating System Kernel for AI Era &mdash; Rust Implementation Plan</div>
         <div class="meta-grid">
-            <div class="meta-item"><strong>Version:</strong> 3.1 (Integrated Cognitive Flow)</div>
+            <div class="meta-item"><strong>Version:</strong> 3.2 (Repo-aligned baseline)</div>
             <div class="meta-item"><strong>Language:</strong> Rust (Edition 2024)</div>
-            <div class="meta-item"><strong>Status:</strong> Ready for Prototype (Phase 1 MVP)</div>
+            <div class="meta-item"><strong>Status:</strong> Host-side prototype validated; privileged eBPF/LSM re-validation pending</div>
         </div>
     </div>
 
     <div class="changelog">
-        <p><strong>บันทึกการแก้ไข (v3.0 &rarr; v3.1):</strong></p>
+        <p><strong>บันทึกการแก้ไข (v3.1 &rarr; v3.2):</strong></p>
         <ul>
-            <li>บูรณาการ <strong>Cognitive AI System Flow</strong> (จากแผนภาพ <a href="AiSystem.png">AiSystem.png</a>) เข้ากับ Kernel Runtime (โมดูลตรวจตรรกะ, ความจำ, และการปรับตาม RL)</li>
-            <li>แทนที่ ASCII diagrams ทั้งหมดด้วย <strong>Mermaid graphs</strong> (render ในเบราว์เซอร์)</li>
-            <li>เพิ่ม <strong>Crate Dependency Graph</strong> &mdash; โครงสร้าง workspace</li>
-            <li>เพิ่ม <strong>Agent State Machine</strong> &mdash; lifecycle transitions</li>
-            <li>เพิ่ม <strong>Context Paging Flow</strong> &mdash; Hot/Warm/Cold tier migration</li>
-            <li>เพิ่ม <strong>Recovery Sequence Diagram</strong> &mdash; fault handling แบบละเอียด</li>
-            <li>เพิ่ม <strong>Development Gantt Chart</strong> &mdash; Phase timeline</li>
+            <li>ปรับสถานะเอกสารให้สอดคล้องกับ repo ปัจจุบัน: จาก “พร้อมเริ่มต้น prototype” เป็น “validated host-side prototype”</li>
+            <li>อัปเดตขอบเขตเฟสให้สะท้อน capability ที่มีใน codebase แล้ว เช่น compute scheduler, VRAM tier, semantic/Qdrant path และ P2P mesh</li>
+            <li>แก้ <strong>Crate Dependency Graph</strong> ให้ตรงกับ workspace จริง (รวม <code>immune-system</code> และตัด <code>kernel-core</code> ที่ไม่มีใน repo)</li>
+            <li>อัปเดต backend choices ของ audit/Qdrant ให้ตรงกับ implementation ปัจจุบัน</li>
+            <li>ปรับ success criteria ให้แยก “ผ่านใน host-side validation” ออกจาก “ยังต้องยืนยันบน privileged host” อย่างชัดเจน</li>
         </ul>
     </div>
 
@@ -145,8 +143,8 @@
         <p><strong>หลักการออกแบบ (Design Principles):</strong></p>
         <ul>
             <li><strong>Memory Safety Without GC:</strong> Rust ป้องกัน Use-After-Free / Buffer Overflow โดยไม่ต้องมี Garbage Collector</li>
-            <li><strong>Async-First:</strong> ใช้ Tokio runtime รองรับ concurrency ของ AI Agents ได้หมื่นตัวพร้อมกัน</li>
-            <li><strong>Fail-Safe by Default:</strong> ทุก subsystem ต้องมี fallback path และต้องไม่ทำให้ระบบทั้งหมดล้มเหลว</li>
+            <li><strong>Async-First:</strong> ใช้ Tokio runtime รองรับ Phase 1 ที่ 10 agents และออกแบบให้ขยายไปถึง 1,000+ agents ในเฟสถัดไป</li>
+            <li><strong>Fail-Closed for Security, Graceful Degradation Elsewhere:</strong> security decision paths ต้อง default = DENY; ส่วน subsystem อื่นลดระดับบริการได้เมื่อปลอดภัย</li>
             <li><strong>Observability Built-In:</strong> Metrics + Tracing ฝังอยู่ในทุก hot path ตั้งแต่วันแรก</li>
         </ul>
     </div>
@@ -155,14 +153,14 @@
     <table>
         <thead><tr><th>คุณสมบัติ MVP (Phase 1)</th><th>ขอบเขต</th></tr></thead>
         <tbody>
-            <tr><td>eBPF syscall tracer (read-only) ที่รันบน Linux x86_64</td><td><span class="badge-success">In-Scope</span></td></tr>
-            <tr><td>Agent runtime (สูงสุด 10 concurrent agents)</td><td><span class="badge-success">In-Scope</span></td></tr>
-            <tr><td>Capability Token issuer + LSM policy decision point</td><td><span class="badge-success">In-Scope</span></td></tr>
-            <tr><td>Context Memory Manager (RAM + NVMe 2-tier, ยังไม่มี VRAM)</td><td><span class="badge-success">In-Scope</span></td></tr>
-            <tr><td>Simple Intent Bus (channel-based)</td><td><span class="badge-success">In-Scope</span></td></tr>
-            <tr><td>Context Paging ไปยัง VRAM</td><td><span class="badge-warn">Out-of-Scope (Phase 2)</span></td></tr>
-            <tr><td>Compute Scheduler แบบ Adaptive (CPU + GPU + NPU)</td><td><span class="badge-warn">Out-of-Scope (Phase 2)</span></td></tr>
-            <tr><td>Semantic File System / Distributed Cluster</td><td><span class="badge-warn">Out-of-Scope (Phase 3/4)</span></td></tr>
+            <tr><td>eBPF syscall tracer + companion-side policy flow</td><td><span class="badge-success">Implemented; privileged host re-validation pending</span></td></tr>
+            <tr><td>Agent runtime (Phase 1 target = 10 concurrent agents)</td><td><span class="badge-success">Implemented + perf-budget tests present</span></td></tr>
+            <tr><td>Capability Token issuer + fail-DENY LSM policy decision point</td><td><span class="badge-success">Implemented</span></td></tr>
+            <tr><td>Context Memory Manager (Hot/Warm/Cold + VRAM tier API)</td><td><span class="badge-success">Implemented in host-side prototype</span></td></tr>
+            <tr><td>Intent Bus + NLP/structured routing path</td><td><span class="badge-success">Implemented</span></td></tr>
+            <tr><td>Compute Scheduler แบบ Adaptive (CPU + GPU + NPU placement model)</td><td><span class="badge-success">Implemented in host-side prototype</span></td></tr>
+            <tr><td>Semantic Store / Qdrant-backed path</td><td><span class="badge-warn">Implemented but still has ignored integration tests</span></td></tr>
+            <tr><td>P2P / Distributed Context Mesh</td><td><span class="badge-warn">Implemented at repo level; production validation still pending</span></td></tr>
         </tbody>
     </table>
 
@@ -230,29 +228,29 @@ flowchart TB
     <div class="graph-container">
 <div class="mermaid">
 flowchart BT
-    CORE["kernel-core<br/>(shared types: AgentId, ContextId)"]
     CRYPTO["capability-security<br/>(CapabilityToken, LSM Policy)"]
     CTX["context-memory<br/>(Hot/Warm/Cold paging)"]
     SCHED["agent-scheduler<br/>(lifecycle, supervisor)"]
     COMP["compute-scheduler<br/>(cost function, weights)"]
     IB["intent-bus<br/>(event loop)"]
+    IMMUNE["immune-system<br/>(T/B/Macrophage loop)"]
     COMPANION["kernel-companion<br/>(eBPF/LSM bin)"]
 
-    CORE --> CRYPTO
-    CORE --> CTX
-    CORE --> SCHED
-    CORE --> IB
     CRYPTO --> SCHED
     CTX --> SCHED
-    SCHED --> COMP
-    SCHED --> IB
+    IB --> SCHED
+    IB --> IMMUNE
+    CTX --> IMMUNE
     CRYPTO --> COMPANION
     SCHED --> COMPANION
+    CTX --> COMPANION
+    COMP --> COMPANION
     IB --> COMPANION
+    IMMUNE --> COMPANION
 
     classDef crateStyle fill:#edf2f7,stroke:#4a5568,color:#2d3748
     classDef binStyle fill:#feebc8,stroke:#dd6b20,color:#7b341e
-    class CORE,CRYPTO,CTX,SCHED,COMP,IB crateStyle
+    class CRYPTO,CTX,SCHED,COMP,IB,IMMUNE crateStyle
     class COMPANION binStyle
 </div>
         <div class="graph-caption">รูปที่ 2 &mdash; Cargo Workspace: dependency ระหว่าง crates (ลูกศร = depends on)</div>
@@ -417,8 +415,8 @@ flowchart LR
     <div class="highlight-box">
         <p><strong>Inference / Vector Stack ที่เลือก:</strong></p>
         <ul>
-            <li><strong>Inference Engine (Phase 2):</strong> <span class="badge">llama.cpp</span> (CPU/NPU edge), <span class="badge">TensorRT-LLM</span> (GPU batch)</li>
-            <li><strong>Vector Store (Phase 3):</strong> <span class="badge">Qdrant Embedded</span> (แทน Neo4j เพื่อลด operational overhead)</li>
+            <li><strong>Inference Engine:</strong> <span class="badge">llama.cpp</span>, <span class="badge">ONNX Runtime</span>, และ <span class="badge">TensorRT-LLM</span> มี placement/runtime path ใน host-side prototype แล้ว</li>
+            <li><strong>Vector Store:</strong> <span class="badge">Qdrant service/client path</span> ถูกใช้ใน codebase ปัจจุบัน; ยังต้อง re-run ignored integration tests กับ endpoint ที่ reachable</li>
         </ul>
     </div>
 
@@ -584,7 +582,7 @@ sequenceDiagram
             <tr><td><strong>Metrics</strong></td><td><span class="badge">metrics</span> + Prometheus</td><td>Counter/Histogram/Gauge for all subsystems</td></tr>
             <tr><td><strong>Tracing</strong></td><td><span class="badge">tracing</span> + OTel &rarr; Jaeger</td><td>Distributed trace: Intent &rarr; Agent &rarr; Syscall &rarr; Audit</td></tr>
             <tr><td><strong>Structured Logging</strong></td><td><span class="badge">tracing-subscriber</span> JSON</td><td>PII-sanitized logs (no keys/tokens)</td></tr>
-            <tr><td><strong>Audit Log (WORM)</strong></td><td>SQLite WAL &rarr; PostgreSQL append-only</td><td>ทุก ALLOW/DENY + timestamp + agent_id + token_id</td></tr>
+            <tr><td><strong>Audit Log (WORM)</strong></td><td>File-backed append-only + hash chain (current); external append-only sink เป็น future option</td><td>ทุก ALLOW/DENY + timestamp + agent/token metadata + integrity validation</td></tr>
             <tr><td><strong>eBPF Profiling</strong></td><td>perf events + Parca/Grafana</td><td>CPU flamegraphs, syscall latency</td></tr>
         </tbody>
     </table>
@@ -647,7 +645,7 @@ gantt
     <table>
         <thead><tr><th>เฟส</th><th>ความเสี่ยงหลัก</th><th>Mitigation</th></tr></thead>
         <tbody>
-            <tr><td><strong>Phase 1: MVP</strong></td><td>eBPF compat ตาม kernel version; privilege</td><td>Pin kernel version ใน CI; fallback auditd</td></tr>
+            <tr><td><strong>Phase 1: MVP</strong></td><td>eBPF compat ตาม kernel version; privilege</td><td>Pin kernel/toolchain in CI; validate fail-closed path บน privileged host; ใช้ simulation เฉพาะ dev/test ที่เปิด explicit</td></tr>
             <tr><td><strong>Phase 2: AI Runtime</strong></td><td>GPU OOM multi-tenant; driver instability</td><td>Circuit breaker; memory budgeting</td></tr>
             <tr><td><strong>Phase 3: Semantic OS</strong></td><td>Index build cost; indexing latency</td><td>Incremental indexing; query cache</td></tr>
             <tr><td><strong>Phase 4: Distributed</strong></td><td>Network partition; consistency</td><td>Tunable consistency; gossip health</td></tr>
@@ -659,16 +657,16 @@ gantt
     <!-- ============================================================ -->
     <h2>10. Phase 1 MVP Success Criteria</h2>
     <div class="success-box">
-        <p>Phase 1 จะถือว่า "สำเร็จ" เมื่อตรงเกณฑ์ทั้งหมด:</p>
+        <p>Phase 1 จะถือว่า "สำเร็จ" เมื่อตรงเกณฑ์ทั้งหมด โดยแยกสิ่งที่ยืนยันได้ใน repo ออกจากสิ่งที่ยังต้อง re-validate บน host จริง:</p>
         <ul>
-            <li>✅ eBPF tracer intercept syscalls บน Linux 6.1+ (x86_64) โดย overhead &lt; 3% CPU</li>
-            <li>✅ Agent runtime รองรับ 10 concurrent agents, spawn P99 &lt; 500 µs</li>
-            <li>✅ Capability/LSM policy ตัดสินใจทุก syscall ภายใน 1 ms</li>
-            <li>✅ Audit Log บันทึก 100% security decisions แบบ append-only</li>
-            <li>✅ ผ่าน chaos test สำหรับทุก Failure Domain &mdash; ระบบไม่ล้มเหลว</li>
-            <li>✅ Unit test coverage &gt; 85%; fuzz 10M inputs ไม่พบ panic</li>
-            <li>✅ <code>rtk cargo clippy -- -D warnings</code> ผ่านโดยไม่มี warning</li>
-            <li>✅ <code>rtk cargo audit</code> ไม่พบ known CVE</li>
+            <li>✅ Host-side prototype build/check/clippy/test ผ่านบน pinned toolchain และ cross-crate pipeline ทำงานครบ</li>
+            <li>✅ Agent runtime รองรับ 10 concurrent agents, spawn P99 &lt; 500 µs ตาม perf-budget tests</li>
+            <li>✅ Capability/LSM policy path ตัดสินใจภายใน 1 ms ใน host-side validation path</li>
+            <li>✅ Audit Log บันทึก security decisions แบบ append-only พร้อม hash-chain validation</li>
+            <li>✅ ผ่าน chaos / pipeline / integration tests สำหรับ Failure Domains ที่อยู่ใน workspace ปัจจุบัน</li>
+            <li>⚠️ Qdrant-backed ignored tests ต้อง re-run กับ endpoint ที่ reachable เพื่อยืนยัน semantic path</li>
+            <li>⚠️ eBPF/LSM real attach พร้อม fallback disabled ต้อง re-validate บน privileged Linux host</li>
+            <li>✅ <code>cargo clippy --all-targets --all-features -- -D warnings</code> และ <code>cargo audit</code> เป็น baseline validation ของ repo ปัจจุบัน</li>
         </ul>
     </div>
 

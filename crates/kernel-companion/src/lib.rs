@@ -3,6 +3,7 @@
 //! โมดูลหลักสำหรับ Kernel Companion
 //! ทำหน้าที่เป็นตัวกลางในการเชื่อมต่อระหว่างระบบปฏิบัติการ Linux (ผ่าน LSM/eBPF) และระบบจัดการ AI Agents
 
+use crate::cognitive::CognitiveControlPlane;
 use crate::config::Config;
 use crate::intent_bridge::IntentBridge;
 use crate::observability::kernel_metrics;
@@ -25,6 +26,7 @@ use tokio::task;
 use tokio::task::JoinHandle;
 use tracing::{info, instrument, warn};
 
+pub mod cognitive;
 /// โมดูล `config` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `config` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod config;
@@ -77,6 +79,8 @@ pub struct KernelCompanion {
     compute_scheduler: Arc<ComputeScheduler>,
     /// ตัวจัดตารางการทำงานของ Agent (Agent Scheduler) ควบคุมวงจรชีวิตของ Agent
     agent_scheduler: Arc<AgentScheduler>,
+    /// ชั้น cognitive แบบ advisory-only สำหรับ planner/reasoner/world model
+    cognitive_plane: Arc<CognitiveControlPlane>,
     /// T-Cell Agent — ตรวจจับ Anomaly (reserved for syscall event feed)
     tcell: Arc<TCellAgent>,
     /// B-Cell Agent — เรียนรู้และสร้าง Antibody Rules
@@ -166,6 +170,7 @@ impl KernelCompanion {
             config.agent_scheduler.supervisor_interval_ms,
             config.kernel_companion.monitoring_channel_capacity,
         ));
+        let cognitive_plane = Arc::new(CognitiveControlPlane::new());
 
         let compute_mode: compute_scheduler::weights::SchedulerMode =
             match config.compute_scheduler.default_mode.as_str() {
@@ -219,6 +224,7 @@ impl KernelCompanion {
             capability_security,
             compute_scheduler: Arc::new(ComputeScheduler::with_weights(weights)),
             agent_scheduler,
+            cognitive_plane,
             tcell,
             bcell,
             macrophage,
@@ -403,6 +409,7 @@ impl KernelCompanion {
             }
 
             let intent_bus_for_routing = Arc::clone(&self.intent_bus);
+            let cognitive_plane = Arc::clone(&self.cognitive_plane);
             // รัน Task สำหรับดักฟัง Intent Bus และส่งต่อไปยัง Agent Scheduler แบบ Async
             self.routing_task = Some(tokio::spawn(async move {
                 loop {
@@ -410,9 +417,13 @@ impl KernelCompanion {
                         intent = intent_subscriber.receive() => {
                             match intent {
                                 Some(intent) => {
+                                    cognitive_plane.observe_intent(&intent).await;
                                     if intent.intent_type == IntentType::NaturalLanguage {
-                                        if let Some(cmd_intent) = nlp::parse_natural_language_intent(&intent) {
-                                            let _ = intent_bus_for_routing.publish(cmd_intent).await;
+                                        if let Some(decision) = cognitive_plane.plan_and_reason(&intent).await {
+                                            let _ = intent_bus_for_routing.publish(decision.advisory_intent).await;
+                                            if let Some(cmd_intent) = decision.command_intent {
+                                                let _ = intent_bus_for_routing.publish(cmd_intent).await;
+                                            }
                                         }
                                     }
                                     let _ = scheduler.route_intent(intent).await;
