@@ -3,11 +3,14 @@
 //! เอกสารระดับ Crate สำหรับระบบ
 //!
 //! โมดูลนี้รวบรวมฟังก์ชันการทำงานที่จำเป็นทั้งหมด
-use agent_scheduler::{AgentScheduler, block::AgentControlBlock};
+use agent_scheduler::{
+    AgentScheduler, DistributedRoutingPolicy, RemoteNodeState, block::AgentControlBlock,
+};
 use capability_security::CapabilitySecurityManager;
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentPriority, IntentType};
 use kernel_companion::ebpf::tokio_util_cancel::CancellationToken;
+use kernel_companion::intent_bridge::IntentBridge;
 use kernel_companion::{SyscallTracer, ebpf::PolicyDecision};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +32,28 @@ fn pipeline() -> (
     );
     (
         Arc::try_unwrap(intent_bus).unwrap_or_else(|arc| (*arc).clone()),
+        agent_scheduler,
+        capability_security,
+        context_memory,
+    )
+}
+
+fn arc_pipeline() -> (
+    Arc<IntentBus>,
+    Arc<AgentScheduler>,
+    Arc<CapabilitySecurityManager>,
+    Arc<ContextMemoryManager>,
+) {
+    let intent_bus = Arc::new(IntentBus::new(1024));
+    let context_memory = Arc::new(ContextMemoryManager::new());
+    let capability_security = Arc::new(CapabilitySecurityManager::new());
+    let agent_scheduler = Arc::new(AgentScheduler::new(
+        Arc::clone(&intent_bus),
+        Arc::clone(&context_memory),
+        Arc::clone(&capability_security),
+    ));
+    (
+        intent_bus,
         agent_scheduler,
         capability_security,
         context_memory,
@@ -367,4 +392,179 @@ async fn e2e_supervisor_recovers_failed_agent() {
 
     let agent = scheduler.get_agent(agent_id).await.unwrap();
     assert_eq!(agent.state, agent_scheduler::block::AgentState::Running);
+}
+
+// ---- E2E-8: Two-node delegated spawn over network bridge ----
+
+#[tokio::test]
+async fn e2e_two_node_delegated_spawn() {
+    let listener_probe = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+        Err(error) => panic!("failed to reserve bridge listener port: {error}"),
+    };
+    let bridge_addr = listener_probe.local_addr().unwrap();
+    drop(listener_probe);
+
+    let (bus_a, scheduler_a, _, _) = arc_pipeline();
+    let (bus_b, scheduler_b, _, _) = arc_pipeline();
+
+    scheduler_a
+        .configure_routing_policy(DistributedRoutingPolicy {
+            local_node_id: "node-a".to_string(),
+            remote_enabled: true,
+            max_local_agents: 1,
+            overload_threshold_percent: 100,
+            min_remote_trust: 80,
+            max_candidate_nodes: 2,
+        })
+        .await;
+    scheduler_b
+        .configure_routing_policy(DistributedRoutingPolicy {
+            local_node_id: "node-b".to_string(),
+            remote_enabled: false,
+            max_local_agents: 4,
+            overload_threshold_percent: 100,
+            min_remote_trust: 80,
+            max_candidate_nodes: 2,
+        })
+        .await;
+    scheduler_a
+        .upsert_remote_node(RemoteNodeState::new(
+            "node-b",
+            4,
+            100,
+            vec!["small".to_string(), "large".to_string()],
+        ))
+        .await;
+
+    scheduler_a
+        .spawn_agent(AgentControlBlock::new(0))
+        .await
+        .expect("seed local agent should spawn");
+
+    let cancel_b_listener = CancellationToken::new();
+    let cancel_a_forwarder = CancellationToken::new();
+    let cancel_b_router = CancellationToken::new();
+
+    let bridge_b = IntentBridge::new(
+        "node-b",
+        &[],
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+    let bridge_a = IntentBridge::new(
+        "node-a",
+        &[kernel_companion::config::IntentBridgePeerConfig {
+            node_id: "node-b".to_string(),
+            addr: bridge_addr.to_string(),
+            available_agent_slots: 4,
+            trust_score: 100,
+            capabilities: vec!["small".to_string()],
+        }],
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    );
+
+    let bridge_listener_task = tokio::spawn({
+        let bus_b = Arc::clone(&bus_b);
+        let cancel = cancel_b_listener.clone();
+        async move { bridge_b.start_listener(bus_b, bridge_addr, cancel).await }
+    });
+
+    let router_task = tokio::spawn({
+        let scheduler_b = Arc::clone(&scheduler_b);
+        let bus_b = Arc::clone(&bus_b);
+        let cancel = cancel_b_router.clone();
+        async move {
+            let mut subscriber = bus_b.subscribe();
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                    }
+                    maybe_intent = subscriber.receive() => {
+                        let Some(intent) = maybe_intent else {
+                            break;
+                        };
+
+                        scheduler_b.route_intent(intent.clone()).await.unwrap();
+
+                        if intent.intent_type == IntentType::Event && intent.source == "agent-scheduler" {
+                            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
+                                if data.get("action").and_then(|value| value.as_str()) == Some("PlacementRequest") {
+                                    let agent_id = data["agent_id"].as_u64().unwrap();
+                                    let resp_payload = serde_json::json!({
+                                        "action": "PlacementResponse",
+                                        "agent_id": agent_id,
+                                        "compute_target": "Cpu",
+                                    })
+                                    .to_string();
+                                    bus_b
+                                        .publish(Intent::new(
+                                            format!("resp-{agent_id}"),
+                                            IntentType::Event,
+                                            resp_payload,
+                                            IntentPriority::High,
+                                            "compute-scheduler",
+                                        ))
+                                        .await
+                                        .unwrap();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let forwarder_task = tokio::spawn({
+        let bus_a = Arc::clone(&bus_a);
+        let cancel = cancel_a_forwarder.clone();
+        async move { bridge_a.start_forwarder(bus_a, cancel).await }
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    scheduler_a
+        .route_intent(Intent::new(
+            "delegated-spawn",
+            IntentType::Command,
+            "spawn-agent",
+            IntentPriority::Critical,
+            "node-a-test",
+        ))
+        .await
+        .expect("delegated route should succeed");
+
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if scheduler_b.get_running_agents().await.len() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("node B should eventually spawn delegated agent");
+
+    assert_eq!(
+        scheduler_a.get_running_agents().await.len(),
+        1,
+        "node A should only keep the seed local agent"
+    );
+    let remote_agents = scheduler_b.get_running_agents().await;
+    assert_eq!(remote_agents.len(), 1);
+    assert_eq!(remote_agents[0].id, 2);
+
+    cancel_a_forwarder.cancel();
+    cancel_b_listener.cancel();
+    cancel_b_router.cancel();
+
+    forwarder_task.await.unwrap().unwrap();
+    bridge_listener_task.await.unwrap().unwrap();
+    router_task.await.unwrap();
 }
