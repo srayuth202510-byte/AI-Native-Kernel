@@ -15,8 +15,17 @@ fn bench_issue_token(c: &mut Criterion) {
         [0xABu8; 32],
     );
 
+    run_issue_token(c, &rt, &manager, &token);
+}
+
+fn run_issue_token(
+    c: &mut Criterion,
+    rt: &Runtime,
+    manager: &CapabilitySecurityManager,
+    token: &CapabilityToken,
+) {
     c.bench_function("issue_token", |b| {
-        b.to_async(&rt).iter(|| async {
+        b.to_async(rt).iter(|| async {
             manager.issue_token(black_box(token.clone())).await.unwrap();
         })
     });
@@ -34,10 +43,19 @@ fn bench_authorize_token_allow(c: &mut Criterion) {
     );
     rt.block_on(manager.issue_token(token.clone())).unwrap();
 
+    run_authorize_token_allow(c, &rt, &manager, &token);
+}
+
+fn run_authorize_token_allow(
+    c: &mut Criterion,
+    rt: &Runtime,
+    manager: &CapabilitySecurityManager,
+    token: &CapabilityToken,
+) {
     c.bench_function("authorize_token_allow", |b| {
-        b.to_async(&rt).iter(|| async {
+        b.to_async(rt).iter(|| async {
             let result = manager
-                .authorize_token(black_box(&token), "read")
+                .authorize_token(black_box(token), "read")
                 .await
                 .unwrap();
             black_box(result)
@@ -57,10 +75,19 @@ fn bench_authorize_token_deny(c: &mut Criterion) {
     );
     rt.block_on(manager.issue_token(token.clone())).unwrap();
 
+    run_authorize_token_deny(c, &rt, &manager, &token);
+}
+
+fn run_authorize_token_deny(
+    c: &mut Criterion,
+    rt: &Runtime,
+    manager: &CapabilitySecurityManager,
+    token: &CapabilityToken,
+) {
     c.bench_function("authorize_token_deny", |b| {
-        b.to_async(&rt).iter(|| async {
+        b.to_async(rt).iter(|| async {
             let result = manager
-                .authorize_token(black_box(&token), "write")
+                .authorize_token(black_box(token), "write")
                 .await
                 .unwrap();
             black_box(result)
@@ -80,8 +107,12 @@ fn bench_validate_token(c: &mut Criterion) {
     );
     rt.block_on(manager.issue_token(token)).unwrap();
 
+    run_validate_token(c, &rt, &manager);
+}
+
+fn run_validate_token(c: &mut Criterion, rt: &Runtime, manager: &CapabilitySecurityManager) {
     c.bench_function("validate_token", |b| {
-        b.to_async(&rt).iter(|| async {
+        b.to_async(rt).iter(|| async {
             let result = manager
                 .validate(4, &[0x42u8; 32], &Scope::Global, "read")
                 .await
@@ -103,8 +134,12 @@ fn bench_decision_for(c: &mut Criterion) {
     );
     rt.block_on(manager.issue_token(token)).unwrap();
 
+    run_decision_for(c, &rt, &manager);
+}
+
+fn run_decision_for(c: &mut Criterion, rt: &Runtime, manager: &CapabilitySecurityManager) {
     c.bench_function("decision_for_allow", |b| {
-        b.to_async(&rt).iter(|| async {
+        b.to_async(rt).iter(|| async {
             let result = manager
                 .decision_for(5, &[0x99u8; 32], &Scope::Process(99), "read")
                 .await
