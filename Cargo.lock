@@ -489,10 +489,12 @@ dependencies = [
 name = "compute-scheduler"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "criterion",
  "nvml-wrapper",
  "sysinfo",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 
