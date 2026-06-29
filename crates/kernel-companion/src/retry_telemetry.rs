@@ -28,6 +28,7 @@ impl Default for RetryConfig {
 
 impl RetryConfig {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         max_attempts: u32,
         initial_backoff_ms: u64,
@@ -153,6 +154,7 @@ pub struct TelemetryTTLConfig {
     pub audit_log_ttl_ms: u64,
     pub intent_metadata_ttl_ms: u64,
     pub cleanup_interval_ms: u64,
+    pub telemetry_publish_interval_ms: u64,
     pub include_timestamps: bool,
     pub auto_cleanup: bool,
 }
@@ -165,6 +167,7 @@ impl Default for TelemetryTTLConfig {
             audit_log_ttl_ms: 86_400_000,
             intent_metadata_ttl_ms: 300_000,
             cleanup_interval_ms: 60_000,
+            telemetry_publish_interval_ms: 2_000,
             include_timestamps: true,
             auto_cleanup: true,
         }
@@ -173,12 +176,14 @@ impl Default for TelemetryTTLConfig {
 
 impl TelemetryTTLConfig {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         metric_cache_ttl_ms: u64,
         telemetry_snapshot_ttl_ms: u64,
         audit_log_ttl_ms: u64,
         intent_metadata_ttl_ms: u64,
         cleanup_interval_ms: u64,
+        telemetry_publish_interval_ms: u64,
         include_timestamps: bool,
         auto_cleanup: bool,
     ) -> Self {
@@ -188,6 +193,7 @@ impl TelemetryTTLConfig {
             audit_log_ttl_ms,
             intent_metadata_ttl_ms,
             cleanup_interval_ms,
+            telemetry_publish_interval_ms,
             include_timestamps,
             auto_cleanup,
         }
@@ -368,6 +374,7 @@ mod tests {
         assert_eq!(config.audit_log_ttl_ms, 86_400_000);
         assert_eq!(config.intent_metadata_ttl_ms, 300_000);
         assert_eq!(config.cleanup_interval_ms, 60_000);
+        assert_eq!(config.telemetry_publish_interval_ms, 2_000);
         assert!(config.include_timestamps);
         assert!(config.auto_cleanup);
     }

@@ -197,6 +197,7 @@ impl KernelCompanion {
             config.retry_telemetry.audit_log_ttl_ms,
             config.retry_telemetry.intent_metadata_ttl_ms,
             config.retry_telemetry.cleanup_interval_ms,
+            config.retry_telemetry.telemetry_publish_interval_ms,
             config.retry_telemetry.include_timestamps,
             config.retry_telemetry.auto_cleanup,
         );
@@ -761,11 +762,14 @@ impl KernelCompanion {
                 } else {
                     None
                 };
+                let telemetry_interval = std::time::Duration::from_millis(
+                    self.config.retry_telemetry.telemetry_publish_interval_ms,
+                );
                 let mut telemetry_shutdown_rx = shutdown_tx.subscribe();
                 self.telemetry_task = Some(tokio::spawn(async move {
                     loop {
                         tokio::select! {
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                            _ = tokio::time::sleep(telemetry_interval) => {
                                 let total_agents = scheduler.total_agents().await;
                                 let running_agents = scheduler.get_running_agents().await.len();
                                 let telemetry = NodeTelemetry {

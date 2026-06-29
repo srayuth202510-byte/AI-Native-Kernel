@@ -21,10 +21,12 @@ retry_backoff_multiplier = 2.0
 retry_max_backoff_ms = 10000
 retry_timeout_ms = 5000
 retry_use_jitter = true
+metric_cache_ttl_ms = 300000
 telemetry_snapshot_ttl_ms = 60000
 audit_log_ttl_ms = 86400000
 intent_metadata_ttl_ms = 300000
 cleanup_interval_ms = 60000
+telemetry_publish_interval_ms = 2000
 include_timestamps = true
 auto_cleanup = true
 

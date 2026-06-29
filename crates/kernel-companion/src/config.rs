@@ -262,6 +262,11 @@ impl Config {
                 self.retry_telemetry.auto_cleanup = b;
             }
         }
+        if let Ok(v) = std::env::var("ANK_TELEMETRY_PUBLISH_INTERVAL_MS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.telemetry_publish_interval_ms = n;
+            }
+        }
         self
     }
 }
@@ -348,6 +353,9 @@ pub struct RetryTelemetryConfig {
     #[serde(default)]
     /// ข้อมูล `auto_cleanup` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub auto_cleanup: bool,
+    #[serde(default)]
+    /// ข้อมูล `telemetry_publish_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub telemetry_publish_interval_ms: u64,
 }
 
 impl Default for RetryTelemetryConfig {
@@ -366,6 +374,7 @@ impl Default for RetryTelemetryConfig {
             cleanup_interval_ms: 60_000,
             include_timestamps: true,
             auto_cleanup: true,
+            telemetry_publish_interval_ms: 2_000,
         }
     }
 }
