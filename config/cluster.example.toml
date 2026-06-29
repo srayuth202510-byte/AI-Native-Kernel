@@ -1,0 +1,151 @@
+# =============================================================================
+# AI-Native Kernel — Example 3-Node Cluster Configuration
+# =============================================================================
+# This file demonstrates a multi-node cluster setup with:
+#   - node-alpha  (compute-optimized, GPU-capable)
+#   - node-beta   (memory-optimized, large context)
+#   - node-gamma  (edge/secure, strict LSM profile)
+#
+# Usage:
+#   export ANK_CONFIG_PATH=config/cluster.example.toml
+#   ANK_NODE_ID=node-alpha ./scripts/run.sh companion
+#
+#   # Or explicitly:
+#   ./scripts/run.sh companion -- -c config/cluster.example.toml \
+#     --lsm-profile runtime
+#
+# Override per-node identity via env:
+#   ANK_NODE_ID=node-alpha     # or node-beta / node-gamma
+# =============================================================================
+
+[general]
+log_level = "info"
+
+[kernel_companion]
+# Each node needs a unique UDS socket path
+uds_socket_path = "/tmp/ank-companion.sock"
+intent_bus_capacity = 2048
+monitoring_channel_capacity = 2048
+metrics_server_addr = "127.0.0.1:9090"
+
+[retry_telemetry]
+retry_max_attempts = 5
+retry_initial_backoff_ms = 200
+retry_backoff_multiplier = 2.0
+retry_max_backoff_ms = 30000
+retry_timeout_ms = 10000
+retry_use_jitter = true
+metric_cache_ttl_ms = 300000
+telemetry_snapshot_ttl_ms = 60000
+audit_log_ttl_ms = 86400000
+intent_metadata_ttl_ms = 300000
+cleanup_interval_ms = 60000
+include_timestamps = true
+auto_cleanup = true
+
+[agent_scheduler]
+max_agents = 200
+max_restart_attempts = 3
+supervisor_interval_ms = 100
+next_agent_id_start = 1
+# Cluster-wide distributed scheduling — agents can be spawned on remote nodes
+distributed_enabled = true
+# Override per-node: export ANK_NODE_ID=node-alpha
+local_node_id = "node-alpha"
+remote_overload_threshold_percent = 75
+min_remote_trust_score = 60
+max_remote_candidates = 5
+
+[context_memory]
+hot_capacity = 512
+warm_capacity = 4096
+# P2P gossip mesh for cross-node context sharing
+p2p_enabled = true
+# Each node needs a unique port (node-alpha: 9091, node-beta: 9092, ...)
+p2p_listen_addr = "0.0.0.0:9091"
+p2p_bootstrap_nodes = [
+    "node-alpha@10.0.1.10:9091",
+    "node-beta@10.0.1.20:9092",
+    "node-gamma@10.0.1.30:9093",
+]
+warm_store_path = "/var/lib/ank/warm-store"
+
+[compute_scheduler]
+default_mode = "throughput"
+adaptive_alpha = 0.15
+weight_latency = 0.7
+weight_power = 0.15
+weight_cost = 0.15
+
+[capability_security]
+audit_log_path = "/var/log/ank/audit.log"
+max_issue_rate = 200
+
+[intent_bus]
+default_capacity = 2048
+# TCP bridge for cross-node intent delegation
+bridge_enabled = true
+bridge_listen_addr = "0.0.0.0:9191"
+bridge_connect_timeout_ms = 2000
+bridge_request_timeout_ms = 10000
+# Declare all cluster peers (each node must list all others)
+# node-alpha sees node-beta and node-gamma as peers
+[[intent_bus.bridge_peers]]
+node_id = "node-beta"
+addr = "10.0.1.20:9192"
+available_agent_slots = 50
+trust_score = 95
+capabilities = ["memory-intensive", "context-store"]
+
+[[intent_bus.bridge_peers]]
+node_id = "node-gamma"
+addr = "10.0.1.30:9193"
+available_agent_slots = 20
+trust_score = 80
+capabilities = ["secure-execution", "edge-inference"]
+
+[immune_system]
+tcell_check_interval_ms = 5000
+bcell_learning_interval_ms = 10000
+macrophage_gc_interval_ms = 30000
+max_anomaly_score = 10
+quarantine_duration_secs = 300
+rate_threshold = 100
+deny_threshold = 5
+kill_threshold = 15
+
+[ebpf]
+enable_fallback = true
+tracepoint_program = "sys_enter_tp"
+
+[lsm]
+# Override per-node: export ANK_LSM_PROFILE=strict
+active_profile = "runtime"
+
+# ---- Per-Node Override Examples ----
+# The sections below show how each node customizes its setup.
+# They are commented out; uncomment and set ANK_NODE_ID to apply.
+#
+# ── node-alpha (compute-optimized, GPU) ──
+#   export ANK_NODE_ID=node-alpha
+#   export ANK_METRICS_ADDR=0.0.0.0:9090
+#   export ANK_MAX_AGENTS=200
+#   export ANK_LSM_PROFILE=runtime
+#   export ANK_HOT_CAPACITY=1024
+#   export ANK_WARM_CAPACITY=8192
+#
+# ── node-beta (memory-optimized, large context) ──
+#   export ANK_NODE_ID=node-beta
+#   export ANK_METRICS_ADDR=0.0.0.0:9090
+#   export ANK_MAX_AGENTS=100
+#   export ANK_LSM_PROFILE=dev       # broader syscall allowlist for I/O
+#   export ANK_HOT_CAPACITY=2048
+#   export ANK_WARM_CAPACITY=65536
+#
+# ── node-gamma (edge/secure) ──
+#   export ANK_NODE_ID=node-gamma
+#   export ANK_METRICS_ADDR=0.0.0.0:9090
+#   export ANK_MAX_AGENTS=50
+#   export ANK_LSM_PROFILE=strict    # only read/write/recvmsg/close
+#   export ANK_HOT_CAPACITY=128
+#   export ANK_WARM_CAPACITY=512
