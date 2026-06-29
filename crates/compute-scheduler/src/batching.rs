@@ -119,3 +119,43 @@ impl BatchManager {
             .unwrap_or_else(|_| Err(EngineError::Internal("Response channel dropped".into())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{LlamaCppEngine, TensorRtLlmEngine};
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn test_batch_manager_groups_requests() {
+        let engine = Arc::new(TensorRtLlmEngine::new("/dummy/sock"));
+        let batch_manager = Arc::new(BatchManager::new(engine, 2, Duration::from_millis(50)));
+
+        let bm1 = Arc::clone(&batch_manager);
+        let t1 = tokio::spawn(async move { bm1.submit("Prompt 1", 10).await });
+
+        let bm2 = Arc::clone(&batch_manager);
+        let t2 = tokio::spawn(async move { bm2.submit("Prompt 2", 10).await });
+
+        let (res1, res2) = tokio::join!(t1, t2);
+
+        assert_eq!(res1.unwrap().unwrap(), "[TensorRT-LLM Output]: Prompt 1");
+        assert_eq!(res2.unwrap().unwrap(), "[TensorRT-LLM Output]: Prompt 2");
+    }
+
+    #[tokio::test]
+    async fn test_batch_manager_timeout_flushes_queue() {
+        let engine = Arc::new(LlamaCppEngine::new("http://dummy"));
+        // Wait time 200ms, batch size 5
+        let batch_manager = Arc::new(BatchManager::new(engine, 5, Duration::from_millis(200)));
+
+        let start = Instant::now();
+        // Submit only 1 item, so it must wait for timeout to flush
+        let res = batch_manager.submit("Single", 10).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(res, "[Llama.cpp Output]: Single");
+        // Should have waited at least ~200ms (timeout) + 150ms (llama engine latency)
+        assert!(elapsed >= Duration::from_millis(200));
+    }
+}

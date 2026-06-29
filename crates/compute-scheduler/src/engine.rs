@@ -130,3 +130,34 @@ impl AiEngine for TensorRtLlmEngine {
         InferenceRuntime::TensorRtLlm
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_llama_cpp_engine() {
+        let engine = LlamaCppEngine::new("http://localhost:8080");
+        assert_eq!(engine.runtime_type(), InferenceRuntime::LlamaCpp);
+
+        let result = engine.generate("test prompt", 10).await.unwrap();
+        assert_eq!(result, "[Llama.cpp Output]: test prompt");
+    }
+
+    #[tokio::test]
+    async fn test_tensor_rt_llm_engine() {
+        let engine = TensorRtLlmEngine::new("/tmp/trt-llm.sock");
+        assert_eq!(engine.runtime_type(), InferenceRuntime::TensorRtLlm);
+
+        let result = engine.generate("trt test", 10).await.unwrap();
+        assert_eq!(result, "[TensorRT-LLM Output]: trt test");
+
+        let batch_results = engine
+            .generate_batch(&["A".to_string(), "B".to_string()], 10)
+            .await
+            .unwrap();
+        assert_eq!(batch_results.len(), 2);
+        assert_eq!(batch_results[0], "[TensorRT-LLM Output]: A");
+        assert_eq!(batch_results[1], "[TensorRT-LLM Output]: B");
+    }
+}
