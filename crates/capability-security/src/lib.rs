@@ -168,7 +168,7 @@ impl CapabilitySecurityManager {
     pub fn issue_token(&self, token: CapabilityToken) -> Result<()> {
         let now = Instant::now();
         let mut rate_map = self.issue_rate_write();
-        let rate_queue = rate_map.entry(token.scope).or_insert_with(VecDeque::new);
+        let rate_queue = rate_map.entry(token.scope).or_default();
 
         rate_queue.push_back(now);
         while rate_queue
