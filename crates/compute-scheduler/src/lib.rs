@@ -2,12 +2,18 @@
 //! เอกสารกำกับโค้ดระดับโมดูล/เครต (เพิ่มอัตโนมัติ)
 #![deny(unsafe_code)]
 
+/// โมดูลจัดการคิวและการมัดรวมงานเพื่อส่งเข้า GPU (Batching Manager)
+pub mod batching;
 /// โมดูลคำนวณต้นทุน/คะแนนของทรัพยากรประมวลผล
 pub mod cost;
+/// โมดูลเชื่อมต่อ Inference Engine ภายนอก (Llama.cpp, TensorRT-LLM)
+pub mod engine;
 /// โมดูลเชื่อมต่อเพื่ออ่านข้อมูลฮาร์ดแวร์จริง (CPU/GPU/NPU)
 pub mod hardware;
 /// โมดูล NPU vendor-specific runtime abstractions
 pub mod npu;
+/// โมดูลติดตามและตอบสนองต่อสภาวะแวดล้อม (System Observer)
+pub mod observer;
 /// โมดูลจัดสรรอุปกรณ์ (Placement Policy) ตามภาระงาน
 pub mod placement;
 /// โมดูลจัดการน้ำหนักปรับตัว (Adaptive Weights) ตามสถิติการใช้งานจริง

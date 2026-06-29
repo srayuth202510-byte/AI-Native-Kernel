@@ -321,6 +321,11 @@ impl AgentScheduler {
         let _ = self
             .monitoring_tx
             .send(AgentEvent::AgentPaused(agent.clone()));
+
+        // ถอดถอนข้อมูลบริบทออกจาก VRAM (หากมี) เพื่อคืนพื้นที่ให้ Agent อื่น (Phase 2 VRAM Paging)
+        let context_key = format!("agent-{}", agent_id);
+        let _ = self.context_memory.page_to_ram(&context_key);
+
         Ok(())
     }
 
@@ -360,6 +365,11 @@ impl AgentScheduler {
         };
         agents.remove(&agent_id);
         let _ = self.monitoring_tx.send(AgentEvent::AgentTerminated(event));
+
+        // ถอดถอนข้อมูลบริบทออกจาก VRAM (หากมี) (Phase 2 VRAM Paging)
+        let context_key = format!("agent-{}", agent_id);
+        let _ = self.context_memory.page_to_ram(&context_key);
+
         Ok(())
     }
 
@@ -376,6 +386,11 @@ impl AgentScheduler {
         let _ = self
             .monitoring_tx
             .send(AgentEvent::AgentFailed(agent.clone()));
+
+        // ถอดถอนข้อมูลบริบทออกจาก VRAM (หากมี) (Phase 2 VRAM Paging)
+        let context_key = format!("agent-{}", agent_id);
+        let _ = self.context_memory.page_to_ram(&context_key);
+
         Ok(())
     }
 
@@ -586,6 +601,7 @@ impl AgentScheduler {
                                         time_slice,
                                         Arc::clone(&context_memory),
                                         &monitoring_tx,
+                                        agent.compute_target,
                                     ).await;
 
                                     // Enqueue กลับเข้า Queue ถ้ายัง Running
@@ -634,6 +650,7 @@ impl AgentScheduler {
         time_slice: Duration,
         context_memory: Arc<ContextMemoryManager>,
         monitoring_tx: &broadcast::Sender<AgentEvent>,
+        compute_target: Option<ComputeTarget>,
     ) {
         debug!(
             agent_id,
@@ -664,7 +681,7 @@ impl AgentScheduler {
             }
         }
 
-        // Promote context to hot tier if agent has context
+        // Promote context to appropriate tier based on compute target (Phase 2 VRAM Paging)
         let context_key = format!("agent-{}", agent_id);
         let context_memory_for_blocking = Arc::clone(&context_memory);
         let agents_read = task::spawn_blocking({
@@ -675,20 +692,36 @@ impl AgentScheduler {
         .ok()
         .flatten();
         if let Some(tier) = agents_read {
-            if tier != "hot" {
-                let context_memory_for_blocking = Arc::clone(&context_memory);
-                let promoted = task::spawn_blocking({
-                    let context_key = context_key.clone();
-                    move || context_memory_for_blocking.promote(&context_key)
-                })
-                .await
-                .ok()
-                .and_then(|result| result.ok())
-                .is_some();
-                if promoted {
-                    let _ =
-                        monitoring_tx.send(AgentEvent::AgentContextSwitched(agent_id, context_key));
+            let is_vram_target = matches!(
+                compute_target,
+                Some(ComputeTarget::Gpu) | Some(ComputeTarget::Npu)
+            );
+            let context_memory_for_blocking = Arc::clone(&context_memory);
+
+            let switched = task::spawn_blocking({
+                let context_key = context_key.clone();
+                move || {
+                    if is_vram_target && tier != "vram" {
+                        context_memory_for_blocking
+                            .page_to_vram(&context_key)
+                            .ok()
+                            .is_some()
+                    } else if !is_vram_target && tier != "hot" {
+                        context_memory_for_blocking
+                            .promote(&context_key)
+                            .ok()
+                            .is_some()
+                    } else {
+                        false
+                    }
                 }
+            })
+            .await
+            .ok()
+            .unwrap_or(false);
+
+            if switched {
+                let _ = monitoring_tx.send(AgentEvent::AgentContextSwitched(agent_id, context_key));
             }
         }
     }
