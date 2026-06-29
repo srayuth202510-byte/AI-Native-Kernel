@@ -46,6 +46,10 @@ pub struct Config {
     /// ข้อมูล `lsm` สำหรับการกำหนดค่าหรือสถานะภายใน
     /// ข้อมูล `lsm` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub lsm: LsmConfig,
+    #[serde(default)]
+    /// ข้อมูล `retry_telemetry` สำหรับการกำหนดค่าการทำ retry/backoff และการตรวจตราแบบมีการหมดอายุ (TTL)
+    /// ข้อมูล `retry_telemetry` สำหรับการกำหนดค่าการทำ retry/backoff และการตรวจตราแบบมีการหมดอายุ (TTL)
+    pub retry_telemetry: RetryTelemetryConfig,
 }
 
 impl Config {
@@ -204,6 +208,71 @@ impl Config {
                 self.immune_system.kill_threshold = n;
             }
         }
+        if let Ok(v) = std::env::var("ANK_RETRY_MAX_ATTEMPTS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.retry_max_attempts = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_RETRY_INITIAL_BACKOFF_MS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.retry_initial_backoff_ms = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_RETRY_BACKOFF_MULTIPLIER") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.retry_backoff_multiplier = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_RETRY_MAX_BACKOFF_MS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.retry_max_backoff_ms = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_RETRY_TIMEOUT_MS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.retry_timeout_ms = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_RETRY_USE_JITTER") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.retry_telemetry.retry_use_jitter = b;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_METRIC_CACHE_TTL_MS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.metric_cache_ttl_ms = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_TELEMETRY_SNAPSHOT_TTL_MS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.telemetry_snapshot_ttl_ms = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_AUDIT_LOG_TTL_MS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.audit_log_ttl_ms = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_INTENT_METADATA_TTL_MS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.intent_metadata_ttl_ms = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_CLEANUP_INTERVAL_MS") {
+            if let Ok(n) = v.parse() {
+                self.retry_telemetry.cleanup_interval_ms = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_INCLUDE_TIMESTAMPS") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.retry_telemetry.include_timestamps = b;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_AUTO_CLEANUP") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.retry_telemetry.auto_cleanup = b;
+            }
+        }
         self
     }
 }
@@ -250,6 +319,84 @@ pub struct KernelCompanionConfig {
     /// ข้อมูล `metrics_server_addr` สำหรับการกำหนดค่าหรือสถานะภายใน
     /// ข้อมูล `metrics_server_addr` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub metrics_server_addr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// โครงสร้างข้อมูล `RetryTelemetryConfig` ใช้สำหรับการกำหนดค่าการทำ retry/backoff และการตรวจตราแบบมีการหมดอายุ (TTL)
+/// โครงสร้างข้อมูล `RetryTelemetryConfig` ใช้สำหรับการกำหนดค่าการทำ retry/backoff และการตรวจตราแบบมีการหมดอายุ (TTL)
+pub struct RetryTelemetryConfig {
+    #[serde(default)]
+    /// ข้อมูล `retry_max_attempts` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `retry_max_attempts` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub retry_max_attempts: u32,
+    #[serde(default)]
+    /// ข้อมูล `retry_initial_backoff_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `retry_initial_backoff_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub retry_initial_backoff_ms: u64,
+    #[serde(default)]
+    /// ข้อมูล `retry_backoff_multiplier` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `retry_backoff_multiplier` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub retry_backoff_multiplier: f64,
+    #[serde(default)]
+    /// ข้อมูล `retry_max_backoff_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `retry_max_backoff_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub retry_max_backoff_ms: u64,
+    #[serde(default)]
+    /// ข้อมูล `retry_timeout_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `retry_timeout_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub retry_timeout_ms: u64,
+    #[serde(default)]
+    /// ข้อมูล `retry_use_jitter` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `retry_use_jitter` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub retry_use_jitter: bool,
+    #[serde(default)]
+    /// ข้อมูล `metric_cache_ttl_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `metric_cache_ttl_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub metric_cache_ttl_ms: u64,
+    #[serde(default)]
+    /// ข้อมูล `telemetry_snapshot_ttl_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `telemetry_snapshot_ttl_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub telemetry_snapshot_ttl_ms: u64,
+    #[serde(default)]
+    /// ข้อมูล `audit_log_ttl_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `audit_log_ttl_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub audit_log_ttl_ms: u64,
+    #[serde(default)]
+    /// ข้อมูล `intent_metadata_ttl_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `intent_metadata_ttl_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub intent_metadata_ttl_ms: u64,
+    #[serde(default)]
+    /// ข้อมูล `cleanup_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `cleanup_interval_ms` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub cleanup_interval_ms: u64,
+    #[serde(default)]
+    /// ข้อมูล `include_timestamps` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `include_timestamps` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub include_timestamps: bool,
+    #[serde(default)]
+    /// ข้อมูล `auto_cleanup` สำหรับการกำหนดค่าหรือสถานะภายใน
+    /// ข้อมูล `auto_cleanup` สำหรับการกำหนดค่าหรือสถานะภายใน
+    pub auto_cleanup: bool,
+}
+
+impl Default for RetryTelemetryConfig {
+    fn default() -> Self {
+        Self {
+            retry_max_attempts: 3,
+            retry_initial_backoff_ms: 100,
+            retry_backoff_multiplier: 2.0,
+            retry_max_backoff_ms: 10_000,
+            retry_timeout_ms: 5_000,
+            retry_use_jitter: true,
+            metric_cache_ttl_ms: 300_000,
+            telemetry_snapshot_ttl_ms: 60_000,
+            audit_log_ttl_ms: 86_400_000,
+            intent_metadata_ttl_ms: 300_000,
+            cleanup_interval_ms: 60_000,
+            include_timestamps: true,
+            auto_cleanup: true,
+        }
+    }
 }
 
 impl Default for KernelCompanionConfig {

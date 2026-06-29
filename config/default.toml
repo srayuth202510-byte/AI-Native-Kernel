@@ -14,6 +14,34 @@ intent_bus_capacity = 1024
 monitoring_channel_capacity = 1024
 metrics_server_addr = "127.0.0.1:9090"
 
+[retry_telemetry]
+retry_max_attempts = 3
+retry_initial_backoff_ms = 100
+retry_backoff_multiplier = 2.0
+retry_max_backoff_ms = 10000
+retry_timeout_ms = 5000
+retry_use_jitter = true
+metric_cache_ttl_ms = 300000
+timeout_ms = 5000
+use_jitter = true
+metric_cache_ttl_ms = 300000
+timeout_ms = 5000
+use_jitter = true
+timeout_ms = 5000
+use_jitter = true
+metric_cache_ttl_ms = 300000
+timeout_ms = 5000
+use_jitter = true
+metric_cache_ttl_ms = 300000
+timeout_ms = 5000
+use_jitter = true
+telemetry_snapshot_ttl_ms = 60000
+audit_log_ttl_ms = 86400000
+intent_metadata_ttl_ms = 300000
+cleanup_interval_ms = 60000
+include_timestamps = true
+auto_cleanup = true
+
 [agent_scheduler]
 max_agents = 100
 max_restart_attempts = 3
@@ -217,3 +245,4 @@ allowed_syscalls = [
   "memfd_create",
   "statx",
 ]
+

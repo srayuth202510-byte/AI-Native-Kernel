@@ -6,6 +6,7 @@
 use crate::config::Config;
 use crate::intent_bridge::IntentBridge;
 use crate::observability::kernel_metrics;
+use crate::retry_telemetry::RetryAndTelemetryManager;
 use agent_scheduler::{AgentScheduler, DistributedRoutingPolicy, RemoteNodeState};
 use capability_security::CapabilitySecurityManager;
 use capability_security::Scope;
@@ -41,6 +42,9 @@ pub mod nlp;
 /// โมดูล `observability` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `observability` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod observability;
+/// โมดูล `retry_telemetry` จัดการการ retry/backoff และ TTL ของ telemetry
+/// โมดูล `retry_telemetry` จัดการการ retry/backoff และ TTL ของ telemetry
+pub mod retry_telemetry;
 /// โมดูล `uds` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `uds` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod uds;
@@ -119,6 +123,8 @@ pub struct KernelCompanion {
     p2p_listener_task: Option<JoinHandle<()>>,
     /// handle ของ P2P gossip sync loop task
     p2p_gossip_task: Option<JoinHandle<()>>,
+    /// ตัวจัดการการตั้งค่าการรีสตาร์ตและการตรวจตรา
+    retry_telemetry_manager: Arc<RetryAndTelemetryManager>,
 }
 
 impl KernelCompanion {
@@ -177,6 +183,7 @@ impl KernelCompanion {
             config.immune_system.tcell_check_interval_ms,
             config.immune_system.quarantine_duration_secs,
         ));
+        let retry_telemetry_manager = Arc::new(RetryAndTelemetryManager::new());
 
         Self {
             config: config.clone(),
@@ -208,6 +215,7 @@ impl KernelCompanion {
             p2p_mesh: None,
             p2p_listener_task: None,
             p2p_gossip_task: None,
+            retry_telemetry_manager,
         }
     }
 
@@ -233,6 +241,12 @@ impl KernelCompanion {
     #[must_use]
     pub fn compute_scheduler(&self) -> Arc<ComputeScheduler> {
         Arc::clone(&self.compute_scheduler)
+    }
+
+    /// ดึงการอ้างอิงไปยัง RetryAndTelemetry Manager สำหรับการกำหนดค่าและการตรวจสอบ
+    #[must_use]
+    pub fn retry_telemetry_manager(&self) -> Arc<RetryAndTelemetryManager> {
+        Arc::clone(&self.retry_telemetry_manager)
     }
 
     /// เริ่มต้นการทำงาน (Boot) ของระบบ รวมถึงการแนบ LSM Hook และการสร้าง Task สำหรับรับส่งข่าวสารในระบบ
