@@ -766,6 +766,7 @@ impl KernelCompanion {
                 let telemetry_interval = std::time::Duration::from_millis(
                     self.config.retry_telemetry.telemetry_publish_interval_ms,
                 );
+                let retry_telemetry_manager = Arc::clone(&self.retry_telemetry_manager);
                 let mut telemetry_shutdown_rx = shutdown_tx.subscribe();
                 self.telemetry_task = Some(tokio::spawn(async move {
                     loop {
@@ -785,7 +786,23 @@ impl KernelCompanion {
                                         .map(|duration| duration.as_millis() as u64)
                                         .unwrap_or(0),
                                 };
-                                let _ = p2p_mgr.publish_node_telemetry(telemetry).await;
+                                let tel_for_retry = telemetry.clone();
+                                if let Err(e) = retry_telemetry_manager
+                                    .execute_with_retry(
+                                        {
+                                            let mgr = p2p_mgr.clone();
+                                            move || {
+                                                let mgr = mgr.clone();
+                                                let tel = tel_for_retry.clone();
+                                                async move { mgr.publish_node_telemetry(tel).await }
+                                            }
+                                        },
+                                        Some("publish_node_telemetry"),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(error = %e, "Failed to publish node telemetry after retries");
+                                }
 
                                 let snapshot = p2p_mgr.get_telemetry_snapshot().await;
                                 let alive_peers = p2p_mgr.get_alive_peers().await;
