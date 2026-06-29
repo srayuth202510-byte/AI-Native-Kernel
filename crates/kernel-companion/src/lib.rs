@@ -6,7 +6,7 @@
 use crate::config::Config;
 use crate::intent_bridge::IntentBridge;
 use crate::observability::kernel_metrics;
-use crate::retry_telemetry::RetryAndTelemetryManager;
+use crate::retry_telemetry::{RetryAndTelemetryManager, RetryConfig, TelemetryTTLConfig};
 use agent_scheduler::{AgentScheduler, DistributedRoutingPolicy, RemoteNodeState};
 use capability_security::CapabilitySecurityManager;
 use capability_security::Scope;
@@ -158,7 +158,7 @@ impl KernelCompanion {
             Arc::clone(&context_memory),
             Arc::clone(&capability_security),
             config.agent_scheduler.max_restart_attempts,
-            config.agent_scheduler.supervisor_interval_ms,
+            config.retry_telemetry.retry_initial_backoff_ms,
             config.kernel_companion.monitoring_channel_capacity,
         ));
 
@@ -183,7 +183,27 @@ impl KernelCompanion {
             config.immune_system.tcell_check_interval_ms,
             config.immune_system.quarantine_duration_secs,
         ));
-        let retry_telemetry_manager = Arc::new(RetryAndTelemetryManager::new());
+        let retry_config = RetryConfig::new(
+            config.retry_telemetry.retry_max_attempts,
+            config.retry_telemetry.retry_initial_backoff_ms,
+            config.retry_telemetry.retry_backoff_multiplier,
+            config.retry_telemetry.retry_max_backoff_ms,
+            config.retry_telemetry.retry_timeout_ms,
+            config.retry_telemetry.retry_use_jitter,
+        );
+        let telemetry_ttl_config = TelemetryTTLConfig::new(
+            config.retry_telemetry.metric_cache_ttl_ms,
+            config.retry_telemetry.telemetry_snapshot_ttl_ms,
+            config.retry_telemetry.audit_log_ttl_ms,
+            config.retry_telemetry.intent_metadata_ttl_ms,
+            config.retry_telemetry.cleanup_interval_ms,
+            config.retry_telemetry.include_timestamps,
+            config.retry_telemetry.auto_cleanup,
+        );
+        let retry_telemetry_manager = Arc::new(RetryAndTelemetryManager::with_configs(
+            retry_config,
+            telemetry_ttl_config,
+        ));
 
         Self {
             config: config.clone(),
