@@ -470,7 +470,7 @@ impl Default for EbpfConfig {
 }
 
 fn default_ebpf_fallback() -> bool {
-    true
+    false
 }
 fn default_tracepoint_program() -> String {
     "sys_enter_tp".to_string()

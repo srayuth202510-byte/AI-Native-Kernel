@@ -53,7 +53,7 @@ deny_threshold = 5
 kill_threshold = 15
 
 [ebpf]
-enable_fallback = true
+enable_fallback = false
 tracepoint_program = "sys_enter_tp"
 
 [lsm]

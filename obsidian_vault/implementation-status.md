@@ -27,6 +27,7 @@ Last verified: 2026-06-29
 - **[ANK-003] Real eBPF syscall tracer (Aya)**: Aya loader, tracepoint attach path, และ prebuilt eBPF objects มีแล้ว; tracer รองรับ real attach และ simulation fallback แต่ real privileged attach ยังไม่ได้ re-validate ในรอบนี้.
 - **[ANK-004] Phase 2 kick-off: eBPF/LSM module**: LSM policy engine, syscall allowlist profiles, tracer integration, PID deny propagation, และ companion-side enforcement flow มีแล้วใน host-side prototype.
 - **[ANK-005] Aya toolchain + kernel target validation**: Toolchain pinning, prebuilt BPF objects, และ CI wiring มีแล้ว; local pinned toolchain ถูกยืนยันว่า compile/check/test ได้ใน workspace ปัจจุบัน แต่ privileged kernel attach path ยังต้องยืนยันบน host จริง.
+- **[ANK-041] Production default: disable eBPF simulation fallback**: เสร็จแล้ว — default `enable_fallback = false` ใน config/default.toml และ code; dev สามารถเปิดผ่าน ANK_EBPF_ENABLE_FALLBACK=true หรือ --no-bpf-fallback=false
 - **[ANK-042] NLP Intent Parser**: Lightweight intent classifier ใน kernel-companion ใช้ cosine similarity บน djb2 word-hash embeddings (128 dims) เพื่อจำแนก Intent จากภาษาธรรมชาติ.
 - **[ANK-049] Config System (default.toml) + LSM Profiles + Runtime Switching**: Config struct พร้อม serde deserialize จาก config/default.toml, env override (ANK_*). รองรับ LSM profile switching ขณะรัน (kernel-companion) และ CLI toggle.
 - **[ANK-050] eBPF Runtime Allowlist Expansion + Security Hardenings**: eBPF runtime allowlist ขยายพร้อม syscall profiles; EPERM macro ใน BPF program; real LSM eBPF security hooks; fail-closed enforcement path.
@@ -103,7 +104,6 @@ Last verified: 2026-06-29
 - **[ANK-037] Privileged eBPF/LSM validation with fallback disabled** (todo, critical): ยืนยัน real attach/enforcement บน host ที่มี kernel prerequisites ครบ และรันด้วย --no-bpf-fallback เพื่อพิสูจน์ fail-closed production path.
 - **[ANK-038] Timeout hardening for external I/O paths** (todo, high): ครอบ tokio::time::timeout ให้ external calls ที่ยังเหลือ เช่น Qdrant, TCP peer connect/accept/read paths และ network-facing endpoints ให้ตรงกับ AGENTS.md.
 - **[ANK-040] Run ignored Qdrant-backed tests against reachable endpoint** (todo, med): รัน cargo test -p context-memory --lib -- --ignored หรือ scripts/run-qdrant-tests.sh กับ QDRANT_URL จริงเพื่อยืนยัน semantic store path.
-- **[ANK-041] Production default: disable eBPF simulation fallback** (backlog, high): ปรับ default runtime posture ให้ fail-closed มากขึ้น โดยปิด simulation fallback เป็นค่าเริ่มต้นหรือแยก dev profile ให้ชัดเจน.
 <!-- NOT_IMPLEMENTED_YET_END -->
 
 ## Validation Status
