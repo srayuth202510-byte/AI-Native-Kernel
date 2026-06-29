@@ -75,8 +75,6 @@ impl WarmStore {
 // ---- โหมด RocksDB จริง (feature = "rocksdb-warm") ----
 // ANK-012: Warm tier (NVMe): RocksDB store สำหรับ Phase 1 production
 #[cfg(feature = "rocksdb-warm")]
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct WarmStore {
     /// การเชื่อมต่อกับฐานข้อมูล RocksDB บน NVMe สำหรับ Warm tier จริง
     db: Option<rocksdb::DB>,

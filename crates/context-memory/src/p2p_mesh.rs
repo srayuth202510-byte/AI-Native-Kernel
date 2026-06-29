@@ -28,129 +28,57 @@ fn default_trust_score() -> u8 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct NodeInfo {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub id: String,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub addr: SocketAddr,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub last_seen_millis: u64,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub capabilities: Vec<String>,
     #[serde(default = "default_trust_score")]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub trust_score: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct P2PMessage {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub from: String,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub from_addr: SocketAddr,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub to: Option<String>,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub msg_type: MessageType,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub data: Vec<u8>,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub timestamp_millis: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub enum MessageType {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Ping,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Pong,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Handshake,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     NeighborList,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     RecordSync,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     RecordFetchRequest,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     RecordFetchResponse,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     IdentityMap,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     NodeTelemetry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct RecordSyncPayload {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub key: String,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub value: Vec<u8>,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub owner_node: String,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub version: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct RecordFetchRequest {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub request_id: String,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct RecordFetchResponse {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub request_id: String,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub key: String,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub value: Option<Vec<u8>>,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub owner_node: String,
 }
 
@@ -168,23 +96,11 @@ pub struct NodeTelemetry {
 type PendingFetchSender = oneshot::Sender<Option<Vec<u8>>>;
 type PendingFetchMap = Arc<RwLock<HashMap<String, PendingFetchSender>>>;
 
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub struct P2PMeshManager {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub local_node: NodeInfo,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub known_nodes: Arc<RwLock<HashMap<String, NodeInfo>>>,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub discovery_interval: Duration,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub message_tx: mpsc::Sender<P2PMessage>,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub message_rx: Option<mpsc::Receiver<P2PMessage>>,
     peers: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>,
     records: Arc<RwLock<HashMap<String, RecordSyncPayload>>>,
@@ -197,8 +113,6 @@ fn is_alive(node: &NodeInfo) -> bool {
 }
 
 impl P2PMeshManager {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new(addr: SocketAddr) -> Self {
         Self::new_with_node_config(
             addr,
@@ -235,27 +149,19 @@ impl P2PMeshManager {
         }
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn add_node(&self, node: NodeInfo) {
         self.known_nodes.write().await.insert(node.id.clone(), node);
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn remove_node(&self, node_id: &str) {
         self.known_nodes.write().await.remove(node_id);
         self.peers.write().await.remove(node_id);
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn get_neighbors(&self) -> Vec<NodeInfo> {
         self.known_nodes.read().await.values().cloned().collect()
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn is_connected(&self, node_id: &str) -> bool {
         self.known_nodes
             .read()
@@ -264,8 +170,6 @@ impl P2PMeshManager {
             .is_some_and(is_alive)
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn get_alive_peers(&self) -> Vec<NodeInfo> {
         self.known_nodes
             .read()
@@ -356,8 +260,6 @@ impl P2PMeshManager {
         }
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn sync_record(&self, key: impl Into<String>, value: Vec<u8>) -> Result<()> {
         let key = key.into();
         let version = now_millis();
@@ -384,8 +286,6 @@ impl P2PMeshManager {
         self.broadcast_message(message).await
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn get_cached_record(&self, key: &str) -> Option<Vec<u8>> {
         self.records
             .read()
@@ -394,8 +294,6 @@ impl P2PMeshManager {
             .map(|record| record.value.clone())
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn fetch_record(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if let Some(value) = self.get_cached_record(key).await {
             return Ok(Some(value));
@@ -440,8 +338,6 @@ impl P2PMeshManager {
         }
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn set_trust_score(&self, node_id: &str, score: u8) {
         let mut nodes = self.known_nodes.write().await;
         if let Some(node) = nodes.get_mut(node_id) {
@@ -456,8 +352,6 @@ impl P2PMeshManager {
         }
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn penalize_node(&self, node_id: &str, penalty: u8) {
         let mut nodes = self.known_nodes.write().await;
         if let Some(node) = nodes.get_mut(node_id) {
@@ -478,8 +372,6 @@ impl P2PMeshManager {
         }
     }
 
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub async fn get_trust_score(&self, node_id: &str) -> u8 {
         let nodes = self.known_nodes.read().await;
         nodes.get(node_id).map(|n| n.trust_score).unwrap_or(100)

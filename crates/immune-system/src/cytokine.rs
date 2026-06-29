@@ -13,52 +13,30 @@ use tracing::{debug, instrument, warn};
 #[derive(Debug, Error)]
 pub enum CytokineError {
     #[error("broadcast failed: {0}")]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     BroadcastFailed(String),
 }
 
 /// ระดับความรุนแรงของ Cytokine Signal
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CytokineLevel {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Info,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Warning,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Critical,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Emergency,
 }
 
 /// Cytokine Signal event
 #[derive(Debug, Clone)]
 pub struct CytokineEvent {
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub level: CytokineLevel,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub source: String,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub message: String,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub timestamp: Instant,
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub affected_pids: Vec<u32>,
 }
 
 impl CytokineEvent {
     #[must_use]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new(level: CytokineLevel, source: &str, message: &str) -> Self {
         Self {
             level,
@@ -81,8 +59,6 @@ pub struct CytokineSignal {
 
 impl CytokineSignal {
     #[must_use]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new(intent_bus: Arc<IntentBus>, max_history: usize) -> Self {
         Self {
             intent_bus,

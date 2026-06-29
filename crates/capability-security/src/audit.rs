@@ -8,28 +8,16 @@ use tokio::time::Duration;
 const AUDIT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-/// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
 pub enum AuditError {
     #[error("failed to open audit log")]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Open(#[source] std::io::Error),
     #[error("failed to serialize audit entry")]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Serialize(#[source] serde_json::Error),
     #[error("failed to write audit entry")]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Write(#[source] std::io::Error),
     #[error("audit I/O timed out")]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Timeout,
     #[error("audit log validation failed")]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     ValidationFailed,
 }
 

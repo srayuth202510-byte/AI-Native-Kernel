@@ -16,8 +16,6 @@ use tracing::{debug, info, instrument, warn};
 #[derive(Debug, Error)]
 pub enum BCellError {
     #[error("learning failed: {0}")]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     LearningFailed(String),
 }
 
@@ -130,8 +128,6 @@ pub struct BCellAgent {
 
 impl BCellAgent {
     #[must_use]
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
-    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     pub fn new(max_patterns: usize) -> Self {
         Self::with_shadow_config(max_patterns, Duration::from_secs(60), 0.7, 0.1)
     }
