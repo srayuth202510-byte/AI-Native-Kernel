@@ -91,6 +91,23 @@ rtk cargo clippy --all-targets --all-features -- -D warnings
 rtk cargo fmt
 ```
 
+ถ้าต้องการใช้ toolchain ที่ pin ไว้ใน repo โดยตรง:
+
+```bash
+source scripts/use-local-toolchain.sh
+```
+
+สถานะที่ยืนยันล่าสุดใน workspace นี้ ณ วันที่ `2026-06-29`:
+1. `cargo fmt --all -- --check` ผ่าน
+2. `cargo check --workspace` ผ่าน
+3. `cargo clippy --workspace -- -D warnings` ผ่าน
+4. `cargo test --workspace` ผ่าน
+
+หมายเหตุ:
+1. ชุด test ปกติของ workspace ยังเหลือ `ignored` tests สำหรับ Qdrant-backed path อีก 4 รายการ
+2. ยังไม่ได้ re-validate privileged eBPF/LSM attach path ในรอบนี้บน host ที่มี kernel prerequisites ครบ
+3. ยังไม่ได้รัน lint path แบบเดียวกับ CI คือ `cargo clippy --all-targets --all-features -- -D warnings`
+
 ถ้าจะรัน `clippy --all-features` ด้วย `context-memory/rocksdb-warm`, ต้องมี `libclang` ให้ `bindgen` หาเจอ
 ผ่าน `LIBCLANG_PATH` หรือผ่าน `scripts/use-local-toolchain.sh` ที่จะพยายามตั้งค่าให้เองจาก LLVM ที่ติดตั้งไว้
 และ `scripts/install-ebpf-deps.sh` จะติดตั้ง `libclang-dev` เพิ่มให้ในชุด dependency ของ eBPF
@@ -123,7 +140,8 @@ rtk cargo fmt
 4. `bpftool`
 5. compile smoke test ของ `syscall-tracer.bpf.c` และ `lsm-security.bpf.c`
 
-ถ้ายังไม่ผ่าน ระบบจะ fallback ไป simulation mode ตาม behavior ของ `crates/kernel-companion/build.rs`
+ถ้ายังไม่ผ่าน tracer จะ fallback ไป simulation mode ตาม runtime config `ebpf.enable_fallback = true`
+ถ้าต้องการบังคับ fail-closed path ให้รัน companion ด้วย `--no-bpf-fallback`
 
 รายละเอียด remediation เพิ่มเติมดู [docs/ebpf_prereqs.md](docs/ebpf_prereqs.md)
 

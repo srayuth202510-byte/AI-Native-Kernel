@@ -73,6 +73,7 @@ def main():
         "context-memory",
         "compute-scheduler",
         "capability-security",
+        "immune-system",
         "infra"
     ]
     
@@ -120,7 +121,7 @@ def main():
     blocked_tasks = [t for t in tasks if t.get("status") == "blocked"]
     
     validation_parts = [
-        "- The repository has meaningful unit tests in several crates."
+        "- Re-validate with the pinned local toolchain from `scripts/use-local-toolchain.sh` when the environment changes."
     ]
     for t in blocked_tasks:
         desc = t.get("desc", "").strip()
@@ -128,11 +129,12 @@ def main():
         validation_parts.append(f"- **Blocked: [{t['id']}] {t['title']}**{desc_str}")
         
     validation_parts.extend([
-        "- Before calling this baseline stable, run:\n",
+        "- Recommended verification commands:\n",
         "```bash",
-        "rtk cargo fmt --all -- --check",
-        "rtk cargo clippy --workspace -- -D warnings",
-        "rtk cargo test --workspace",
+        "cargo fmt --all -- --check",
+        "cargo check --workspace",
+        "cargo clippy --workspace -- -D warnings",
+        "cargo test --workspace",
         "```"
     ])
     

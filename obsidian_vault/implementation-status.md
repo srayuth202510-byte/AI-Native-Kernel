@@ -1,6 +1,8 @@
 # Implementation Status
 
-This note tracks the current state of the repository as implemented in code, not only the target architecture described in `docs/ai_native_kernel_plan_v2.html`.
+This note tracks the current repository state as implemented and locally validated in this workspace, not only the target architecture described in `docs/ai_native_kernel_plan_v2.html`.
+
+Last verified: 2026-06-29
 
 ## Current Baseline
 
@@ -11,62 +13,70 @@ This note tracks the current state of the repository as implemented in code, not
   - `context-memory`
   - `compute-scheduler`
   - `capability-security`
-- Unit tests have been added to the core prototype crates.
+  - `immune-system`
 - The runtime graph is composed in `crates/kernel-companion/src/lib.rs`.
+- The repository currently builds and tests successfully on the local pinned toolchain exposed by `scripts/use-local-toolchain.sh`.
 
 ## Implemented Now
 
 <!-- IMPLEMENTED_NOW_START -->
 ### kernel-companion
 
-- **[ANK-001] Setup Rust workspace + companion crate layout**: Workspace manifest และ crate layout สำหรับ kernel-companion ถูกจัดให้ parse ได้และเชื่อมกับ crate อื่นแล้ว แต่ยังไม่ได้ยืนยันด้วย cargo build จริงใน environment นี้.
-- **[ANK-002] Prototype companion composition root**: kernel-companion สร้าง intent bus, memory, security, compute และ agent scheduler แล้ว boot/shutdown ได้ในระดับ prototype host-side.
-- **[ANK-003] Real eBPF syscall tracer (Aya)**: Phase 2 (Aya loader + kernel tracepoint จริง) รองรับการคอมไพล์ผ่าน build.rs และ BPF C ถูกคอมไพล์สำเร็จแล้ว Aya loader สามารถ load เข้า Kernel ได้ผ่าน sys_enter_tp.
-- **[ANK-004] Phase 2 kick-off: eBPF/LSM module**: Aya + LSM BPF integration เริ่มร่างโครงสร้างใน kernel-companion แล้ว (LSM attachment, policy default DENY, tracepoints). ขาดแค่ BPF maps และ eBPF program ที่ compile เป็น bytecode จริง.
-- **[ANK-005] Aya toolchain + kernel target validation**: ติดตั้งและ pin toolchain สำหรับ Aya: nightly Rust, bpf-linker, kernel headers (Linux 6.1+) และยืนยันใน CI.
+- **[ANK-001] Setup Rust workspace + companion crate layout**: Workspace manifests และ crate layout ของ companion/co-crates coherent แล้ว และ validate ได้ด้วย local toolchain ใน workspace ปัจจุบัน.
+- **[ANK-002] Prototype companion composition root**: kernel-companion ประกอบ intent bus, memory, security, compute, immune system, metrics server และ agent scheduler เป็น runtime เดียวกันได้แล้วในระดับ host-side prototype.
+- **[ANK-003] Real eBPF syscall tracer (Aya)**: Aya loader, tracepoint attach path, และ prebuilt eBPF objects มีแล้ว; tracer รองรับ real attach และ simulation fallback แต่ real privileged attach ยังไม่ได้ re-validate ในรอบนี้.
+- **[ANK-004] Phase 2 kick-off: eBPF/LSM module**: LSM policy engine, syscall allowlist profiles, tracer integration, PID deny propagation, และ companion-side enforcement flow มีแล้วใน host-side prototype.
+- **[ANK-005] Aya toolchain + kernel target validation**: Toolchain pinning, prebuilt BPF objects, และ CI wiring มีแล้ว; local pinned toolchain ถูกยืนยันว่า compile/check/test ได้ใน workspace ปัจจุบัน แต่ privileged kernel attach path ยังต้องยืนยันบน host จริง.
 
 ### agent-scheduler
 
-- **[ANK-006] AgentControlBlock + AgentState enum**: นิยาม struct และ state machine สำหรับ lifecycle ของ agent มีอยู่แล้วใน prototype scheduler.
-- **[ANK-007] Agent spawn/pause/resume/terminate API**: Async API สำหรับควบคุม lifecycle พื้นฐานมีแล้วและมี unit tests ครอบคลุม แต่ยังไม่ได้ยืนยัน performance budget.
-- **[ANK-008] Supervisor: restart/retry on fault**: Supervisor loop และโครง restart path มีใน prototype แต่ยังต้อง review เรื่อง concurrency และทดสอบ fault injection เพิ่ม.
+- **[ANK-006] AgentControlBlock + AgentState enum**: นิยาม struct และ state machine สำหรับ lifecycle ของ agent มีแล้ว พร้อม unit coverage.
+- **[ANK-007] Agent spawn/pause/resume/terminate API**: Async API สำหรับควบคุม lifecycle มีแล้วและผ่าน unit, integration, และ perf-budget tests.
+- **[ANK-008] Supervisor: restart/retry on fault**: Supervisor loop และ restart/retry path มีแล้ว และผ่าน chaos/integration tests; ยังควร review concurrency เพิ่มเมื่อขยายสเกล.
 - **[ANK-009] Property test: scheduler state invariant**: เพิ่ม property tests แล้ว: invariant Running ≤ total spawned, terminate removes from count, error paths (double-pause, resume-running, nonexistent, duplicate ID) รวม 6 tests ผ่าน.
 - **[ANK-010] Intent-driven scheduler routing**: รองรับ Command intent เช่น spawn-agent, Structured intent พร้อม metadata และ capability grant ผ่าน capability-security แล้ว.
 
 ### intent-bus
 
-- **[ANK-021] Intent Bus (tokio broadcast)**: tokio::sync::broadcast channel สำหรับ Intent events มีแล้ว พร้อม subscriber filtering และ unit tests.
+- **[ANK-021] Intent Bus (tokio broadcast)**: tokio::sync::broadcast channel สำหรับ Intent events มีแล้ว พร้อม subscriber filtering และ unit/integration tests.
 
 ### context-memory
 
-- **[ANK-011] Prototype context manager + tier modules**: มี hot/warm/cold modules และ API ระดับ prototype สำหรับเก็บ context แล้ว แต่ยังไม่ใช่ persistent paging จริง.
+- **[ANK-011] Prototype context manager + tier modules**: มี hot/warm/cold/VRAM tiers และ paging API ใช้งานได้จริง พร้อมการทดสอบ round-trip และ eviction.
 - **[ANK-012] Warm tier (NVMe): RocksDB store**: RocksDB WarmStore implement แล้วด้วย feature flag `rocksdb-warm`. Default CI ใช้ in-memory (ไม่ต้อง NVMe). เปิดใช้ด้วย --features context-memory/rocksdb-warm. Snappy compression เปิดแล้ว. Cold→Warm load < 50ms ยังไม่ได้วัด benchmark จริง.
 - **[ANK-013] Tier migration: Hot<->Warm<->Cold**: Bidirectional paging ระหว่าง tiers + fallback ไป Cold (file) เมื่อ RocksDB I/O error.
 - **[ANK-014] Property test: context round-trip lossless**: Hot→Warm→Cold→Warm→Hot ต้องไม่สูญเสียข้อมูล
 
 ### compute-scheduler
 
-- **[ANK-015] Prototype compute scheduler baseline**: มี compute-scheduler crate, cost function และ adaptive weights baseline พร้อม sanity tests แล้ว แต่ยังไม่ผูกกับ real CPU/GPU/NPU placement.
+- **[ANK-015] Prototype compute scheduler baseline**: มี compute-scheduler crate, cost function, adaptive weights และ target scoring พร้อม tests แล้ว.
 - **[ANK-016] Real device-aware placement policy**: เพิ่มการเลือก backend จริงสำหรับ CPU/GPU/NPU ตาม latency, power และ monetary cost.
 
 ### capability-security
 
 - **[ANK-017] CapabilityToken struct + Scope enum**: นิยาม CapabilityToken และ Scope มีแล้วใน prototype พร้อม validation path และ tests พื้นฐาน.
-- **[ANK-018] Policy Engine (fail-DENY)**: Policy engine default = DENY และมี capability allowlist ใน prototype แล้ว แต่ยังไม่ได้ใช้ constant_time_eq และยังไม่ยืนยัน latency budget.
-- **[ANK-019] Persistent WORM audit logger**: ปัจจุบัน audit trail เป็น in-memory เท่านั้น ต้องย้ายไป append-only persistent store สำหรับ Phase 1 security baseline.
+- **[ANK-018] Policy Engine (fail-DENY)**: Policy engine default = DENY, capability allowlist, และ token validation/decision paths มีแล้ว; constant_time_eq ถูกใช้งานแล้ว.
+- **[ANK-019] Persistent WORM audit logger**: Audit trail เป็น file-backed append-only log พร้อม hash chaining แล้ว; ยังควร harden เรื่อง fail-closed ordering ของ revoke path เพิ่ม.
 - **[ANK-020] Security hardening: constant-time token comparison**: แทนที่การเทียบ token แบบปกติด้วย constant_time_eq ตาม security guideline ใน AGENTS.md.
+
+### immune-system
+
+- **[ANK-031] Immune System: Macrophage Agent (GC)**: Macrophage Agent สำหรับ garbage collection: ตรวจ Intent หมดอายุ, sweep stale entries, รายงาน stats. 4 tests ผ่าน.
+- **[ANK-032] Immune System: T-Cell Agent (Threat Detection)**: T-Cell Agent สำหรับ anomaly detection: ติดตาม syscall rate per PID, detect spikes, quarantine/kill threats. 4 tests ผ่าน.
+- **[ANK-033] Immune System: B-Cell Agent (Pattern Learning)**: B-Cell Agent สำหรับเรียนรู้ attack patterns จาก T-Cell reports และสร้าง Antibody Rules (LSM policy). 3 tests ผ่าน.
+- **[ANK-034] Immune System: Cytokine Signal (Critical Broadcast)**: Cytokine Signal สำหรับ broadcast ข้อความวิกฤต (Emergency/Critical/Warning/Info) ไปยัง Agents ทุกตัวผ่าน IntentBus. 3 tests ผ่าน.
 
 ### infra
 
-- **[ANK-022] Cargo workspace skeleton (7 crates)**: Workspace manifests และ crate wiring ถูกแก้ให้ coherent แล้วในระดับ source tree.
-- **[ANK-023] Unit test baseline for core crates**: เพิ่ม tests ขั้นต้นให้ scheduler, intent bus, capability security, context memory, compute scheduler และ kernel companion แล้ว.
-- **[ANK-024] Documentation + implementation status note**: อัปเดต obsidian docs และเพิ่ม implementation-status note ให้สะท้อนสถานะจริงของ prototype.
-- **[ANK-025] CI: clippy + test + audit pipeline**: GitHub Actions: rtk cargo clippy -D warnings, rtk cargo test, cargo audit. Pin kernel version.
+- **[ANK-022] Cargo workspace skeleton (7 crates)**: Workspace structure ครบและ crate wiring coherent แล้ว พร้อมการ validate ผ่าน local toolchain.
+- **[ANK-023] Unit test baseline for core crates**: มี unit, integration, chaos, perf-budget, pipeline และ doc tests ครอบคลุม crate หลักของ workspace.
+- **[ANK-024] Documentation + implementation status note**: อัปเดต README, board/tasks, และ implementation-status note ให้สะท้อนสถานะที่ตรวจยืนยันได้ของ workspace.
+- **[ANK-025] CI: clippy + test + audit pipeline**: GitHub Actions มี fmt, clippy, tests, release build และ cargo audit.
 - **[ANK-026] CI: fuzz + chaos test harness**: cargo-fuzz targets + failpoints harness สำหรับทุก Failure Domain (plan §5).
-- **[ANK-027] Observability: tracing + Prometheus exporter**: tracing spans (#[instrument], debug!, warn!) เพิ่มแล้วใน context-memory put/get และ kernel-companion boot/shutdown. Prometheus metrics exporter ยังไม่ได้ implement — ต้องเพิ่ม prometheus crate + /metrics endpoint.
-- **[ANK-028] Build validation on real toolchain**: รัน rtk cargo fmt, clippy, check และ test บนเครื่องที่มี rustc/cargo จริง แล้วปิด compile/lint issues ที่เหลือ.
+- **[ANK-027] Observability: tracing + Prometheus exporter**: มี tracing instrumentation และ Prometheus metrics HTTP server แล้ว.
+- **[ANK-028] Build validation on real toolchain**: ยืนยัน local toolchain แล้วด้วย cargo fmt/check/clippy/test ใน workspace ปัจจุบัน.
 - **[ANK-029] Security: sanitize .secret/ + .gitignore**: ลบ .secret/ ออกจาก repo, เพิ่ม .gitignore, rotate GitHub token + sudo password (leaked in filenames).
-- **[ANK-030] Blocked: cargo/rustc toolchain is not ready/installed**: สภาพแวดล้อมปัจจุบันยังไม่มี rustc/cargo หรือ bpf-linker ทำให้ไม่สามารถ compile/test เพื่อตรวจสอบความถูกต้องของระบบ eBPF/LSM และ workspace crate ทั้งหมดได้
+- **[ANK-030] Local toolchain bootstrap + workspace validation**: ใช้ scripts/use-local-toolchain.sh เพื่อ expose rustc/cargo แล้ว และยืนยันว่า workspace fmt/check/clippy/test ผ่านใน environment ปัจจุบัน.
 - **[ANK-035] Security: upgrade protobuf 2.28 → 3.7 (RUSTSEC-2024-0437)**: อัปเดต prometheus 0.13 → 0.14 เพื่อแก้ vulnerability ใน protobuf 2.28.0 (RUSTSEC-2024-0437). cargo audit clean.
 - **[ANK-036] Security: cargo-vet initialized + passing**: ติดตั้ง cargo-vet, รัน cargo vet init, ยืนยัน supply chain audit ผ่าน (149 exempted).
 <!-- IMPLEMENTED_NOW_END -->
@@ -74,27 +84,32 @@ This note tracks the current state of the repository as implemented in code, not
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-
+- **[ANK-037] Privileged eBPF/LSM validation with fallback disabled** (todo, critical): ยืนยัน real attach/enforcement บน host ที่มี kernel prerequisites ครบ และรันด้วย --no-bpf-fallback เพื่อพิสูจน์ fail-closed production path.
+- **[ANK-038] Timeout hardening for external I/O paths** (todo, high): ครอบ tokio::time::timeout ให้ external calls ที่ยังเหลือ เช่น Qdrant, TCP peer connect/accept/read paths และ network-facing endpoints ให้ตรงกับ AGENTS.md.
+- **[ANK-039] CI-equivalent clippy validation (--all-targets --all-features)** (todo, med): ยืนยัน lint path เดียวกับ CI โดยรัน cargo clippy --all-targets --all-features -- -D warnings ใน environment ที่พร้อม libclang/bindgen.
+- **[ANK-040] Run ignored Qdrant-backed tests against reachable endpoint** (todo, med): รัน cargo test -p context-memory --lib -- --ignored หรือ scripts/run-qdrant-tests.sh กับ QDRANT_URL จริงเพื่อยืนยัน semantic store path.
+- **[ANK-041] Production default: disable eBPF simulation fallback** (backlog, high): ปรับ default runtime posture ให้ fail-closed มากขึ้น โดยปิด simulation fallback เป็นค่าเริ่มต้นหรือแยก dev profile ให้ชัดเจน.
 <!-- NOT_IMPLEMENTED_YET_END -->
 
 ## Validation Status
 
 <!-- VALIDATION_STATUS_START -->
-- The repository has meaningful unit tests in several crates.
-- Before calling this baseline stable, run:
+- Re-validate with the pinned local toolchain from `scripts/use-local-toolchain.sh` when the environment changes.
+- Recommended verification commands:
 
 ```bash
-rtk cargo fmt --all -- --check
-rtk cargo clippy --workspace -- -D warnings
-rtk cargo test --workspace
+cargo fmt --all -- --check
+cargo check --workspace
+cargo clippy --workspace -- -D warnings
+cargo test --workspace
 ```
 <!-- VALIDATION_STATUS_END -->
 
 ## Recommended Next Step
 
-Raise the bar from "refactored prototype" to "validated prototype":
+Raise the bar from "validated host-side prototype" to "production-ready security baseline":
 
-1. run the workspace checks in a Rust-enabled environment
-2. fix remaining compile or clippy issues
-3. add cross-crate integration tests for `kernel-companion -> intent-bus -> agent-scheduler`
-
+1. re-run privileged eBPF/LSM validation on a host with kernel prerequisites and fallback disabled
+2. close the remaining timeout gaps on external I/O paths
+3. verify the CI-equivalent lint path with `cargo clippy --all-targets --all-features -- -D warnings`
+4. run the ignored Qdrant-backed tests against a reachable endpoint
