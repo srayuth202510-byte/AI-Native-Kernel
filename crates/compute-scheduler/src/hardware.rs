@@ -1,4 +1,4 @@
-use crate::{ComputeProfile, ComputeTarget};
+use crate::{ComputeProfile, ComputeTarget, NpuProfile, NpuVendor};
 use nvml_wrapper::Nvml;
 use std::path::Path;
 use sysinfo::System;
@@ -117,28 +117,42 @@ impl HardwareProber {
             debug!("No actual GPU found during hardware scan.");
         }
 
-        // 3. NPU Profiling — ตรวจสอบหลาย path
+        // 3. NPU Profiling — ตรวจสอบหลาย path + vendor-specific profiles
         let npu_devices = Self::probe_npu_devices();
-        for path in &npu_devices {
-            debug!("NPU device found at {}", path.display());
-            let npu_profile = ComputeProfile {
-                latency_ms: 15.0,
-                power_watts: 10.0, // NPU is very power efficient
-                cost_units: 15.0,
+        for (path, vendor) in &npu_devices {
+            debug!(
+                "NPU device found at {} (vendor: {})",
+                path.display(),
+                vendor.as_str()
+            );
+            let npu_profile = match vendor {
+                NpuVendor::IntelGaudi => NpuProfile::intel_gaudi3(),
+                NpuVendor::GoogleTpu => NpuProfile::google_tpu_v5e(),
+                NpuVendor::AppleSilicon => NpuProfile::apple_m4_ne(),
+                NpuVendor::QualcommHexagon => NpuProfile::qualcomm_hexagon(),
+                NpuVendor::AmdXdna => NpuProfile::amd_xdna2(),
+                NpuVendor::Generic => NpuProfile::generic(),
             };
-            profiles.push((ComputeTarget::Npu, npu_profile));
-            info!(path = %path.display(), "HardwareProber: NPU detected");
+            profiles.push((ComputeTarget::Npu, npu_profile.to_compute_profile()));
+            info!(
+                path = %path.display(),
+                vendor = vendor.as_str(),
+                tops = npu_profile.tops,
+                power = npu_profile.power_watts,
+                "HardwareProber: NPU detected"
+            );
         }
 
         profiles
     }
 
-    /// ตรวจสอบ NPU devices จากหลาย paths:
+    /// ตรวจสอบ NPU devices จากหลาย paths + ระบุ vendor
     /// - `/dev/accel*` (Intel/AMD NPU, upstream kernel)
     /// - `/dev/davinci*` (Huawei Ascend)
     /// - `/dev/npu*` (vendor NPU)
     /// - `/sys/class/accel/*` (modern kernel NPU class)
-    fn probe_npu_devices() -> Vec<std::path::PathBuf> {
+    /// - `/dev/cdsp0`, `/dev/dsp0` (Qualcomm Hexagon)
+    fn probe_npu_devices() -> Vec<(std::path::PathBuf, NpuVendor)> {
         let mut devices = Vec::new();
 
         // /dev/accel* — modern Linux accel subsystem
@@ -150,7 +164,8 @@ impl HardwareProber {
                     || name_str.starts_with("davinci")
                     || name_str.starts_with("npu")
                 {
-                    devices.push(entry.path());
+                    let vendor = Self::detect_npu_vendor(&entry.path());
+                    devices.push((entry.path(), vendor));
                 }
             }
         }
@@ -161,7 +176,8 @@ impl HardwareProber {
                 for entry in entries.flatten() {
                     let dev_path = entry.path().join("dev");
                     if dev_path.exists() {
-                        devices.push(entry.path());
+                        let vendor = Self::detect_npu_vendor(&entry.path());
+                        devices.push((entry.path(), vendor));
                     }
                 }
             }
@@ -171,11 +187,57 @@ impl HardwareProber {
         if Path::new("/dev/accel").is_dir() {
             if let Ok(entries) = std::fs::read_dir("/dev/accel") {
                 for entry in entries.flatten() {
-                    devices.push(entry.path());
+                    let vendor = Self::detect_npu_vendor(&entry.path());
+                    devices.push((entry.path(), vendor));
+                }
+            }
+        }
+
+        // /dev/cdsp*, /dev/dsp* — Qualcomm Hexagon DSP
+        if let Ok(entries) = std::fs::read_dir("/dev") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with("cdsp") || name_str.starts_with("dsp") {
+                    devices.push((entry.path(), NpuVendor::QualcommHexagon));
                 }
             }
         }
 
         devices
+    }
+
+    /// ตรวจสอบ vendor ของ NPU จาก sysfs vendor ID
+    fn detect_npu_vendor(device_path: &Path) -> NpuVendor {
+        // ลองอ่าน vendor ID จาก sysfs
+        let vendor_paths = [
+            device_path.join("vendor"),
+            device_path
+                .parent()
+                .map(|p| p.join("vendor"))
+                .unwrap_or_default(),
+        ];
+
+        for vendor_path in &vendor_paths {
+            if let Ok(vendor_id) = std::fs::read_to_string(vendor_path) {
+                let vendor_id = vendor_id.trim();
+                match vendor_id {
+                    "0x8086" | "0x8087" => return NpuVendor::IntelGaudi, // Intel (Habana)
+                    "0x1022" => return NpuVendor::AmdXdna,               // AMD
+                    "0x10de" => return NpuVendor::Generic,               // NVIDIA (not NPU)
+                    "0x103c" => return NpuVendor::QualcommHexagon,       // HP (Qualcomm)
+                    _ => {}
+                }
+            }
+        }
+
+        // Check device path for hints
+        let path_str = device_path.to_string_lossy();
+        if path_str.contains("npu") || path_str.contains("davinci") {
+            // Could be Huawei Ascend or other vendor
+            NpuVendor::Generic
+        } else {
+            NpuVendor::Generic
+        }
     }
 }

@@ -4,7 +4,9 @@
 pub mod cost;
 /// โมดูลเชื่อมต่อเพื่ออ่านข้อมูลฮาร์ดแวร์จริง (CPU/GPU/NPU)
 pub mod hardware;
-/// โมดูลจัดการนโยบายการจัดสรรอุปกรณ์ (Placement Policy) ตามภาระงาน
+/// โมดูล NPU vendor-specific runtime abstractions
+pub mod npu;
+/// โมดูลจัดสรรอุปกรณ์ (Placement Policy) ตามภาระงาน
 pub mod placement;
 /// โมดูลจัดการน้ำหนักปรับตัว (Adaptive Weights) ตามสถิติการใช้งานจริง
 pub mod weights;
@@ -56,6 +58,167 @@ impl InferenceRuntime {
             Self::TensorRtLlm => tokens as f64 * 0.08,
         }
     }
+}
+
+// ---- NPU Vendor Abstraction ----
+
+/// NPU Vendor identifier — ระบุผู้ผลิต NPU สำหรับ vendor-specific profiling
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NpuVendor {
+    /// Intel Gaudi 2/3 (Habana Labs) — edge AI accelerator
+    IntelGaudi,
+    /// Google TPU v4/v5e — cloud/edge AI
+    GoogleTpu,
+    /// Apple Neural Engine (ANE) — M1/M2/M3/M4 integrated NPU
+    AppleSilicon,
+    /// Qualcomm Hexagon DSP — mobile/edge AI
+    QualcommHexagon,
+    /// AMD XDNA / Ryzen AI — PC/workstation NPU
+    AmdXdna,
+    /// Unknown or generic NPU
+    Generic,
+}
+
+impl NpuVendor {
+    /// ชื่อ vendor สำหรับ logging และ metrics
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::IntelGaudi => "intel_gaudi",
+            Self::GoogleTpu => "google_tpu",
+            Self::AppleSilicon => "apple_silicon",
+            Self::QualcommHexagon => "qualcomm_hexagon",
+            Self::AmdXdna => "amd_xdna",
+            Self::Generic => "generic",
+        }
+    }
+}
+
+/// NPU Hardware Profile — ข้อมูลประสิทธิภาพเฉพาะ vendor
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NpuProfile {
+    /// ความหน่วงพื้นฐานของ NPU vendor นี้ (ms)
+    pub base_latency_ms: f64,
+    /// พลังงาน_typical (วัตต์)
+    pub power_watts: f64,
+    /// ค่าใช้จ่าย (หน่วยสมมุติ)
+    pub cost_units: f64,
+    /// จำนวน TOPS (Tera Operations Per Second)
+    pub tops: f64,
+    /// หน่วยความจำที่ใช้ร่วม (GB) — 0 ถ้าใช้ shared memory
+    pub memory_gb: f64,
+}
+
+impl NpuProfile {
+    /// สร้าง ComputeProfile จาก NpuProfile (แปลงเป็น format ที่ scheduler เข้าใจ)
+    #[must_use]
+    pub fn to_compute_profile(&self) -> ComputeProfile {
+        ComputeProfile {
+            latency_ms: self.base_latency_ms,
+            power_watts: self.power_watts,
+            cost_units: self.cost_units,
+        }
+    }
+
+    /// โปรไฟล์สำหรับ Intel Gaudi 3
+    #[must_use]
+    pub fn intel_gaudi3() -> Self {
+        Self {
+            base_latency_ms: 8.0,
+            power_watts: 90.0,
+            cost_units: 25.0,
+            tops: 1835.0,
+            memory_gb: 128.0,
+        }
+    }
+
+    /// โปรไฟล์สำหรับ Google TPU v5e
+    #[must_use]
+    pub fn google_tpu_v5e() -> Self {
+        Self {
+            base_latency_ms: 12.0,
+            power_watts: 40.0,
+            cost_units: 30.0,
+            tops: 393.0,
+            memory_gb: 16.0,
+        }
+    }
+
+    /// โปรไฟล์สำหรับ Apple M4 Neural Engine
+    #[must_use]
+    pub fn apple_m4_ne() -> Self {
+        Self {
+            base_latency_ms: 5.0,
+            power_watts: 8.0,
+            cost_units: 0.0, // built-in, no marginal cost
+            tops: 38.0,
+            memory_gb: 0.0, // shared unified memory
+        }
+    }
+
+    /// โปรไฟล์สำหรับ Qualcomm Hexagon (骁龙 8 Gen 3)
+    #[must_use]
+    pub fn qualcomm_hexagon() -> Self {
+        Self {
+            base_latency_ms: 10.0,
+            power_watts: 12.0,
+            cost_units: 5.0,
+            tops: 73.0,
+            memory_gb: 0.0, // shared
+        }
+    }
+
+    /// โปรไฟล์สำหรับ AMD Ryzen AI (XDNA 2)
+    #[must_use]
+    pub fn amd_xdna2() -> Self {
+        Self {
+            base_latency_ms: 9.0,
+            power_watts: 15.0,
+            cost_units: 8.0,
+            tops: 48.0,
+            memory_gb: 0.0, // shared
+        }
+    }
+
+    /// โปรไฟล์สำหรับ generic/unknown NPU
+    #[must_use]
+    pub fn generic() -> Self {
+        Self {
+            base_latency_ms: 15.0,
+            power_watts: 10.0,
+            cost_units: 15.0,
+            tops: 0.0,
+            memory_gb: 0.0,
+        }
+    }
+}
+
+/// NPU Runtime trait — abstraction สำหรับ vendor-specific NPU operations
+///
+/// Vendor-specific implementations จะ implement trait นี้เพื่อให้
+/// ComputeScheduler สามารถเรียกใช้ NPU ได้โดยไม่ต้องรู้รายละเอียดของ vendor
+#[async_trait::async_trait]
+pub trait NpuRuntime: Send + Sync {
+    /// ระบุ vendor ของ NPU นี้
+    fn vendor(&self) -> NpuVendor;
+
+    /// ชื่อ runtime สำหรับ logging
+    fn name(&self) -> &str;
+
+    /// โปรไฟล์ฮาร์ดแวร์ของ NPU นี้
+    fn profile(&self) -> NpuProfile;
+
+    /// ตรวจสอบว่า runtime พร้อมใช้งานหรือไม่
+    async fn is_available(&self) -> bool;
+
+    /// จำลองการ inference (mock) — คืน latency จริง (ms)
+    async fn execute_inference(&self, tokens: usize) -> f64;
+
+    /// โหลดโมเดล (mock)
+    async fn load_model(&self, model_path: &str) -> Result<(), String>;
+
+    /// ปิด runtime
+    async fn shutdown(&self) -> Result<(), String>;
 }
 
 /// การตัดสินใจผลลัพธ์การจัดสรร (PlacementDecision) ที่รวบรวมทั้งฮาร์ดแวร์เป้าหมายและรันไทม์ที่เลือก
