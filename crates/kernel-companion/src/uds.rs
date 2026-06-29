@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::task;
 use tokio::time::timeout;
+
 use tracing::{debug, error, info, warn};
 
 /// Timeout สำหรับ UDS I/O operations
@@ -144,15 +144,12 @@ pub async fn start_uds_server(
                                                             allowed_syscalls_count = l.get_allowed_syscalls().len();
                                                         }
                                                         if let Some(ref cs) = compute_scheduler {
-                                                            let cs = Arc::clone(cs);
-                                                            let hardware_profiles = match timeout(
+                                                            let hardware_profiles = timeout(
                                                                 UDS_TIMEOUT,
-                                                                task::spawn_blocking(move || cs.scan_real_hardware())
+                                                                cs.scan_real_hardware(),
                                                             )
-                                                            .await {
-                                                                Ok(Ok(profiles)) => profiles,
-                                                                _ => Vec::new(),
-                                                            };
+                                                            .await
+                                                            .unwrap_or_default();
                                                             for (target, profile) in hardware_profiles {
                                                                 hardware_targets.push(serde_json::json!({
                                                                     "target": format!("{:?}", target),

@@ -3,8 +3,12 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{RwLock, broadcast};
+use tokio::time::timeout;
+
+const INTENT_RECV_TIMEOUT: Duration = Duration::from_secs(30);
 
 use serde::{Deserialize, Serialize};
 
@@ -242,20 +246,22 @@ impl IntentBus {
     pub async fn process_intents(&self, processor: &impl IntentProcessor) {
         let mut receiver = self.sender.subscribe();
         loop {
-            match receiver.recv().await {
-                Ok(intent) => {
+            match timeout(INTENT_RECV_TIMEOUT, receiver.recv()).await {
+                Ok(Ok(intent)) => {
                     if self.passes_filters(&intent).await {
                         processor.process(intent).await;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    // System load is too high, subscriber couldn't keep up
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
                     tracing::warn!("IntentBus: Subscriber lagged, skipped {} intents", skipped);
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    // Sender channel has been closed (shutdown scenario)
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
                     tracing::info!("IntentBus: Channel closed, stopping processor loop");
                     break;
+                }
+                Err(_) => {
+                    // Timeout — no message within INTENT_RECV_TIMEOUT, loop continues
+                    tracing::trace!("IntentBus: recv timeout, continuing");
                 }
             }
         }
@@ -275,7 +281,7 @@ pub struct IntentSubscriber {
 }
 
 impl IntentSubscriber {
-    /// รอรับและคืนค่า Intent ถัดไปแบบ Asynchronous คืนค่า `None` หากเกิดความล้มเหลวในการส่งผ่านข้อมูล
+    /// รอรับและคืนค่า Intent ถัดไปแบบ Asynchronous คืนค่า `None` หากเกิดความล้มเหลว
     pub async fn receive(&mut self) -> Option<Intent> {
         self.receiver.recv().await.ok()
     }

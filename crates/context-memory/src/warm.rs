@@ -3,6 +3,13 @@ use parking_lot::Mutex;
 #[cfg(not(feature = "rocksdb-warm"))]
 use std::collections::HashMap;
 use std::collections::VecDeque;
+#[cfg(feature = "rocksdb-warm")]
+use std::sync::Arc;
+#[cfg(feature = "rocksdb-warm")]
+use std::time::Duration;
+
+#[cfg(feature = "rocksdb-warm")]
+const ROCKSDB_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// โครงสร้างข้อมูลสำหรับเก็บหน้าบริบทแบบชั่วคราว (Warm Store)
 ///
@@ -77,7 +84,7 @@ impl WarmStore {
 #[cfg(feature = "rocksdb-warm")]
 pub struct WarmStore {
     /// การเชื่อมต่อกับฐานข้อมูล RocksDB บน NVMe สำหรับ Warm tier จริง
-    db: Option<rocksdb::DB>,
+    db: Option<Arc<rocksdb::DB>>,
     /// พาธสำหรับจัดเก็บ RocksDB เพื่อใช้ในการลบไฟล์เมื่อ drop
     path: std::path::PathBuf,
     /// คิวติดตามลำดับข้อมูล FIFO สำหรับการ evict ข้อมูลเก่า
@@ -93,6 +100,19 @@ impl Default for WarmStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cfg(feature = "rocksdb-warm")]
+fn rocksdb_timeout<T: Send + 'static>(
+    db: &Arc<rocksdb::DB>,
+    op: impl FnOnce(&rocksdb::DB) -> T + Send + 'static,
+) -> Option<T> {
+    let db = Arc::clone(db);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(op(&db));
+    });
+    rx.recv_timeout(ROCKSDB_TIMEOUT).ok()
 }
 
 #[cfg(feature = "rocksdb-warm")]
@@ -114,35 +134,32 @@ impl WarmStore {
     fn new_with_path_internal(path: std::path::PathBuf, is_temp: bool) -> Self {
         let mut opts = rocksdb::Options::default();
         opts.create_if_missing(true);
-        // เปิดใช้ compression เพื่อประหยัดพื้นที่บน NVMe
         opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
 
-        // --- Tuning RocksDB for NVMe Performance (Phase 1 Tune-Up) ---
-        opts.increase_parallelism(4); // กระจายโหลด I/O ให้ทำงานหลายเธรด (เทียบเท่า max_background_jobs)
-        opts.set_max_write_buffer_number(4); // เพิ่มจำนวน write buffers
-        opts.set_min_write_buffer_number_to_merge(2); // ลด write amplification
+        opts.increase_parallelism(4);
+        opts.set_max_write_buffer_number(4);
+        opts.set_min_write_buffer_number_to_merge(2);
 
         let mut block_opts = rocksdb::BlockBasedOptions::default();
-        // สร้าง Block Cache 64MB เพื่อเร่งความเร็วในการอ่านข้อมูล
         block_opts.set_block_cache(&rocksdb::Cache::new_lru_cache(64 * 1024 * 1024));
         opts.set_block_based_table_factory(&block_opts);
-        // -------------------------------------------------------------
 
-        let db = rocksdb::DB::open(&opts, &path).expect("ไม่สามารถเปิด RocksDB warm store ได้");
+        let db = open_rocksdb_with_timeout(opts, &path);
 
-        // Scan the existing keys to populate the FIFO order queue and count
         let mut order_list = VecDeque::new();
         let mut count_val = 0;
-        let iter = db.iterator(rocksdb::IteratorMode::Start);
-        for (key_bytes, _) in iter.flatten() {
-            if let Ok(key_str) = std::str::from_utf8(&key_bytes) {
-                order_list.push_back(key_str.to_string());
-                count_val += 1;
+        if let Some(ref db) = db {
+            let iter = db.iterator(rocksdb::IteratorMode::Start);
+            for (key_bytes, _) in iter.flatten() {
+                if let Ok(key_str) = std::str::from_utf8(&key_bytes) {
+                    order_list.push_back(key_str.to_string());
+                    count_val += 1;
+                }
             }
         }
 
         Self {
-            db: Some(db),
+            db,
             path,
             order: Mutex::new(order_list),
             count: std::sync::atomic::AtomicUsize::new(count_val),
@@ -152,9 +169,25 @@ impl WarmStore {
 
     /// ใส่ข้อมูลบริบทลงใน RocksDB Warm Store
     pub fn insert(&mut self, key: String, value: Vec<u8>) {
-        let db = self.db.as_ref().expect("RocksDB database is closed");
-        let is_new = db.get(key.as_bytes()).map(|v| v.is_none()).unwrap_or(true);
-        db.put(key.as_bytes(), &value).expect("RocksDB put ล้มเหลว");
+        let db = match self.db.as_ref() {
+            Some(db) => Arc::clone(db),
+            None => return,
+        };
+        let key_for_op = key.clone();
+        let value_for_op = value.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let is_new = db
+                .get(key_for_op.as_bytes())
+                .map(|v| v.is_none())
+                .unwrap_or(true);
+            let _ = db.put(key_for_op.as_bytes(), &value_for_op);
+            let _ = tx.send(is_new);
+        });
+        let Ok(is_new) = rx.recv_timeout(ROCKSDB_TIMEOUT) else {
+            tracing::warn!("RocksDB insert timed out for key: {}", key);
+            return;
+        };
         if is_new {
             let mut order = self.order.lock();
             order.push_back(key);
@@ -166,8 +199,9 @@ impl WarmStore {
     /// ดึงข้อมูลบริบทจาก RocksDB ตามคีย์ที่กำหนด
     #[must_use]
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        let db = self.db.as_ref().expect("RocksDB database is closed");
-        db.get(key.as_bytes()).ok().flatten()
+        let db = self.db.as_ref()?;
+        let key_owned = key.to_owned();
+        rocksdb_timeout(db, move |d| d.get(key_owned.as_bytes()).ok().flatten())?
     }
 
     /// ส่งคืนจำนวนรายการโดยประมาณ (ใช้ atomic counter)
@@ -188,20 +222,23 @@ impl WarmStore {
             let mut order = self.order.lock();
             order.pop_front()?
         };
-        let db = self.db.as_ref().expect("RocksDB database is closed");
-        let value = db.get(key.as_bytes()).ok().flatten()?;
-        db.delete(key.as_bytes()).ok();
+        let db = self.db.as_ref()?;
+        let key_owned = key.clone();
+        let value = rocksdb_timeout(db, move |d| d.get(key_owned.as_bytes()).ok().flatten())??;
+        let key_for_del = key.clone();
+        rocksdb_timeout(db, move |d| d.delete(key_for_del.as_bytes()).ok());
         self.count
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         Some((key, value))
     }
 
     /// ลบข้อมูลบริบทตาม key ออกจาก RocksDB Warm Store และคืนค่า (ถ้ามี)
-    /// ใช้สำหรับ tier migration (promote/demote) โดยตรง
     pub fn remove(&mut self, key: &str) -> Option<Vec<u8>> {
-        let db = self.db.as_ref().expect("RocksDB database is closed");
-        let value = db.get(key.as_bytes()).ok().flatten()?;
-        db.delete(key.as_bytes()).ok();
+        let db = self.db.as_ref()?;
+        let key_owned = key.to_owned();
+        let value = rocksdb_timeout(db, move |d| d.get(key_owned.as_bytes()).ok().flatten())??;
+        let key_for_del = key.to_owned();
+        rocksdb_timeout(db, move |d| d.delete(key_for_del.as_bytes()).ok());
         let mut order = self.order.lock();
         order.retain(|k| k != key);
         self.count
@@ -211,12 +248,31 @@ impl WarmStore {
 }
 
 #[cfg(feature = "rocksdb-warm")]
+fn open_rocksdb_with_timeout(
+    opts: rocksdb::Options,
+    path: &std::path::Path,
+) -> Option<Arc<rocksdb::DB>> {
+    let path_display = path.display().to_string();
+    let path_owned = path.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let db = rocksdb::DB::open(&opts, &path_owned);
+        let _ = tx.send(db);
+    });
+    match rx.recv_timeout(ROCKSDB_TIMEOUT) {
+        Ok(Ok(db)) => Some(Arc::new(db)),
+        _ => {
+            tracing::warn!("RocksDB open timed out at path: {}", path_display);
+            None
+        }
+    }
+}
+
+#[cfg(feature = "rocksdb-warm")]
 impl Drop for WarmStore {
     fn drop(&mut self) {
-        // Close DB first to release the file lock
         self.db.take();
         if self.is_temp {
-            // Delete the temporary database directory
             let _ = std::fs::remove_dir_all(&self.path);
         }
     }

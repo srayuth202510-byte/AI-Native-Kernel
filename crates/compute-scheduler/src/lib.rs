@@ -301,9 +301,9 @@ impl ComputeScheduler {
     }
 
     /// สแกนหาฮาร์ดแวร์จริงในเครื่องระบบ และส่งคืนรายการพร้อม ComputeProfile ที่วัดได้จริง
-    pub fn scan_real_hardware(&self) -> Vec<(ComputeTarget, ComputeProfile)> {
+    pub async fn scan_real_hardware(&self) -> Vec<(ComputeTarget, ComputeProfile)> {
         let mut prober = hardware::HardwareProber::new();
-        prober.scan_hardware()
+        prober.scan_hardware().await
     }
 
     /// จัดการการรันงานพร้อมกลไก Circuit Breaker (Phase 1 Tune-Up)
@@ -527,10 +527,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn scan_real_hardware_returns_at_least_cpu() {
+    #[tokio::test]
+    async fn scan_real_hardware_returns_at_least_cpu() {
         let scheduler = ComputeScheduler::new();
-        let profiles = scheduler.scan_real_hardware();
+        let profiles = scheduler.scan_real_hardware().await;
         assert!(!profiles.is_empty(), "ควรพบฮาร์ดแวร์จริงอย่างน้อย 1 ประเภท");
         assert!(
             profiles

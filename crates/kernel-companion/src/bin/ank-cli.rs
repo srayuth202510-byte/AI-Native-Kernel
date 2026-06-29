@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
             };
             let scheduler = ComputeScheduler::new();
             let policy = PlacementPolicy::new(scheduler.clone());
-            let profiles = scheduler.scan_real_hardware();
+            let profiles = scheduler.scan_real_hardware().await;
             match policy.place(wl, &profiles) {
                 Ok(target) => println!("เลือกอุปกรณ์สำหรับงาน {}: {:?}", args[2], target),
                 Err(e) => println!("ไม่สามารถวางงานได้: {:?}", e),

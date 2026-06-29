@@ -605,7 +605,7 @@ impl KernelCompanion {
 
                                         // Scan hardware and place
                                         let policy = PlacementPolicy::new((*compute_scheduler).clone());
-                                        let profiles = compute_scheduler.scan_real_hardware();
+                                        let profiles = compute_scheduler.scan_real_hardware().await;
                                         let target = policy.place(wl, &profiles).unwrap_or(ComputeTarget::Cpu);
 
                                         // Publish response
@@ -1136,11 +1136,16 @@ mod tests {
             .await
             .expect("publish should succeed");
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert_eq!(
-            companion.agent_scheduler().get_running_agents().await.len(),
-            1
-        );
+        // Poll for agent to reach Running state (up to ~1s total)
+        let mut found = false;
+        for _ in 0..20 {
+            if companion.agent_scheduler().get_running_agents().await.len() == 1 {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(found, "agent should be spawned within 1s");
 
         companion.shutdown().await;
     }

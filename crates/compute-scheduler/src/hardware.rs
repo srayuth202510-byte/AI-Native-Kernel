@@ -1,8 +1,15 @@
 use crate::{ComputeProfile, ComputeTarget, NpuProfile, NpuVendor};
 use nvml_wrapper::Nvml;
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use sysinfo::System;
+use tokio::task;
+use tokio::time::timeout;
 use tracing::{debug, info, warn};
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Probe the system to discover available compute targets and their actual capabilities.
 pub struct HardwareProber {
@@ -38,17 +45,15 @@ impl HardwareProber {
     }
 
     /// Scan and return a list of profiles for the current hardware.
-    #[must_use]
-    pub fn scan_hardware(&mut self) -> Vec<(ComputeTarget, ComputeProfile)> {
+    pub async fn scan_hardware(&mut self) -> Vec<(ComputeTarget, ComputeProfile)> {
         self.sys.refresh_all();
         let mut profiles = Vec::new();
 
         // 1. CPU Profiling
         let cpu_count = self.sys.cpus().len() as f64;
         let cpu_profile = ComputeProfile {
-            // Rough heuristic: more CPUs = lower latency
             latency_ms: 50.0 / cpu_count.max(1.0),
-            power_watts: 65.0, // Baseline TDP assumption
+            power_watts: 65.0,
             cost_units: 5.0,
         };
         profiles.push((ComputeTarget::Cpu, cpu_profile));
@@ -58,7 +63,6 @@ impl HardwareProber {
             if let Ok(device_count) = nvml.device_count() {
                 if device_count > 0 {
                     for i in 0..device_count.min(4) {
-                        // max 4 GPUs
                         if let Ok(dev) = nvml.device_by_index(i) {
                             let power_watts = dev
                                 .power_usage()
@@ -78,14 +82,13 @@ impl HardwareProber {
                                 .ok();
                             let clock_mhz = clock.unwrap_or(0);
 
-                            // ปรับแต่ง latency/power/cost ตาม spec จริง
                             let latency_ms = if vram_gb > 0.0 {
-                                5.0 + (80.0 - vram_gb.min(80.0)) * 0.1 // GPU ที่มี VRAM มาก → latency ต่ำ
+                                5.0 + (80.0 - vram_gb.min(80.0)) * 0.1
                             } else {
                                 10.0
                             };
 
-                            let cost_units = 20.0 + vram_gb * 1.5; // GPU ใหญ่ → แพง
+                            let cost_units = 20.0 + vram_gb * 1.5;
                             let gpu_num = if device_count > 1 {
                                 format!("GPU-{i}")
                             } else {
@@ -118,7 +121,7 @@ impl HardwareProber {
         }
 
         // 3. NPU Profiling — ตรวจสอบหลาย path + vendor-specific profiles
-        let npu_devices = Self::probe_npu_devices();
+        let npu_devices = Self::probe_npu_devices().await;
         for (path, vendor) in &npu_devices {
             debug!(
                 "NPU device found at {} (vendor: {})",
@@ -147,59 +150,55 @@ impl HardwareProber {
     }
 
     /// ตรวจสอบ NPU devices จากหลาย paths + ระบุ vendor
-    /// - `/dev/accel*` (Intel/AMD NPU, upstream kernel)
-    /// - `/dev/davinci*` (Huawei Ascend)
-    /// - `/dev/npu*` (vendor NPU)
-    /// - `/sys/class/accel/*` (modern kernel NPU class)
-    /// - `/dev/cdsp0`, `/dev/dsp0` (Qualcomm Hexagon)
-    fn probe_npu_devices() -> Vec<(std::path::PathBuf, NpuVendor)> {
+    async fn probe_npu_devices() -> Vec<(std::path::PathBuf, NpuVendor)> {
         let mut devices = Vec::new();
 
-        // /dev/accel* — modern Linux accel subsystem
-        if let Ok(entries) = std::fs::read_dir("/dev") {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
+        // Collect all /dev entries in a single spawn_blocking call
+        let dev_entries = Self::collect_dir_entries("/dev").await;
+        if let Some(ref entries) = dev_entries {
+            for (name, path) in entries {
                 let name_str = name.to_string_lossy();
                 if name_str.starts_with("accel")
                     || name_str.starts_with("davinci")
                     || name_str.starts_with("npu")
                 {
-                    let vendor = Self::detect_npu_vendor(&entry.path());
-                    devices.push((entry.path(), vendor));
+                    let vendor = Self::detect_npu_vendor(path).await;
+                    devices.push((path.clone(), vendor));
                 }
             }
         }
 
-        // /sys/class/accel/* — kernel device class
-        if Path::new("/sys/class/accel").exists() {
-            if let Ok(entries) = std::fs::read_dir("/sys/class/accel") {
-                for entry in entries.flatten() {
-                    let dev_path = entry.path().join("dev");
-                    if dev_path.exists() {
-                        let vendor = Self::detect_npu_vendor(&entry.path());
-                        devices.push((entry.path(), vendor));
+        // /sys/class/accel — kernel device class
+        if Self::path_is_dir("/sys/class/accel").await {
+            let accel_entries = Self::collect_dir_entries("/sys/class/accel").await;
+            if let Some(ref entries) = accel_entries {
+                for (_, path) in entries {
+                    let dev_path = path.join("dev");
+                    if Self::path_exists(&dev_path).await {
+                        let vendor = Self::detect_npu_vendor(path).await;
+                        devices.push((path.clone(), vendor));
                     }
                 }
             }
         }
 
         // /dev/accel/ — directory-based accel
-        if Path::new("/dev/accel").is_dir() {
-            if let Ok(entries) = std::fs::read_dir("/dev/accel") {
-                for entry in entries.flatten() {
-                    let vendor = Self::detect_npu_vendor(&entry.path());
-                    devices.push((entry.path(), vendor));
+        if Self::path_is_dir("/dev/accel").await {
+            let accel_dev_entries = Self::collect_dir_entries("/dev/accel").await;
+            if let Some(ref entries) = accel_dev_entries {
+                for (_, path) in entries {
+                    let vendor = Self::detect_npu_vendor(path).await;
+                    devices.push((path.clone(), vendor));
                 }
             }
         }
 
-        // /dev/cdsp*, /dev/dsp* — Qualcomm Hexagon DSP
-        if let Ok(entries) = std::fs::read_dir("/dev") {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
+        // /dev/cdsp*, /dev/dsp* — Qualcomm Hexagon DSP — reuse collected dev entries
+        if let Some(ref entries) = dev_entries {
+            for (name, path) in entries {
                 let name_str = name.to_string_lossy();
                 if name_str.starts_with("cdsp") || name_str.starts_with("dsp") {
-                    devices.push((entry.path(), NpuVendor::QualcommHexagon));
+                    devices.push((path.clone(), NpuVendor::QualcommHexagon));
                 }
             }
         }
@@ -207,10 +206,52 @@ impl HardwareProber {
         devices
     }
 
+    /// Collect all entries from a directory in a single spawn_blocking call.
+    async fn collect_dir_entries(path: &str) -> Option<Vec<(std::ffi::OsString, PathBuf)>> {
+        let path: Arc<str> = Arc::from(path);
+        timeout(
+            PROBE_TIMEOUT,
+            task::spawn_blocking(move || {
+                Path::new(path.as_ref())
+                    .read_dir()
+                    .ok()
+                    .map(|iter| iter.flatten().map(|e| (e.file_name(), e.path())).collect())
+            }),
+        )
+        .await
+        .ok()?
+        .ok()?
+    }
+
+    /// Check if a path exists as a directory using spawn_blocking.
+    async fn path_is_dir(path: &str) -> bool {
+        let path: Arc<str> = Arc::from(path);
+        timeout(
+            PROBE_TIMEOUT,
+            task::spawn_blocking(move || Path::new(path.as_ref()).is_dir()),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or(false)
+    }
+
+    /// Check if a path exists using spawn_blocking.
+    async fn path_exists(path: &Path) -> bool {
+        let path_buf: Arc<PathBuf> = Arc::new(path.to_path_buf());
+        timeout(
+            PROBE_TIMEOUT,
+            task::spawn_blocking(move || path_buf.as_ref().exists()),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or(false)
+    }
+
     /// ตรวจสอบ vendor ของ NPU จาก sysfs vendor ID
-    fn detect_npu_vendor(device_path: &Path) -> NpuVendor {
-        // ลองอ่าน vendor ID จาก sysfs
-        let vendor_paths = [
+    async fn detect_npu_vendor(device_path: &Path) -> NpuVendor {
+        let paths = [
             device_path.join("vendor"),
             device_path
                 .parent()
@@ -218,26 +259,25 @@ impl HardwareProber {
                 .unwrap_or_default(),
         ];
 
-        for vendor_path in &vendor_paths {
-            if let Ok(vendor_id) = std::fs::read_to_string(vendor_path) {
+        for p in &paths {
+            let p_clone = p.clone();
+            let result = timeout(
+                PROBE_TIMEOUT,
+                task::spawn_blocking(move || std::fs::read_to_string(&p_clone).ok()),
+            )
+            .await;
+            if let Ok(Ok(Some(vendor_id))) = result {
                 let vendor_id = vendor_id.trim();
                 match vendor_id {
-                    "0x8086" | "0x8087" => return NpuVendor::IntelGaudi, // Intel (Habana)
-                    "0x1022" => return NpuVendor::AmdXdna,               // AMD
-                    "0x10de" => return NpuVendor::Generic,               // NVIDIA (not NPU)
-                    "0x103c" => return NpuVendor::QualcommHexagon,       // HP (Qualcomm)
+                    "0x8086" | "0x8087" => return NpuVendor::IntelGaudi,
+                    "0x1022" => return NpuVendor::AmdXdna,
+                    "0x10de" => return NpuVendor::Generic,
+                    "0x103c" => return NpuVendor::QualcommHexagon,
                     _ => {}
                 }
             }
         }
 
-        // Check device path for hints
-        let path_str = device_path.to_string_lossy();
-        if path_str.contains("npu") || path_str.contains("davinci") {
-            // Could be Huawei Ascend or other vendor
-            NpuVendor::Generic
-        } else {
-            NpuVendor::Generic
-        }
+        NpuVendor::Generic
     }
 }
