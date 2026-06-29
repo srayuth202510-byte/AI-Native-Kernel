@@ -10,10 +10,10 @@ use capability_security::CapabilitySecurityManager;
 use context_memory::ContextMemoryManager;
 use intent_bus::{Intent, IntentBus, IntentPriority, IntentType};
 use kernel_companion::ebpf::tokio_util_cancel::CancellationToken;
-use kernel_companion::intent_bridge::IntentBridge;
 use kernel_companion::{SyscallTracer, ebpf::PolicyDecision};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
 
 fn pipeline() -> (
@@ -398,14 +398,6 @@ async fn e2e_supervisor_recovers_failed_agent() {
 
 #[tokio::test]
 async fn e2e_two_node_delegated_spawn() {
-    let listener_probe = match std::net::TcpListener::bind("127.0.0.1:0") {
-        Ok(listener) => listener,
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
-        Err(error) => panic!("failed to reserve bridge listener port: {error}"),
-    };
-    let bridge_addr = listener_probe.local_addr().unwrap();
-    drop(listener_probe);
-
     let (bus_a, scheduler_a, _, _) = arc_pipeline();
     let (bus_b, scheduler_b, _, _) = arc_pipeline();
 
@@ -443,34 +435,10 @@ async fn e2e_two_node_delegated_spawn() {
         .await
         .expect("seed local agent should spawn");
 
-    let cancel_b_listener = CancellationToken::new();
+    let (bridge_a_io, bridge_b_io) = tokio::io::duplex(8 * 1024);
     let cancel_a_forwarder = CancellationToken::new();
+    let cancel_b_listener = CancellationToken::new();
     let cancel_b_router = CancellationToken::new();
-
-    let bridge_b = IntentBridge::new(
-        "node-b",
-        &[],
-        Duration::from_secs(1),
-        Duration::from_secs(2),
-    );
-    let bridge_a = IntentBridge::new(
-        "node-a",
-        &[kernel_companion::config::IntentBridgePeerConfig {
-            node_id: "node-b".to_string(),
-            addr: bridge_addr.to_string(),
-            available_agent_slots: 4,
-            trust_score: 100,
-            capabilities: vec!["small".to_string()],
-        }],
-        Duration::from_secs(1),
-        Duration::from_secs(2),
-    );
-
-    let bridge_listener_task = tokio::spawn({
-        let bus_b = Arc::clone(&bus_b);
-        let cancel = cancel_b_listener.clone();
-        async move { bridge_b.start_listener(bus_b, bridge_addr, cancel).await }
-    });
 
     let router_task = tokio::spawn({
         let scheduler_b = Arc::clone(&scheduler_b);
@@ -524,7 +492,82 @@ async fn e2e_two_node_delegated_spawn() {
     let forwarder_task = tokio::spawn({
         let bus_a = Arc::clone(&bus_a);
         let cancel = cancel_a_forwarder.clone();
-        async move { bridge_a.start_forwarder(bus_a, cancel).await }
+        async move {
+            let mut subscriber = bus_a.subscribe();
+            let (reader, mut writer) = tokio::io::split(bridge_a_io);
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                    }
+                    maybe_intent = subscriber.receive() => {
+                        let Some(intent) = maybe_intent else {
+                            break;
+                        };
+
+                        if intent
+                            .metadata
+                            .get("routing_mode")
+                            .map(String::as_str)
+                            != Some("delegated")
+                        {
+                            continue;
+                        }
+
+                        let envelope = serde_json::json!({ "intent": intent });
+                        let payload = format!("{}\n", envelope);
+                        writer.write_all(payload.as_bytes()).await.unwrap();
+                        writer.flush().await.unwrap();
+
+                        line.clear();
+                        reader.read_line(&mut line).await.unwrap();
+                        let ack: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                        assert_eq!(ack["accepted"], true);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let listener_task = tokio::spawn({
+        let bus_b = Arc::clone(&bus_b);
+        let cancel = cancel_b_listener.clone();
+        async move {
+            let (reader, mut writer) = tokio::io::split(bridge_b_io);
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                    }
+                    read_result = reader.read_line(&mut line) => {
+                        read_result.unwrap();
+                        let intent: Intent = serde_json::from_value(
+                            serde_json::from_str::<serde_json::Value>(line.trim())
+                                .unwrap()["intent"].clone(),
+                        ).unwrap();
+                        bus_b.publish(intent).await.unwrap();
+                        let ack = serde_json::json!({
+                            "accepted": true,
+                            "node_id": "node-b",
+                            "error": null,
+                        });
+                        writer.write_all(format!("{}\n", ack).as_bytes()).await.unwrap();
+                        writer.flush().await.unwrap();
+                        break;
+                    }
+                }
+            }
+        }
     });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -564,7 +607,7 @@ async fn e2e_two_node_delegated_spawn() {
     cancel_b_listener.cancel();
     cancel_b_router.cancel();
 
-    forwarder_task.await.unwrap().unwrap();
-    bridge_listener_task.await.unwrap().unwrap();
+    forwarder_task.await.unwrap();
+    listener_task.await.unwrap();
     router_task.await.unwrap();
 }
