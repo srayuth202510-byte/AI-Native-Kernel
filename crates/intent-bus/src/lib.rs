@@ -10,6 +10,21 @@ use tokio::sync::{RwLock, broadcast};
 
 use serde::{Deserialize, Serialize};
 
+/// Metadata key that identifies the node that originally accepted an intent.
+pub const META_ORIGIN_NODE: &str = "origin_node";
+/// Metadata key that identifies the node that should execute a delegated intent.
+pub const META_TARGET_NODE: &str = "target_node";
+/// Metadata key that identifies the node that forwarded an intent to another node.
+pub const META_FORWARDED_BY: &str = "forwarded_by";
+/// Metadata key that records why routing selected a remote node.
+pub const META_ROUTING_REASON: &str = "routing_reason";
+/// Metadata key that indicates whether an intent is local or delegated.
+pub const META_ROUTING_MODE: &str = "routing_mode";
+/// Metadata value for intents that must execute on the current node.
+pub const ROUTING_MODE_LOCAL: &str = "local";
+/// Metadata value for intents that were delegated to another node.
+pub const ROUTING_MODE_DELEGATED: &str = "delegated";
+
 /// `Intent` คือตัวแทนของเจตจำนงหรือความต้องการที่ส่งเข้ามาในระบบ
 /// เพื่อให้ Agent หรือส่วนประกอบอื่น ๆ นำไปประมวลผลต่อ
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +67,29 @@ impl Intent {
             target: None,
             metadata: HashMap::new(),
         }
+    }
+
+    /// เพิ่ม metadata หนึ่งรายการและคืน Intent เดิมกลับมาเพื่อ chain ต่อได้
+    #[must_use]
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// ทำเครื่องหมายว่า Intent นี้ถูก route ข้ามโหนดแล้ว
+    #[must_use]
+    pub fn for_remote_target(
+        self,
+        origin_node: impl Into<String>,
+        target_node: impl Into<String>,
+        forwarded_by: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        self.with_metadata(META_ORIGIN_NODE, origin_node)
+            .with_metadata(META_TARGET_NODE, target_node)
+            .with_metadata(META_FORWARDED_BY, forwarded_by)
+            .with_metadata(META_ROUTING_REASON, reason)
+            .with_metadata(META_ROUTING_MODE, ROUTING_MODE_DELEGATED)
     }
 }
 

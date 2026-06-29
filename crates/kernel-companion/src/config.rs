@@ -113,6 +113,14 @@ impl Config {
                 self.kernel_companion.intent_bus_capacity = n;
             }
         }
+        if let Ok(v) = std::env::var("ANK_INTENT_BRIDGE_ENABLED") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.intent_bus.bridge_enabled = b;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_INTENT_BRIDGE_LISTEN_ADDR") {
+            self.intent_bus.bridge_listen_addr = v;
+        }
         if let Ok(v) = std::env::var("ANK_MAX_AGENTS") {
             if let Ok(n) = v.parse() {
                 self.agent_scheduler.max_agents = n;
@@ -121,6 +129,24 @@ impl Config {
         if let Ok(v) = std::env::var("ANK_MAX_RESTART_ATTEMPTS") {
             if let Ok(n) = v.parse() {
                 self.agent_scheduler.max_restart_attempts = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_LOCAL_NODE_ID") {
+            self.agent_scheduler.local_node_id = v;
+        }
+        if let Ok(v) = std::env::var("ANK_REMOTE_ROUTING_ENABLED") {
+            if let Ok(b) = v.parse::<bool>() {
+                self.agent_scheduler.distributed_enabled = b;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_REMOTE_OVERLOAD_THRESHOLD") {
+            if let Ok(n) = v.parse() {
+                self.agent_scheduler.remote_overload_threshold_percent = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ANK_REMOTE_MIN_TRUST") {
+            if let Ok(n) = v.parse() {
+                self.agent_scheduler.min_remote_trust_score = n;
             }
         }
         if let Ok(v) = std::env::var("ANK_HOT_CAPACITY") {
@@ -270,6 +296,21 @@ pub struct AgentSchedulerConfig {
     /// ข้อมูล `next_agent_id_start` สำหรับการกำหนดค่าหรือสถานะภายใน
     /// ข้อมูล `next_agent_id_start` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub next_agent_id_start: u64,
+    #[serde(default = "default_distributed_enabled")]
+    /// เปิดใช้การกระจาย spawn ไปยัง remote nodes
+    pub distributed_enabled: bool,
+    #[serde(default = "default_local_node_id")]
+    /// logical node id ของ scheduler ปัจจุบัน
+    pub local_node_id: String,
+    #[serde(default = "default_remote_overload_threshold_percent")]
+    /// threshold เป็นเปอร์เซ็นต์ก่อน route งานไปยัง remote node
+    pub remote_overload_threshold_percent: u8,
+    #[serde(default = "default_min_remote_trust_score")]
+    /// trust ขั้นต่ำของ remote node ที่ยอมรับ
+    pub min_remote_trust_score: u8,
+    #[serde(default = "default_max_remote_candidates")]
+    /// จำนวน remote candidates สูงสุดที่ใช้จัดอันดับต่อรอบ
+    pub max_remote_candidates: usize,
 }
 
 impl Default for AgentSchedulerConfig {
@@ -279,6 +320,11 @@ impl Default for AgentSchedulerConfig {
             max_restart_attempts: default_max_restart(),
             supervisor_interval_ms: default_supervisor_interval(),
             next_agent_id_start: default_next_id(),
+            distributed_enabled: default_distributed_enabled(),
+            local_node_id: default_local_node_id(),
+            remote_overload_threshold_percent: default_remote_overload_threshold_percent(),
+            min_remote_trust_score: default_min_remote_trust_score(),
+            max_remote_candidates: default_max_remote_candidates(),
         }
     }
 }
@@ -294,6 +340,21 @@ fn default_supervisor_interval() -> u64 {
 }
 fn default_next_id() -> u64 {
     1
+}
+fn default_distributed_enabled() -> bool {
+    false
+}
+fn default_local_node_id() -> String {
+    "node-local".to_string()
+}
+fn default_remote_overload_threshold_percent() -> u8 {
+    80
+}
+fn default_min_remote_trust_score() -> u8 {
+    70
+}
+fn default_max_remote_candidates() -> usize {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -458,18 +519,66 @@ pub struct IntentBusConfig {
     /// ข้อมูล `default_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
     /// ข้อมูล `default_capacity` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub default_capacity: usize,
+    #[serde(default = "default_bridge_enabled")]
+    /// เปิด listener/forwarder สำหรับ delegated intents ข้ามโหนด
+    pub bridge_enabled: bool,
+    #[serde(default = "default_bridge_listen_addr")]
+    /// TCP listen addr สำหรับ network intent bridge
+    pub bridge_listen_addr: String,
+    #[serde(default = "default_bridge_connect_timeout_ms")]
+    /// timeout สำหรับ outbound TCP connect
+    pub bridge_connect_timeout_ms: u64,
+    #[serde(default = "default_bridge_request_timeout_ms")]
+    /// timeout สำหรับ read/write/ack ของ bridge
+    pub bridge_request_timeout_ms: u64,
+    #[serde(default)]
+    /// รายชื่อ peer nodes ที่ bridge สามารถส่ง delegated intent ไปหาได้
+    pub bridge_peers: Vec<IntentBridgePeerConfig>,
 }
 
 impl Default for IntentBusConfig {
     fn default() -> Self {
         Self {
             default_capacity: default_intent_bus_capacity(),
+            bridge_enabled: default_bridge_enabled(),
+            bridge_listen_addr: default_bridge_listen_addr(),
+            bridge_connect_timeout_ms: default_bridge_connect_timeout_ms(),
+            bridge_request_timeout_ms: default_bridge_request_timeout_ms(),
+            bridge_peers: Vec::new(),
         }
     }
 }
 
 fn default_intent_bus_capacity() -> usize {
     1024
+}
+fn default_bridge_enabled() -> bool {
+    false
+}
+fn default_bridge_listen_addr() -> String {
+    "127.0.0.1:9191".to_string()
+}
+fn default_bridge_connect_timeout_ms() -> u64 {
+    1_000
+}
+fn default_bridge_request_timeout_ms() -> u64 {
+    5_000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentBridgePeerConfig {
+    pub node_id: String,
+    pub addr: String,
+    #[serde(default)]
+    pub available_agent_slots: usize,
+    #[serde(default = "default_peer_trust_score")]
+    pub trust_score: u8,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+fn default_peer_trust_score() -> u8 {
+    100
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

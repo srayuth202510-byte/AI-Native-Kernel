@@ -38,4 +38,12 @@ pub enum SchedulerError {
     /// Scheduler loop กำลังทำงานอยู่แล้ว
     #[error("scheduler already running")]
     SchedulerAlreadyRunning,
+
+    /// โหนดนี้ทรัพยากรไม่พอ และไม่มี remote node ที่ผ่านเกณฑ์สำหรับรับงานต่อ
+    #[error("no eligible remote node available")]
+    NoEligibleRemoteNode,
+
+    /// ปฏิเสธการ route เพราะ intent ถูกส่งวนกลับมาที่โหนดเดิมแบบผิดเงื่อนไข
+    #[error("remote routing loop detected")]
+    RemoteRoutingLoop,
 }

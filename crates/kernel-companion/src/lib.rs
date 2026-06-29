@@ -4,8 +4,9 @@
 //! ทำหน้าที่เป็นตัวกลางในการเชื่อมต่อระหว่างระบบปฏิบัติการ Linux (ผ่าน LSM/eBPF) และระบบจัดการ AI Agents
 
 use crate::config::Config;
+use crate::intent_bridge::IntentBridge;
 use crate::observability::kernel_metrics;
-use agent_scheduler::AgentScheduler;
+use agent_scheduler::{AgentScheduler, DistributedRoutingPolicy, RemoteNodeState};
 use capability_security::CapabilitySecurityManager;
 use capability_security::Scope;
 use capability_security::audit::{AuditEntry, AuditLogger};
@@ -27,6 +28,7 @@ pub mod config;
 /// โมดูล `ebpf` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `ebpf` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod ebpf;
+pub mod intent_bridge;
 /// โมดูล `lsm` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `lsm` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod lsm;
@@ -88,6 +90,12 @@ pub struct KernelCompanion {
     metrics_cancel: Option<tokio_util_cancel::CancellationToken>,
     /// handle ของ compute scheduler routing task
     compute_task: Option<JoinHandle<()>>,
+    /// handle ของ network intent bridge listener
+    intent_bridge_listener_task: Option<JoinHandle<()>>,
+    /// handle ของ network intent bridge forwarder
+    intent_bridge_forwarder_task: Option<JoinHandle<()>>,
+    /// cancellation token ของ network intent bridge
+    intent_bridge_cancel: Option<tokio_util_cancel::CancellationToken>,
     /// P2P Gossip Mesh manager
     p2p_mesh: Option<Arc<P2PMeshManager>>,
     /// handle ของ P2P mesh listener task
@@ -175,6 +183,9 @@ impl KernelCompanion {
             metrics_task: None,
             metrics_cancel: None,
             compute_task: None,
+            intent_bridge_listener_task: None,
+            intent_bridge_forwarder_task: None,
+            intent_bridge_cancel: None,
             p2p_mesh: None,
             p2p_listener_task: None,
             p2p_gossip_task: None,
@@ -231,6 +242,30 @@ impl KernelCompanion {
             power_watts: 1.0,
             cost_units: 1.0,
         });
+
+        self.agent_scheduler
+            .configure_routing_policy(DistributedRoutingPolicy {
+                local_node_id: self.config.agent_scheduler.local_node_id.clone(),
+                remote_enabled: self.config.agent_scheduler.distributed_enabled,
+                max_local_agents: self.config.agent_scheduler.max_agents,
+                overload_threshold_percent: self
+                    .config
+                    .agent_scheduler
+                    .remote_overload_threshold_percent,
+                min_remote_trust: self.config.agent_scheduler.min_remote_trust_score,
+                max_candidate_nodes: self.config.agent_scheduler.max_remote_candidates,
+            })
+            .await;
+        for peer in &self.config.intent_bus.bridge_peers {
+            self.agent_scheduler
+                .upsert_remote_node(RemoteNodeState::new(
+                    peer.node_id.clone(),
+                    peer.available_agent_slots,
+                    peer.trust_score,
+                    peer.capabilities.clone(),
+                ))
+                .await;
+        }
 
         if self.shutdown_tx.is_none() {
             let scheduler = Arc::clone(&self.agent_scheduler);
@@ -542,6 +577,64 @@ impl KernelCompanion {
                 }
             }));
 
+            if self.config.intent_bus.bridge_enabled {
+                let bridge = IntentBridge::new(
+                    self.config.agent_scheduler.local_node_id.clone(),
+                    &self.config.intent_bus.bridge_peers,
+                    std::time::Duration::from_millis(
+                        self.config.intent_bus.bridge_connect_timeout_ms,
+                    ),
+                    std::time::Duration::from_millis(
+                        self.config.intent_bus.bridge_request_timeout_ms,
+                    ),
+                );
+                let bridge_cancel = tokio_util_cancel::CancellationToken::new();
+                let bridge_listener_cancel = bridge_cancel.clone();
+                let bridge_forwarder_cancel = bridge_cancel.clone();
+                let bridge_listener = bridge.clone();
+                let bridge_forwarder = bridge.clone();
+                let bridge_bus_listener = Arc::clone(&self.intent_bus);
+                let bridge_bus_forwarder = Arc::clone(&self.intent_bus);
+                self.intent_bridge_cancel = Some(bridge_cancel);
+
+                match self
+                    .config
+                    .intent_bus
+                    .bridge_listen_addr
+                    .parse::<std::net::SocketAddr>()
+                {
+                    Ok(listen_addr) => {
+                        self.intent_bridge_listener_task = Some(tokio::spawn(async move {
+                            if let Err(error) = bridge_listener
+                                .start_listener(
+                                    bridge_bus_listener,
+                                    listen_addr,
+                                    bridge_listener_cancel,
+                                )
+                                .await
+                            {
+                                warn!(?error, "Intent bridge listener failed");
+                            }
+                        }));
+                        self.intent_bridge_forwarder_task = Some(tokio::spawn(async move {
+                            if let Err(error) = bridge_forwarder
+                                .start_forwarder(bridge_bus_forwarder, bridge_forwarder_cancel)
+                                .await
+                            {
+                                warn!(?error, "Intent bridge forwarder failed");
+                            }
+                        }));
+                    }
+                    Err(error) => {
+                        warn!(
+                            addr = %self.config.intent_bus.bridge_listen_addr,
+                            ?error,
+                            "Intent bridge disabled due to invalid listen address"
+                        );
+                    }
+                }
+            }
+
             // ── P2P Gossip Mesh Integration ──
             let mut p2p_mgr_opt = None;
             if self.config.context_memory.p2p_enabled {
@@ -669,6 +762,9 @@ impl KernelCompanion {
         if let Some(cancel) = self.metrics_cancel.take() {
             cancel.cancel();
         }
+        if let Some(cancel) = self.intent_bridge_cancel.take() {
+            cancel.cancel();
+        }
         if let Some(task) = self.routing_task.take() {
             let _ = task.await;
         }
@@ -679,6 +775,12 @@ impl KernelCompanion {
             let _ = task.await;
         }
         if let Some(task) = self.compute_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.intent_bridge_listener_task.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.intent_bridge_forwarder_task.take() {
             let _ = task.await;
         }
         if let Some(task) = self.p2p_listener_task.take() {

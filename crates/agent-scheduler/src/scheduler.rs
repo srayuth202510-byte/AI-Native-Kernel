@@ -6,7 +6,10 @@ use capability_security::{CapabilitySecurityManager, CapabilityToken};
 use compute_scheduler::ComputeTarget;
 use compute_scheduler::placement::WorkloadClass;
 use context_memory::ContextMemoryManager;
-use intent_bus::{Intent, IntentBus, IntentType};
+use intent_bus::{
+    Intent, IntentBus, IntentType, META_ORIGIN_NODE, META_ROUTING_MODE, META_TARGET_NODE,
+    ROUTING_MODE_DELEGATED, ROUTING_MODE_LOCAL,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,6 +44,66 @@ pub struct AgentScheduler {
     scheduler_cancel: Arc<tokio::sync::watch::Sender<bool>>,
     /// Time slice configuration per priority level (in microseconds)
     time_slices: [Duration; 4],
+    /// นโยบายสำหรับการกระจาย spawn ข้ามโหนดเมื่อ local node มีทรัพยากรจำกัด
+    routing_policy: Arc<RwLock<DistributedRoutingPolicy>>,
+    /// สถานะ snapshot ของ remote node ที่พร้อมรับงาน
+    remote_nodes: Arc<RwLock<HashMap<String, RemoteNodeState>>>,
+}
+
+/// นโยบายการ route intent สำหรับ multi-node deployments
+#[derive(Debug, Clone)]
+pub struct DistributedRoutingPolicy {
+    /// node id ของ scheduler ปัจจุบัน
+    pub local_node_id: String,
+    /// เปิด/ปิดการ handoff ไปยัง remote node
+    pub remote_enabled: bool,
+    /// จำนวน agent local สูงสุดที่ยอมรับก่อนถือว่า overloaded
+    pub max_local_agents: usize,
+    /// เปอร์เซ็นต์ของการใช้ slot ที่ถือว่า overloaded
+    pub overload_threshold_percent: u8,
+    /// trust ขั้นต่ำของ remote node ที่ยอมให้รับงาน
+    pub min_remote_trust: u8,
+    /// จำนวน candidate สูงสุดที่พิจารณา
+    pub max_candidate_nodes: usize,
+}
+
+impl Default for DistributedRoutingPolicy {
+    fn default() -> Self {
+        Self {
+            local_node_id: "node-local".to_string(),
+            remote_enabled: false,
+            max_local_agents: 100,
+            overload_threshold_percent: 80,
+            min_remote_trust: 70,
+            max_candidate_nodes: 3,
+        }
+    }
+}
+
+/// Snapshot ทรัพยากรของ remote node สำหรับใช้ตัดสินใจ routing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteNodeState {
+    pub node_id: String,
+    pub available_agent_slots: usize,
+    pub trust_score: u8,
+    pub capabilities: Vec<String>,
+}
+
+impl RemoteNodeState {
+    #[must_use]
+    pub fn new(
+        node_id: impl Into<String>,
+        available_agent_slots: usize,
+        trust_score: u8,
+        capabilities: Vec<String>,
+    ) -> Self {
+        Self {
+            node_id: node_id.into(),
+            available_agent_slots,
+            trust_score,
+            capabilities,
+        }
+    }
 }
 
 /// เหตุการณ์การเปลี่ยนแปลงสถานะหรือคุณลักษณะของ Agent ในระบบ
@@ -68,6 +131,31 @@ pub enum AgentEvent {
     AgentCapabilityGranted(u64, CapabilityToken),
     /// Agent ถูกเพิกถอนสิทธิ์ความปลอดภัยในระบบ (Capability Revoked)
     AgentCapabilityRevoked(u64, u64),
+    /// Intent ถูก route ไป spawn บน remote node แทน
+    AgentDelegated {
+        agent_id: u64,
+        target_node: String,
+        reason: String,
+    },
+}
+
+fn workload_class_label(workload_class: WorkloadClass) -> &'static str {
+    match workload_class {
+        WorkloadClass::KernelLogic => "kernel",
+        WorkloadClass::SmallLlm => "small",
+        WorkloadClass::LargeLlm => "large",
+        WorkloadClass::VectorIndexing => "vector",
+    }
+}
+
+fn supports_workload(node: &RemoteNodeState, workload_class: WorkloadClass) -> bool {
+    if node.capabilities.is_empty() {
+        return true;
+    }
+
+    node.capabilities
+        .iter()
+        .any(|capability| capability == workload_class_label(workload_class))
 }
 
 impl AgentScheduler {
@@ -129,6 +217,8 @@ impl AgentScheduler {
             scheduler_task: Arc::new(RwLock::new(None)),
             scheduler_cancel: Arc::new(scheduler_cancel_tx),
             time_slices,
+            routing_policy: Arc::new(RwLock::new(DistributedRoutingPolicy::default())),
+            remote_nodes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -152,6 +242,23 @@ impl AgentScheduler {
     #[must_use]
     pub fn context_memory(&self) -> Arc<ContextMemoryManager> {
         Arc::clone(&self.context_memory)
+    }
+
+    /// อัปเดตนโยบาย distributed routing ของ scheduler
+    pub async fn configure_routing_policy(&self, policy: DistributedRoutingPolicy) {
+        let mut current = self.routing_policy.write().await;
+        *current = policy;
+    }
+
+    /// เพิ่มหรืออัปเดต snapshot ของ remote node ที่พร้อมรับงาน
+    pub async fn upsert_remote_node(&self, node: RemoteNodeState) {
+        let mut remote_nodes = self.remote_nodes.write().await;
+        remote_nodes.insert(node.node_id.clone(), node);
+    }
+
+    /// คืนค่า remote nodes ที่ scheduler มองเห็นอยู่ล่าสุด
+    pub async fn remote_nodes(&self) -> Vec<RemoteNodeState> {
+        self.remote_nodes.read().await.values().cloned().collect()
     }
 
     /// จองและจัดสรร ID ใหม่ให้แก่ Agent (Thread-safe)
@@ -202,6 +309,120 @@ impl AgentScheduler {
             .map_err(|_| SchedulerError::IntentDispatchFailed)
     }
 
+    async fn should_spawn_locally(&self, intent: &Intent) -> Result<bool, SchedulerError> {
+        let policy = self.routing_policy.read().await.clone();
+        let explicit_target = intent.metadata.get(META_TARGET_NODE).cloned();
+        let routing_mode = intent
+            .metadata
+            .get(META_ROUTING_MODE)
+            .map(String::as_str)
+            .unwrap_or(ROUTING_MODE_LOCAL);
+
+        if let Some(target_node) = explicit_target {
+            if target_node == policy.local_node_id {
+                return Ok(true);
+            }
+
+            if routing_mode == ROUTING_MODE_DELEGATED {
+                return Ok(false);
+            }
+
+            return Err(SchedulerError::RemoteRoutingLoop);
+        }
+
+        if !policy.remote_enabled || !self.is_overloaded(&policy).await {
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    async fn is_overloaded(&self, policy: &DistributedRoutingPolicy) -> bool {
+        let current_agents = self.agents.read().await.len();
+        if policy.max_local_agents == 0 {
+            return true;
+        }
+
+        current_agents.saturating_mul(100)
+            >= policy
+                .max_local_agents
+                .saturating_mul(usize::from(policy.overload_threshold_percent))
+    }
+
+    async fn select_remote_node(
+        &self,
+        workload_class: WorkloadClass,
+    ) -> Result<RemoteNodeState, SchedulerError> {
+        let policy = self.routing_policy.read().await.clone();
+        let mut candidates: Vec<_> = self
+            .remote_nodes
+            .read()
+            .await
+            .values()
+            .filter(|node| {
+                node.trust_score >= policy.min_remote_trust
+                    && node.available_agent_slots > 0
+                    && node.node_id != policy.local_node_id
+                    && supports_workload(node, workload_class)
+            })
+            .cloned()
+            .collect();
+
+        candidates.sort_by(|a, b| {
+            b.trust_score
+                .cmp(&a.trust_score)
+                .then(b.available_agent_slots.cmp(&a.available_agent_slots))
+        });
+
+        candidates
+            .into_iter()
+            .take(policy.max_candidate_nodes.max(1))
+            .next()
+            .ok_or(SchedulerError::NoEligibleRemoteNode)
+    }
+
+    async fn delegate_spawn(
+        &self,
+        original_intent: Intent,
+        agent_id: u64,
+        workload_class: WorkloadClass,
+    ) -> Result<(), SchedulerError> {
+        let policy = self.routing_policy.read().await.clone();
+        let target_node = self.select_remote_node(workload_class).await?;
+        let reason = format!(
+            "local node at capacity threshold; delegated to {}",
+            target_node.node_id
+        );
+
+        let delegated_intent = original_intent
+            .clone()
+            .for_remote_target(
+                original_intent
+                    .metadata
+                    .get(META_ORIGIN_NODE)
+                    .cloned()
+                    .unwrap_or_else(|| policy.local_node_id.clone()),
+                target_node.node_id.clone(),
+                policy.local_node_id.clone(),
+                reason.clone(),
+            )
+            .with_metadata("delegated_agent_id", agent_id.to_string())
+            .with_metadata("workload", workload_class_label(workload_class));
+
+        self.intent_bus
+            .publish(delegated_intent)
+            .await
+            .map_err(|_| SchedulerError::IntentDispatchFailed)?;
+
+        let _ = self.monitoring_tx.send(AgentEvent::AgentDelegated {
+            agent_id,
+            target_node: target_node.node_id,
+            reason,
+        });
+
+        Ok(())
+    }
+
     /// หาเส้นทางและจัดการคำสั่งที่ส่งผ่านมาจาก Intent Bus
     ///
     /// # Errors
@@ -210,6 +431,16 @@ impl AgentScheduler {
         match intent.intent_type {
             IntentType::Command => {
                 if intent.payload == "spawn-agent" {
+                    let local_node_id = self.routing_policy.read().await.local_node_id.clone();
+                    if intent
+                        .metadata
+                        .get(META_TARGET_NODE)
+                        .is_some_and(|target| target != &local_node_id)
+                    {
+                        debug!(target = ?intent.metadata.get(META_TARGET_NODE), "ignoring delegated spawn intent for another node");
+                        return Ok(());
+                    }
+
                     let workload_str = intent
                         .metadata
                         .get("workload")
@@ -223,9 +454,23 @@ impl AgentScheduler {
                         _ => WorkloadClass::SmallLlm,
                     };
 
-                    let agent_id = self.allocate_agent_id().await;
-                    let agent = AgentControlBlock::new_unplaced(agent_id, wl);
+                    let spawn_locally = self.should_spawn_locally(&intent).await?;
+                    let agent_id = if let Some(agent_id) = intent
+                        .metadata
+                        .get("delegated_agent_id")
+                        .and_then(|value| value.parse::<u64>().ok())
+                    {
+                        agent_id
+                    } else {
+                        self.allocate_agent_id().await
+                    };
 
+                    if !spawn_locally {
+                        self.delegate_spawn(intent, agent_id, wl).await?;
+                        return Ok(());
+                    }
+
+                    let agent = AgentControlBlock::new_unplaced(agent_id, wl);
                     self.spawn_agent(agent).await?;
 
                     let req_payload = serde_json::json!({
@@ -977,6 +1222,109 @@ mod tests {
                 .expect("context should exist"),
             b"payload-data".to_vec()
         );
+    }
+
+    #[tokio::test]
+    async fn route_command_delegates_when_local_node_is_overloaded() {
+        let scheduler = scheduler();
+        let mut subscriber = scheduler.intent_bus().subscribe();
+
+        scheduler
+            .configure_routing_policy(DistributedRoutingPolicy {
+                local_node_id: "node-a".to_string(),
+                remote_enabled: true,
+                max_local_agents: 1,
+                overload_threshold_percent: 100,
+                min_remote_trust: 80,
+                max_candidate_nodes: 2,
+            })
+            .await;
+        scheduler
+            .upsert_remote_node(RemoteNodeState::new(
+                "node-b",
+                4,
+                90,
+                vec!["small".to_string(), "large".to_string()],
+            ))
+            .await;
+
+        scheduler
+            .spawn_agent(AgentControlBlock::new(0))
+            .await
+            .expect("seed spawn should succeed");
+
+        let intent = Intent::new(
+            "intent-delegate",
+            IntentType::Command,
+            "spawn-agent",
+            IntentPriority::High,
+            "system",
+        );
+
+        scheduler
+            .route_intent(intent)
+            .await
+            .expect("route should succeed");
+
+        let delegated = timeout(Duration::from_millis(100), subscriber.receive())
+            .await
+            .expect("should receive delegated intent")
+            .expect("delegated intent should exist");
+
+        assert_eq!(delegated.payload, "spawn-agent");
+        assert_eq!(
+            delegated.metadata.get(META_TARGET_NODE).map(String::as_str),
+            Some("node-b")
+        );
+        assert_eq!(
+            delegated
+                .metadata
+                .get(META_ROUTING_MODE)
+                .map(String::as_str),
+            Some(ROUTING_MODE_DELEGATED)
+        );
+        assert_eq!(scheduler.get_running_agents().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn route_command_fails_closed_without_eligible_remote_node() {
+        let scheduler = scheduler();
+
+        scheduler
+            .configure_routing_policy(DistributedRoutingPolicy {
+                local_node_id: "node-a".to_string(),
+                remote_enabled: true,
+                max_local_agents: 1,
+                overload_threshold_percent: 100,
+                min_remote_trust: 80,
+                max_candidate_nodes: 2,
+            })
+            .await;
+        scheduler
+            .upsert_remote_node(RemoteNodeState::new(
+                "node-b",
+                0,
+                95,
+                vec!["small".to_string()],
+            ))
+            .await;
+
+        scheduler
+            .spawn_agent(AgentControlBlock::new(0))
+            .await
+            .expect("seed spawn should succeed");
+
+        let intent = Intent::new(
+            "intent-fail-closed",
+            IntentType::Command,
+            "spawn-agent",
+            IntentPriority::High,
+            "system",
+        );
+
+        let result = scheduler.route_intent(intent).await;
+        assert!(matches!(result, Err(SchedulerError::NoEligibleRemoteNode)));
+        assert_eq!(scheduler.get_running_agents().await.len(), 1);
     }
 
     #[tokio::test]

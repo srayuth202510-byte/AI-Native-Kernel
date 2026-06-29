@@ -19,6 +19,11 @@ max_agents = 100
 max_restart_attempts = 3
 supervisor_interval_ms = 100
 next_agent_id_start = 1
+distributed_enabled = false
+local_node_id = "node-local"
+remote_overload_threshold_percent = 80
+min_remote_trust_score = 70
+max_remote_candidates = 3
 
 [context_memory]
 hot_capacity = 256
@@ -41,6 +46,11 @@ max_issue_rate = 100
 
 [intent_bus]
 default_capacity = 1024
+bridge_enabled = false
+bridge_listen_addr = "127.0.0.1:9191"
+bridge_connect_timeout_ms = 1000
+bridge_request_timeout_ms = 5000
+bridge_peers = []
 
 [immune_system]
 tcell_check_interval_ms = 5000
