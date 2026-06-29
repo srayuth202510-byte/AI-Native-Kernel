@@ -165,25 +165,28 @@ impl CapabilitySecurityManager {
     /// ออกโทเค็นความสามารถ (Capability Token) ใหม่ บันทึกลงในระบบเพื่อใช้งาน และบันทึกประวัติ (Audit Log)
     ///
     /// Rate limit: ควบคุมโดย `max_issue_rate` ต่อ 1 วินาที แยกตาม Scope ป้องกัน audit log flooding
-    pub fn issue_token(&self, token: CapabilityToken) -> Result<()> {
+    pub async fn issue_token(&self, token: CapabilityToken) -> Result<()> {
         let now = Instant::now();
-        let mut rate_map = self.issue_rate_write();
-        let rate_queue = rate_map.entry(token.scope).or_default();
-
-        rate_queue.push_back(now);
-        while rate_queue
-            .front()
-            .is_some_and(|t| now.duration_since(*t).as_secs_f64() > 1.0)
+        // Rate limit check — release lock before audit I/O
         {
-            rate_queue.pop_front();
+            let mut rate_map = self.issue_rate_write();
+            let rate_queue = rate_map.entry(token.scope).or_default();
+
+            rate_queue.push_back(now);
+            while rate_queue
+                .front()
+                .is_some_and(|t| now.duration_since(*t).as_secs_f64() > 1.0)
+            {
+                rate_queue.pop_front();
+            }
+            if self.max_issue_rate > 0 && rate_queue.len() > self.max_issue_rate {
+                return Err(CapabilityError::RateLimited);
+            }
         }
-        if self.max_issue_rate > 0 && rate_queue.len() > self.max_issue_rate {
-            return Err(CapabilityError::RateLimited);
-        }
-        drop(rate_map);
 
         self.audit_logger
             .record(AuditEntry::issued(token.id))
+            .await
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
         if let Some(ref m) = self.metrics {
             m.tokens_issued_total.inc();
@@ -195,7 +198,7 @@ impl CapabilitySecurityManager {
 
     /// เพิกถอนโทเค็นความสามารถ (Capability Token) ตามรหัสโทเค็น
     /// โทเค็นที่ถูกเพิกถอนแล้วจะไม่สามารถใช้งานได้อีกต่อไป แม้จะยังไม่หมดอายุ
-    pub fn revoke_token(&self, token_id: u64) -> Result<()> {
+    pub async fn revoke_token(&self, token_id: u64) -> Result<()> {
         self.revoked_write().insert(token_id);
 
         let scope_opt = self.tokens_read().get(&token_id).map(|t| t.scope);
@@ -207,6 +210,7 @@ impl CapabilitySecurityManager {
 
         self.audit_logger
             .record(AuditEntry::revoked(token_id))
+            .await
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
         if let Some(ref m) = self.metrics {
             m.audit_entries_total.inc();
@@ -284,7 +288,7 @@ impl CapabilitySecurityManager {
 
     /// ตรวจสอบสิทธิ์ของโทเค็นโดยอ้างอิงกับ Capability ที่ร้องขอ
     /// พร้อมทำบันทึกประวัติการอนุญาต (Allow) หรือปฏิเสธ (Deny) ลงไฟล์ประวัติการตรวจสอบ
-    pub fn authorize_token(&self, token: &CapabilityToken, capability: &str) -> Result<bool> {
+    pub async fn authorize_token(&self, token: &CapabilityToken, capability: &str) -> Result<bool> {
         let allowed = token.is_valid()
             && !self.is_revoked(token.id)
             && self
@@ -297,6 +301,7 @@ impl CapabilitySecurityManager {
         };
         self.audit_logger
             .record(entry)
+            .await
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
 
         if let Some(ref m) = self.metrics {
@@ -309,15 +314,18 @@ impl CapabilitySecurityManager {
 
     /// ยืนยันความถูกต้องของโทเค็นโดยระบุ ID, รหัสลับ (Secret Key), ขอบเขต (Scope) และ Capability ที่ต้องการ
     /// จะใช้วิธีเปรียบเทียบรหัสลับแบบคงเวลา (Constant-time comparison) เพื่อความปลอดภัยสูงสุด
-    pub fn validate(
+    pub async fn validate(
         &self,
         token_id: u64,
         secret: &[u8; 32],
         scope: &Scope,
         capability: &str,
     ) -> Result<bool> {
-        let tokens = self.tokens_read();
-        let Some(token) = tokens.get(&token_id) else {
+        let token = {
+            let tokens = self.tokens_read();
+            tokens.get(&token_id).cloned()
+        };
+        let Some(token) = token else {
             if let Some(ref m) = self.metrics {
                 m.token_validation_failures_total.inc();
             }
@@ -328,6 +336,7 @@ impl CapabilitySecurityManager {
         if self.is_revoked(token_id) {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
+                .await
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
             if let Some(ref m) = self.metrics {
                 m.audit_entries_total.inc();
@@ -341,6 +350,7 @@ impl CapabilitySecurityManager {
         if !constant_time_eq(&token.secret, secret) {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
+                .await
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
             if let Some(ref m) = self.metrics {
                 m.audit_entries_total.inc();
@@ -350,7 +360,7 @@ impl CapabilitySecurityManager {
             return Ok(false);
         }
 
-        let allowed = token.is_valid() && self.policy_engine.authorize(token, scope, capability);
+        let allowed = token.is_valid() && self.policy_engine.authorize(&token, scope, capability);
         let entry = if allowed {
             AuditEntry::allowed(token.id)
         } else {
@@ -358,6 +368,7 @@ impl CapabilitySecurityManager {
         };
         self.audit_logger
             .record(entry)
+            .await
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
 
         if let Some(ref m) = self.metrics {
@@ -373,17 +384,21 @@ impl CapabilitySecurityManager {
 
     /// ตัดสินใจเชิงนโยบายความปลอดภัย (Policy Decision) สำหรับการเข้าถึงที่ร้องขอ
     /// คืนผลลัพธ์เป็น `PolicyDecision` (Allow หรือ Deny) พร้อมบันทึกประวัติลงไฟล์การตรวจสอบ
-    pub fn decision_for(
+    pub async fn decision_for(
         &self,
         token_id: u64,
         secret: &[u8; 32],
         scope: &Scope,
         capability: &str,
     ) -> Result<PolicyDecision> {
-        let tokens = self.tokens_read();
-        let Some(token) = tokens.get(&token_id) else {
+        let token = {
+            let tokens = self.tokens_read();
+            tokens.get(&token_id).cloned()
+        };
+        let Some(token) = token else {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
+                .await
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
             if let Some(ref m) = self.metrics {
                 m.audit_entries_total.inc();
@@ -396,6 +411,7 @@ impl CapabilitySecurityManager {
         if self.is_revoked(token_id) {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
+                .await
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
             if let Some(ref m) = self.metrics {
                 m.audit_entries_total.inc();
@@ -408,6 +424,7 @@ impl CapabilitySecurityManager {
         if !constant_time_eq(&token.secret, secret) {
             self.audit_logger
                 .record(AuditEntry::denied(token_id))
+                .await
                 .map_err(|_| CapabilityError::AuditWriteFailed)?;
             if let Some(ref m) = self.metrics {
                 m.audit_entries_total.inc();
@@ -416,13 +433,14 @@ impl CapabilitySecurityManager {
             return Ok(PolicyDecision::Deny);
         }
 
-        let decision = self.policy_engine.decision(token, scope, capability);
+        let decision = self.policy_engine.decision(&token, scope, capability);
         let entry = match decision {
             PolicyDecision::Allow => AuditEntry::allowed(token.id),
             PolicyDecision::Deny => AuditEntry::denied(token.id),
         };
         self.audit_logger
             .record(entry)
+            .await
             .map_err(|_| CapabilityError::AuditWriteFailed)?;
 
         if let Some(ref m) = self.metrics {
@@ -437,9 +455,8 @@ impl CapabilitySecurityManager {
     }
 
     /// ดึงรายการประวัติการตรวจสอบการเข้าถึงทั้งหมดที่มีบันทึกไว้
-    #[must_use]
-    pub fn audit_entries(&self) -> Vec<AuditEntry> {
-        self.audit_logger.entries()
+    pub async fn audit_entries(&self) -> Vec<AuditEntry> {
+        self.audit_logger.entries().await
     }
 }
 
@@ -457,10 +474,15 @@ mod tests {
     use crate::{CapabilityError, CapabilitySecurityManager};
     use std::time::{Duration, SystemTime};
 
-    #[test]
-    fn issue_and_validate_token() {
-        let log_path = std::env::temp_dir().join("test_audit_1.log");
-        let _ = std::fs::remove_file(&log_path);
+    fn test_log_path(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("test_audit_{name}.log"));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[tokio::test]
+    async fn issue_and_validate_token() {
+        let log_path = test_log_path("1");
         let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
         let token = CapabilityToken::new(
             1,
@@ -472,32 +494,35 @@ mod tests {
 
         manager
             .issue_token(token.clone())
+            .await
             .expect("issue should succeed");
 
         assert!(
             manager
                 .validate(1, &[9u8; 32], &Scope::Process(42), "read")
+                .await
                 .expect("validate should succeed")
         );
         assert!(
             manager
                 .authorize_token(&token, "read")
+                .await
                 .expect("authorize should succeed")
         );
         assert_eq!(
             manager
                 .decision_for(1, &[9u8; 32], &Scope::Process(42), "read")
+                .await
                 .expect("decision should succeed"),
             PolicyDecision::Allow
         );
-        assert_eq!(manager.audit_entries().len(), 4);
+        assert_eq!(manager.audit_entries().await.len(), 4);
         let _ = std::fs::remove_file(&log_path);
     }
 
-    #[test]
-    fn rejects_expired_or_unauthorized_token() {
-        let log_path = std::env::temp_dir().join("test_audit_2.log");
-        let _ = std::fs::remove_file(&log_path);
+    #[tokio::test]
+    async fn rejects_expired_or_unauthorized_token() {
+        let log_path = test_log_path("2");
         let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
         let expired = CapabilityToken {
             id: 2,
@@ -509,32 +534,35 @@ mod tests {
 
         manager
             .issue_token(expired.clone())
+            .await
             .expect("issue should succeed");
 
         assert!(
             !manager
                 .authorize_token(&expired, "write")
+                .await
                 .expect("authorize should succeed")
         );
         assert!(
             !manager
                 .validate(2, &[8u8; 32], &Scope::Thread(7), "write")
+                .await
                 .expect("validate should succeed")
         );
         assert_eq!(
             manager
                 .decision_for(2, &[8u8; 32], &Scope::Thread(7), "write")
+                .await
                 .expect("decision should succeed"),
             PolicyDecision::Deny
         );
-        assert_eq!(manager.audit_entries().len(), 4);
+        assert_eq!(manager.audit_entries().await.len(), 4);
         let _ = std::fs::remove_file(&log_path);
     }
 
-    #[test]
-    fn global_scope_can_authorize_across_scopes() {
-        let log_path = std::env::temp_dir().join("test_audit_3.log");
-        let _ = std::fs::remove_file(&log_path);
+    #[tokio::test]
+    async fn global_scope_can_authorize_across_scopes() {
+        let log_path = test_log_path("3");
         let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
         let token = CapabilityToken::new(
             3,
@@ -546,25 +574,27 @@ mod tests {
 
         manager
             .issue_token(token.clone())
+            .await
             .expect("issue should succeed");
         assert!(
             manager
                 .authorize_token(&token, "execute")
+                .await
                 .expect("authorize should succeed")
         );
         assert_eq!(
             manager
                 .decision_for(3, &[7u8; 32], &Scope::Process(99), "execute")
+                .await
                 .expect("decision should succeed"),
             PolicyDecision::Allow
         );
         let _ = std::fs::remove_file(&log_path);
     }
 
-    #[test]
-    fn deny_capability_not_in_policy_allowlist() {
-        let log_path = std::env::temp_dir().join("test_audit_4.log");
-        let _ = std::fs::remove_file(&log_path);
+    #[tokio::test]
+    async fn deny_capability_not_in_policy_allowlist() {
+        let log_path = test_log_path("4");
         let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
         let token = CapabilityToken::new(
             4,
@@ -576,29 +606,33 @@ mod tests {
 
         manager
             .issue_token(token.clone())
+            .await
             .expect("issue should succeed");
 
         assert!(
             !manager
                 .authorize_token(&token, "write")
+                .await
                 .expect("authorize should succeed")
         );
         assert!(
             !manager
                 .validate(4, &[6u8; 32], &Scope::Global, "write")
+                .await
                 .expect("validate should succeed")
         );
         assert_eq!(
             manager
                 .decision_for(4, &[6u8; 32], &Scope::Global, "write")
+                .await
                 .expect("decision should succeed"),
             PolicyDecision::Deny
         );
         let _ = std::fs::remove_file(&log_path);
     }
 
-    #[test]
-    fn audit_write_failure_is_fail_closed() {
+    #[tokio::test]
+    async fn audit_write_failure_is_fail_closed() {
         let log_path = std::env::temp_dir().join("test_audit_dir");
         let _ = std::fs::remove_dir_all(&log_path);
         std::fs::create_dir_all(&log_path).expect("directory should be created");
@@ -613,17 +647,16 @@ mod tests {
         );
 
         assert_eq!(
-            manager.issue_token(token),
+            manager.issue_token(token).await,
             Err(CapabilityError::AuditWriteFailed)
         );
 
         let _ = std::fs::remove_dir_all(&log_path);
     }
 
-    #[test]
-    fn revoke_token_denies_subsequent_access() {
-        let log_path = std::env::temp_dir().join("test_audit_revoke_1.log");
-        let _ = std::fs::remove_file(&log_path);
+    #[tokio::test]
+    async fn revoke_token_denies_subsequent_access() {
+        let log_path = test_log_path("revoke_1");
         let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
         let token = CapabilityToken::new(
             10,
@@ -635,28 +668,35 @@ mod tests {
 
         manager
             .issue_token(token.clone())
+            .await
             .expect("issue should succeed");
 
         // ตรวจสอบว่าโทเค็นใช้งานได้ก่อนเพิกถอน
         assert!(
             manager
                 .authorize_token(&token, "read")
+                .await
                 .expect("authorize should succeed")
         );
         assert!(
             manager
                 .validate(10, &[10u8; 32], &Scope::Process(1), "read")
+                .await
                 .expect("validate should succeed")
         );
         assert_eq!(
             manager
                 .decision_for(10, &[10u8; 32], &Scope::Process(1), "read")
+                .await
                 .expect("decision should succeed"),
             PolicyDecision::Allow
         );
 
         // เพิกถอนโทเค็น
-        manager.revoke_token(10).expect("revoke should succeed");
+        manager
+            .revoke_token(10)
+            .await
+            .expect("revoke should succeed");
         assert!(manager.is_revoked(10));
         assert_eq!(manager.revoked_count(), 1);
 
@@ -664,16 +704,19 @@ mod tests {
         assert!(
             !manager
                 .authorize_token(&token, "read")
+                .await
                 .expect("authorize should succeed")
         );
         assert!(
             !manager
                 .validate(10, &[10u8; 32], &Scope::Process(1), "read")
+                .await
                 .expect("validate should succeed")
         );
         assert_eq!(
             manager
                 .decision_for(10, &[10u8; 32], &Scope::Process(1), "read")
+                .await
                 .expect("decision should succeed"),
             PolicyDecision::Deny
         );
@@ -681,23 +724,24 @@ mod tests {
         let _ = std::fs::remove_file(&log_path);
     }
 
-    #[test]
-    fn revoke_nonexistent_token_succeeds() {
-        let log_path = std::env::temp_dir().join("test_audit_revoke_2.log");
-        let _ = std::fs::remove_file(&log_path);
+    #[tokio::test]
+    async fn revoke_nonexistent_token_succeeds() {
+        let log_path = test_log_path("revoke_2");
         let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
 
         // เพิกถอนโทเค็นที่ไม่มีอยู่ — ต้องไม่ error
-        manager.revoke_token(999).expect("revoke should succeed");
+        manager
+            .revoke_token(999)
+            .await
+            .expect("revoke should succeed");
         assert!(manager.is_revoked(999));
 
         let _ = std::fs::remove_file(&log_path);
     }
 
-    #[test]
-    fn revoked_token_logs_denied_in_audit() {
-        let log_path = std::env::temp_dir().join("test_audit_revoke_3.log");
-        let _ = std::fs::remove_file(&log_path);
+    #[tokio::test]
+    async fn revoked_token_logs_denied_in_audit() {
+        let log_path = test_log_path("revoke_3");
         let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
         let token = CapabilityToken::new(
             11,
@@ -709,12 +753,16 @@ mod tests {
 
         manager
             .issue_token(token.clone())
+            .await
             .expect("issue should succeed");
-        manager.revoke_token(11).expect("revoke should succeed");
+        manager
+            .revoke_token(11)
+            .await
+            .expect("revoke should succeed");
 
         // authorize หลังเพิกถอน — ต้องได้ denied audit entry
-        let _ = manager.authorize_token(&token, "read");
-        let entries = manager.audit_entries();
+        let _ = manager.authorize_token(&token, "read").await;
+        let entries = manager.audit_entries().await;
         let denied_entries: Vec<_> = entries
             .iter()
             .filter(|e| e.action == "denied" && e.token_id == 11)
@@ -737,11 +785,9 @@ mod tests {
         let _ = std::fs::remove_file(&log_path);
     }
 
-    #[test]
-    fn test_issue_token_rate_limit_per_scope() {
-        let log_path = std::env::temp_dir().join("test_audit_rate_limit.log");
-        let _ = std::fs::remove_file(&log_path);
-
+    #[tokio::test]
+    async fn test_issue_token_rate_limit_per_scope() {
+        let log_path = test_log_path("rate_limit");
         // Rate limit 2 tokens per second
         let manager = CapabilitySecurityManager::new_with_log_path_and_rate(log_path.clone(), 2);
 
@@ -754,6 +800,7 @@ mod tests {
                 Duration::from_secs(60),
                 [1; 32],
             ))
+            .await
             .unwrap();
         manager
             .issue_token(CapabilityToken::new(
@@ -763,17 +810,20 @@ mod tests {
                 Duration::from_secs(60),
                 [2; 32],
             ))
+            .await
             .unwrap();
 
         // The 3rd token in Scope A should fail due to rate limiting
         assert_eq!(
-            manager.issue_token(CapabilityToken::new(
-                3,
-                Scope::Process(100),
-                vec![],
-                Duration::from_secs(60),
-                [3; 32]
-            )),
+            manager
+                .issue_token(CapabilityToken::new(
+                    3,
+                    Scope::Process(100),
+                    vec![],
+                    Duration::from_secs(60),
+                    [3; 32]
+                ))
+                .await,
             Err(CapabilityError::RateLimited)
         );
 
@@ -786,6 +836,7 @@ mod tests {
                 Duration::from_secs(60),
                 [4; 32],
             ))
+            .await
             .unwrap();
 
         let _ = std::fs::remove_file(&log_path);

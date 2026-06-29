@@ -116,7 +116,7 @@ async fn main() -> Result<()> {
             }
 
             let logger = capability_security::audit::AuditLogger::new(log_path);
-            let entries = logger.entries();
+            let entries = logger.entries().await;
             println!("Validating {} audit entries...", entries.len());
 
             if entries.is_empty() {

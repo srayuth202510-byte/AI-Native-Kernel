@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
+use tokio::time::Duration;
+
+const AUDIT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
 /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
@@ -21,6 +23,10 @@ pub enum AuditError {
     /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     Write(#[source] std::io::Error),
+    #[error("audit I/O timed out")]
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
+    Timeout,
     #[error("audit log validation failed")]
     /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
     /// เอกสารกำกับโค้ดส่วนนี้ (เพิ่มอัตโนมัติ)
@@ -153,14 +159,8 @@ impl AuditEntry {
 pub struct AuditLogger {
     /// พาธสำหรับจัดเก็บไฟล์บันทึกประวัติ (Log File)
     log_path: PathBuf,
-    /// แฮชล่าสุดและ File handle ที่เปิดค้างไว้เพื่อประสิทธิภาพ
-    state: std::sync::Arc<parking_lot::Mutex<AuditState>>,
-}
-
-#[derive(Debug)]
-struct AuditState {
-    last_hash: Option<String>,
-    file: Option<std::fs::File>,
+    /// แฮชล่าสุดที่บันทึกไว้ในหน่วยความจำ (ใช้สำหรับ Hash Chaining)
+    last_hash: std::sync::Arc<parking_lot::Mutex<Option<String>>>,
 }
 
 impl AuditLogger {
@@ -169,38 +169,36 @@ impl AuditLogger {
     pub fn new(log_path: PathBuf) -> Self {
         Self {
             log_path,
-            state: std::sync::Arc::new(parking_lot::Mutex::new(AuditState {
-                last_hash: None,
-                file: None,
-            })),
+            last_hash: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
-    fn get_last_hash_from_file(&self) -> String {
-        if let Ok(file) = File::open(&self.log_path) {
-            let reader = BufReader::new(file);
-            let mut last_h = String::new();
-            for line_str in reader.lines().map_while(Result::ok) {
-                if let Ok(entry) = serde_json::from_str::<AuditEntry>(&line_str) {
-                    if let Some(h) = entry.hash {
-                        last_h = h;
-                    }
-                }
-            }
-            last_h
-        } else {
-            String::new()
-        }
+    async fn get_last_hash_from_file(&self) -> String {
+        let path = self.log_path.clone();
+        let content =
+            match tokio::time::timeout(AUDIT_IO_TIMEOUT, tokio::fs::read_to_string(&path)).await {
+                Ok(Ok(c)) => c,
+                _ => String::new(),
+            };
+        content
+            .lines()
+            .filter_map(|line| serde_json::from_str::<AuditEntry>(line).ok())
+            .filter_map(|e| e.hash)
+            .next_back()
+            .unwrap_or_default()
     }
 
     /// บันทึกรายการตรวจสอบลงในไฟล์ล็อก พร้อมทำ Hash Chaining กับประวัติก่อนหน้า
-    pub fn record(&self, mut entry: AuditEntry) -> Result<(), AuditError> {
-        let mut state = self.state.lock();
-        let prev_hash = match &state.last_hash {
-            Some(h) => h.clone(),
+    pub async fn record(&self, mut entry: AuditEntry) -> Result<(), AuditError> {
+        let prev_hash = {
+            let guard = self.last_hash.lock();
+            guard.as_ref().cloned()
+        };
+        let prev_hash = match prev_hash {
+            Some(h) => h,
             None => {
-                let h = self.get_last_hash_from_file();
-                state.last_hash = Some(h.clone());
+                let h = self.get_last_hash_from_file().await;
+                *self.last_hash.lock() = Some(h.clone());
                 h
             }
         };
@@ -210,43 +208,46 @@ impl AuditLogger {
 
         let json_str = serde_json::to_string(&entry).map_err(AuditError::Serialize)?;
 
-        // ใช้ File handle ที่เปิดค้างไว้เพื่อหลีกเลี่ยง overhead ในการเปิดปิดไฟล์ทุกครั้ง
-        if state.file.is_none() {
-            let f = OpenOptions::new()
+        let path = self.log_path.clone();
+        tokio::time::timeout(AUDIT_IO_TIMEOUT, async {
+            let mut file = tokio::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&self.log_path)
+                .open(&path)
+                .await
                 .map_err(AuditError::Open)?;
-            state.file = Some(f);
-        }
+            file.write_all(json_str.as_bytes())
+                .await
+                .map_err(AuditError::Write)?;
+            file.write_all(b"\n").await.map_err(AuditError::Write)?;
+            file.flush().await.map_err(AuditError::Write)?;
+            Ok::<_, AuditError>(())
+        })
+        .await
+        .map_err(|_| AuditError::Timeout)??;
 
-        if let Some(ref mut file) = state.file {
-            writeln!(file, "{}", json_str).map_err(AuditError::Write)?;
-        }
-
-        state.last_hash = Some(hash);
+        *self.last_hash.lock() = Some(hash);
         Ok(())
     }
 
     /// ดึงประวัติรายการการตรวจสอบทั้งหมดจากไฟล์ล็อก
-    #[must_use]
-    pub fn entries(&self) -> Vec<AuditEntry> {
-        let mut entries = Vec::new();
-        if let Ok(file) = File::open(&self.log_path) {
-            let reader = BufReader::new(file);
-            for line_str in reader.lines().map_while(Result::ok) {
-                if let Ok(entry) = serde_json::from_str::<AuditEntry>(&line_str) {
-                    entries.push(entry);
-                }
-            }
-        }
-        entries
+    pub async fn entries(&self) -> Vec<AuditEntry> {
+        let path = self.log_path.clone();
+        let content =
+            match tokio::time::timeout(AUDIT_IO_TIMEOUT, tokio::fs::read_to_string(&path)).await {
+                Ok(Ok(c)) => c,
+                _ => String::new(),
+            };
+        content
+            .lines()
+            .filter_map(|line| serde_json::from_str::<AuditEntry>(line).ok())
+            .collect()
     }
 
     /// ตรวจสอบความถูกต้องของสายโซ่แฮชทั้งหมด (Hash Chain Validation)
     /// คืนค่า Ok(true) หากข้อมูลไม่ถูกดัดแปลง หรือ Ok(false) หากประวัติถูกแก้ไข/ถูกแทรกแซง
-    pub fn validate_log(&self) -> Result<bool, AuditError> {
-        let entries = self.entries();
+    pub async fn validate_log(&self) -> Result<bool, AuditError> {
+        let entries = self.entries().await;
         if entries.is_empty() {
             return Ok(true);
         }
@@ -277,6 +278,7 @@ impl Default for AuditLogger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::fs;
 
     fn test_log_path(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("ank-audit-{name}.log"));
@@ -284,42 +286,45 @@ mod tests {
         path
     }
 
-    #[test]
-    fn record_and_reload_entries_round_trip() {
+    #[tokio::test]
+    async fn record_and_reload_entries_round_trip() {
         let path = test_log_path("round-trip");
         let logger = AuditLogger::new(path.clone());
 
         logger
             .record(AuditEntry::issued(1))
+            .await
             .expect("first record should succeed");
         logger
             .record(AuditEntry::allowed(1))
+            .await
             .expect("second record should succeed");
 
-        let entries = logger.entries();
+        let entries = logger.entries().await;
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].action, "issued");
         assert_eq!(entries[1].action, "allowed");
 
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(&path);
     }
 
-    #[test]
-    fn entries_skip_invalid_json_lines() {
+    #[tokio::test]
+    async fn entries_skip_invalid_json_lines() {
         let path = test_log_path("skip-invalid");
-        std::fs::write(
+        fs::write(
             &path,
             "{\"action\":\"issued\",\"token_id\":1,\"timestamp\":1}\nnot-json\n",
         )
+        .await
         .expect("fixture log should be written");
 
         let logger = AuditLogger::new(path.clone());
-        let entries = logger.entries();
+        let entries = logger.entries().await;
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].token_id, 1);
 
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -330,32 +335,35 @@ mod tests {
         assert_eq!(AuditEntry::revoked(1).action, "revoked");
     }
 
-    #[test]
-    fn test_audit_hash_chain_validation() {
+    #[tokio::test]
+    async fn test_audit_hash_chain_validation() {
         let path = test_log_path("validation");
         let logger = AuditLogger::new(path.clone());
 
-        logger.record(AuditEntry::issued(10)).unwrap();
-        logger.record(AuditEntry::allowed(20)).unwrap();
-        logger.record(AuditEntry::denied(30)).unwrap();
+        logger.record(AuditEntry::issued(10)).await.unwrap();
+        logger.record(AuditEntry::allowed(20)).await.unwrap();
+        logger.record(AuditEntry::denied(30)).await.unwrap();
 
         // 1. ตรวจสอบว่าแฮชเชนปกติผ่านฉลุย
-        assert!(logger.validate_log().unwrap(), "normal log should be valid");
+        assert!(
+            logger.validate_log().await.unwrap(),
+            "normal log should be valid"
+        );
 
         // 2. จำลองการแก้ไขไฟล์ (tampering) ในแถวที่สอง
-        let lines = std::fs::read_to_string(&path).unwrap();
-        let mut lines_vec: Vec<String> = lines.lines().map(|s| s.to_string()).collect();
+        let content = fs::read_to_string(&path).await.unwrap();
+        let mut lines_vec: Vec<String> = content.lines().map(|s| s.to_string()).collect();
         // แก้ไข token_id ของบรรทัดที่สองจาก 20 เป็น 99
         lines_vec[1] = lines_vec[1].replace("\"token_id\":20", "\"token_id\":99");
         let new_content = lines_vec.join("\n") + "\n";
-        std::fs::write(&path, new_content).unwrap();
+        fs::write(&path, new_content).await.unwrap();
 
         // 3. ตรวจสอบว่า validation จับได้ว่าโดนดัดแปลงข้อมูล
         assert!(
-            !logger.validate_log().unwrap(),
+            !logger.validate_log().await.unwrap(),
             "tampered log should fail validation"
         );
 
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(&path);
     }
 }

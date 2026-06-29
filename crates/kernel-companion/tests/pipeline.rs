@@ -118,10 +118,10 @@ async fn int_capability_token_lifecycle() {
     );
 
     // Issue in security manager
-    cap_mgr.issue_token(token.clone()).unwrap();
+    cap_mgr.issue_token(token.clone()).await.unwrap();
 
     // Authorize — should pass
-    assert!(cap_mgr.authorize_token(&token, "read").unwrap());
+    assert!(cap_mgr.authorize_token(&token, "read").await.unwrap());
 
     // Grant to agent via scheduler
     scheduler
@@ -134,11 +134,11 @@ async fn int_capability_token_lifecycle() {
     assert_eq!(agent.capabilities[0].id, 200);
 
     // Deny for unauthorized action
-    assert!(!cap_mgr.authorize_token(&token, "write").unwrap());
+    assert!(!cap_mgr.authorize_token(&token, "write").await.unwrap());
 
     // Revoke
-    cap_mgr.revoke_token(token.id).unwrap();
-    assert!(!cap_mgr.authorize_token(&token, "read").unwrap());
+    cap_mgr.revoke_token(token.id).await.unwrap();
+    assert!(!cap_mgr.authorize_token(&token, "read").await.unwrap());
 }
 
 #[tokio::test]
@@ -156,16 +156,18 @@ async fn int_lsm_fail_closed_updates_pid_allowlist_from_token_validation() {
     );
 
     let cap_mgr = companion.capability_security();
-    cap_mgr.issue_token(token.clone()).unwrap();
+    cap_mgr.issue_token(token.clone()).await.unwrap();
 
     let allowed = companion
         .authorize_process_token(pid, token.id, &[0x55; 32], "read")
+        .await
         .expect("authorization should succeed");
     assert!(allowed);
     assert!(companion.is_pid_authorized(pid));
 
     let denied = companion
         .authorize_process_token(pid, token.id, &[0x99; 32], "read")
+        .await
         .expect("deny path should not error");
     assert!(!denied);
     assert!(!companion.is_pid_authorized(pid));
@@ -572,21 +574,21 @@ async fn int_security_audit_trail() {
     );
 
     // Issue creates an "issued" audit entry via CapabilitySecurityManager
-    cap_mgr.issue_token(token.clone()).unwrap();
+    cap_mgr.issue_token(token.clone()).await.unwrap();
 
     // Authorize — creates an "allowed" audit entry
-    let authorized = cap_mgr.authorize_token(&token, "read").unwrap();
+    let authorized = cap_mgr.authorize_token(&token, "read").await.unwrap();
     assert!(authorized);
 
     // Deny for unauthorized action — creates a "denied" audit entry
-    let denied = cap_mgr.authorize_token(&token, "write").unwrap();
+    let denied = cap_mgr.authorize_token(&token, "write").await.unwrap();
     assert!(!denied);
 
     // Revoke creates a "revoked" audit entry
-    cap_mgr.revoke_token(token.id).unwrap();
+    cap_mgr.revoke_token(token.id).await.unwrap();
 
     // After revocation, authorization is denied
-    let after_revoke = cap_mgr.authorize_token(&token, "read").unwrap();
+    let after_revoke = cap_mgr.authorize_token(&token, "read").await.unwrap();
     assert!(!after_revoke);
 }
 
@@ -823,18 +825,20 @@ async fn int_lsm_token_revocation_and_expiration_propagation() {
     );
 
     let cap_mgr = companion.capability_security();
-    cap_mgr.issue_token(token_expire.clone()).unwrap();
-    cap_mgr.issue_token(token_revoke.clone()).unwrap();
+    cap_mgr.issue_token(token_expire.clone()).await.unwrap();
+    cap_mgr.issue_token(token_revoke.clone()).await.unwrap();
 
     // 1. Authorize both
     assert!(
         companion
             .authorize_process_token(pid_expire, token_expire.id, &[0x11; 32], "read")
+            .await
             .unwrap()
     );
     assert!(
         companion
             .authorize_process_token(pid_revoke, token_revoke.id, &[0x22; 32], "read")
+            .await
             .unwrap()
     );
 
@@ -842,7 +846,7 @@ async fn int_lsm_token_revocation_and_expiration_propagation() {
     assert!(companion.is_pid_authorized(pid_revoke));
 
     // 2. Revoke the second token - should deny pid_revoke immediately
-    cap_mgr.revoke_token(token_revoke.id).unwrap();
+    cap_mgr.revoke_token(token_revoke.id).await.unwrap();
     assert!(!companion.is_pid_authorized(pid_revoke));
 
     // 3. Wait for token_expire to expire and periodic check to run
@@ -903,6 +907,7 @@ async fn int_polymorphic_agent_dna_and_lsm_mutation() {
     // Validate using UDS authorization flow
     let allowed = companion
         .authorize_process_token(pid1, mutated_token1.id, &mutated_token1.secret, "read")
+        .await
         .unwrap();
     assert!(allowed);
 

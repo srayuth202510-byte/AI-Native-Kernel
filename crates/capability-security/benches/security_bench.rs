@@ -2,8 +2,10 @@
 use capability_security::{CapabilitySecurityManager, CapabilityToken, Scope};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
+use tokio::runtime::Runtime;
 
 fn bench_issue_token(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
     let manager = CapabilitySecurityManager::with_rate_limit(0);
     let token = CapabilityToken::new(
         1,
@@ -14,13 +16,14 @@ fn bench_issue_token(c: &mut Criterion) {
     );
 
     c.bench_function("issue_token", |b| {
-        b.iter(|| {
-            manager.issue_token(black_box(token.clone())).unwrap();
-        });
+        b.to_async(&rt).iter(|| async {
+            manager.issue_token(black_box(token.clone())).await.unwrap();
+        })
     });
 }
 
 fn bench_authorize_token_allow(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
     let manager = CapabilitySecurityManager::new();
     let token = CapabilityToken::new(
         2,
@@ -29,17 +32,21 @@ fn bench_authorize_token_allow(c: &mut Criterion) {
         Duration::from_secs(3600),
         [0xABu8; 32],
     );
-    manager.issue_token(token.clone()).unwrap();
+    rt.block_on(manager.issue_token(token.clone())).unwrap();
 
     c.bench_function("authorize_token_allow", |b| {
-        b.iter(|| {
-            let result = manager.authorize_token(black_box(&token), "read").unwrap();
+        b.to_async(&rt).iter(|| async {
+            let result = manager
+                .authorize_token(black_box(&token), "read")
+                .await
+                .unwrap();
             black_box(result)
-        });
+        })
     });
 }
 
 fn bench_authorize_token_deny(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
     let manager = CapabilitySecurityManager::new();
     let token = CapabilityToken::new(
         3,
@@ -48,17 +55,21 @@ fn bench_authorize_token_deny(c: &mut Criterion) {
         Duration::from_secs(3600),
         [0xABu8; 32],
     );
-    manager.issue_token(token.clone()).unwrap();
+    rt.block_on(manager.issue_token(token.clone())).unwrap();
 
     c.bench_function("authorize_token_deny", |b| {
-        b.iter(|| {
-            let result = manager.authorize_token(black_box(&token), "write").unwrap();
+        b.to_async(&rt).iter(|| async {
+            let result = manager
+                .authorize_token(black_box(&token), "write")
+                .await
+                .unwrap();
             black_box(result)
-        });
+        })
     });
 }
 
 fn bench_validate_token(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
     let manager = CapabilitySecurityManager::new();
     let token = CapabilityToken::new(
         4,
@@ -67,19 +78,21 @@ fn bench_validate_token(c: &mut Criterion) {
         Duration::from_secs(3600),
         [0x42u8; 32],
     );
-    manager.issue_token(token).unwrap();
+    rt.block_on(manager.issue_token(token)).unwrap();
 
     c.bench_function("validate_token", |b| {
-        b.iter(|| {
+        b.to_async(&rt).iter(|| async {
             let result = manager
                 .validate(4, &[0x42u8; 32], &Scope::Global, "read")
+                .await
                 .unwrap();
             black_box(result)
-        });
+        })
     });
 }
 
 fn bench_decision_for(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
     let manager = CapabilitySecurityManager::new();
     let token = CapabilityToken::new(
         5,
@@ -88,15 +101,16 @@ fn bench_decision_for(c: &mut Criterion) {
         Duration::from_secs(3600),
         [0x99u8; 32],
     );
-    manager.issue_token(token).unwrap();
+    rt.block_on(manager.issue_token(token)).unwrap();
 
     c.bench_function("decision_for_allow", |b| {
-        b.iter(|| {
+        b.to_async(&rt).iter(|| async {
             let result = manager
                 .decision_for(5, &[0x99u8; 32], &Scope::Process(99), "read")
+                .await
                 .unwrap();
             black_box(result)
-        });
+        })
     });
 }
 

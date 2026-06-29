@@ -747,7 +747,6 @@ impl AgentScheduler {
             return Err(SchedulerError::CapabilityDenied);
         }
 
-        let capability_security = Arc::clone(&self.capability_security);
         let mut token_to_issue = token.clone();
 
         // PAD (Polymorphic Agent DNA): ผสม instance_salt เข้ากับ secret key
@@ -756,23 +755,21 @@ impl AgentScheduler {
         }
 
         let token_for_agent = token_to_issue.clone();
-        let grant_result = task::spawn_blocking(move || {
-            for capability in &token_to_issue.capabilities {
-                let allowed = capability_security
-                    .authorize_token(&token_to_issue, capability)
-                    .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
-                if !allowed {
-                    return Err(SchedulerError::CapabilityDenied);
-                }
+        for capability in &token_to_issue.capabilities {
+            let allowed = self
+                .capability_security
+                .authorize_token(&token_to_issue, capability)
+                .await
+                .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
+            if !allowed {
+                return Err(SchedulerError::CapabilityDenied);
             }
+        }
 
-            capability_security
-                .issue_token(token_to_issue)
-                .map_err(|_| SchedulerError::CapabilitySecurityFailed)
-        })
-        .await
-        .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
-        grant_result?;
+        self.capability_security
+            .issue_token(token_to_issue)
+            .await
+            .map_err(|_| SchedulerError::CapabilitySecurityFailed)?;
 
         let mut agents = self.agents.write().await;
         let agent = agents

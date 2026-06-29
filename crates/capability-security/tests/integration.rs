@@ -15,8 +15,8 @@ fn manager(test_name: &str) -> (CapabilitySecurityManager, String) {
     )
 }
 
-#[test]
-fn full_token_lifecycle() {
+#[tokio::test]
+async fn full_token_lifecycle() {
     let (manager, log_dir) = manager("full_token_lifecycle");
     let token = CapabilityToken::new(
         1,
@@ -26,27 +26,32 @@ fn full_token_lifecycle() {
         [0x01u8; 32],
     );
 
-    manager.issue_token(token).expect("issue should succeed");
+    manager
+        .issue_token(token)
+        .await
+        .expect("issue should succeed");
 
     assert!(
         manager
             .validate(1, &[0x01u8; 32], &Scope::Global, "read")
+            .await
             .expect("validate should succeed")
     );
 
     assert_eq!(
         manager
             .decision_for(1, &[0x01u8; 32], &Scope::Global, "read")
+            .await
             .expect("decision should succeed"),
         PolicyDecision::Allow
     );
 
-    assert_eq!(manager.audit_entries().len(), 3);
+    assert_eq!(manager.audit_entries().await.len(), 3);
     let _ = std::fs::remove_dir_all(&log_dir);
 }
 
-#[test]
-fn multiple_tokens_isolated() {
+#[tokio::test]
+async fn multiple_tokens_isolated() {
     let (manager, log_dir) = manager("multi_tokens");
 
     for id in 0u64..10 {
@@ -57,28 +62,33 @@ fn multiple_tokens_isolated() {
             Duration::from_secs(3600),
             [id as u8; 32],
         );
-        manager.issue_token(token).expect("issue should succeed");
+        manager
+            .issue_token(token)
+            .await
+            .expect("issue should succeed");
     }
 
     for id in 0u64..10 {
         assert!(
             manager
                 .validate(id, &[id as u8; 32], &Scope::Process(id as u32), "execute")
+                .await
                 .expect("validate should succeed")
         );
         assert!(
             !manager
                 .validate(id, &[0xFFu8; 32], &Scope::Process(id as u32), "execute")
+                .await
                 .expect("wrong secret should fail")
         );
     }
 
-    assert_eq!(manager.audit_entries().len(), 30);
+    assert_eq!(manager.audit_entries().await.len(), 30);
     let _ = std::fs::remove_dir_all(&log_dir);
 }
 
-#[test]
-fn reject_expired_token() {
+#[tokio::test]
+async fn reject_expired_token() {
     let (manager, log_dir) = manager("reject_expired");
     let expired = CapabilityToken {
         id: 99,
@@ -88,19 +98,23 @@ fn reject_expired_token() {
         secret: [0x99u8; 32],
     };
 
-    manager.issue_token(expired).expect("issue should succeed");
+    manager
+        .issue_token(expired)
+        .await
+        .expect("issue should succeed");
 
     assert!(
         !manager
             .validate(99, &[0x99u8; 32], &Scope::Global, "read")
+            .await
             .expect("validate should succeed")
     );
 
     let _ = std::fs::remove_dir_all(&log_dir);
 }
 
-#[test]
-fn revoke_emits_audit_and_denies_future_validation() {
+#[tokio::test]
+async fn revoke_emits_audit_and_denies_future_validation() {
     let (manager, log_dir) = manager("revoke_audit_denial");
     let token = CapabilityToken::new(
         77,
@@ -112,25 +126,30 @@ fn revoke_emits_audit_and_denies_future_validation() {
 
     manager
         .issue_token(token.clone())
+        .await
         .expect("issue should succeed");
     manager
         .revoke_token(token.id)
+        .await
         .expect("revoke should succeed");
 
     assert!(
         !manager
             .validate(token.id, &[0x77u8; 32], &Scope::Process(77), "read")
+            .await
             .expect("revoked token should deny validation")
     );
     assert_eq!(
         manager
             .decision_for(token.id, &[0x77u8; 32], &Scope::Process(77), "read")
+            .await
             .expect("decision should succeed"),
         PolicyDecision::Deny
     );
 
     let actions: Vec<String> = manager
         .audit_entries()
+        .await
         .into_iter()
         .map(|entry| entry.action)
         .collect();

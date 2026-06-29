@@ -472,7 +472,11 @@ impl KernelCompanion {
                                     ),
                                 };
                                 let audit_logger = audit_logger.clone();
-                                let _ = task::spawn_blocking(move || audit_logger.record(entry)).await;
+                                let _ = task::spawn_blocking(move || {
+                                    tokio::runtime::Handle::current()
+                                        .block_on(audit_logger.record(entry))
+                                })
+                                .await;
 
                                 let payload = serde_json::json!({
                                     "pid": event.pid,
@@ -1015,19 +1019,17 @@ impl KernelCompanion {
 
     /// ฟังก์ชัน `authorize_process_token` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     /// ฟังก์ชัน `authorize_process_token` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    pub fn authorize_process_token(
+    pub async fn authorize_process_token(
         &mut self,
         pid: u32,
         token_id: u64,
         secret: &[u8; 32],
         capability: &str,
     ) -> anyhow::Result<bool> {
-        let allowed = self.capability_security.validate(
-            token_id,
-            secret,
-            &Scope::Process(pid),
-            capability,
-        )?;
+        let allowed = self
+            .capability_security
+            .validate(token_id, secret, &Scope::Process(pid), capability)
+            .await?;
 
         if allowed {
             if let Some(salt) = self.agent_scheduler.get_instance_salt_by_token_id(token_id) {
