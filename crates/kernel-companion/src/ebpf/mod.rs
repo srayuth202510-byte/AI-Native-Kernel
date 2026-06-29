@@ -210,7 +210,7 @@ impl SyscallTracer {
         // ── Pre-populate cache with current policy decisions ──
         if let Some(ref mut cache) = cache {
             for (&nr, name) in &self.syscall_table {
-                let decision = self.policy.decision_for_syscall(name);
+                let decision = self.policy.decision_for_syscall(None, name);
                 let pd = match decision {
                     LsmDecision::Allow => PolicyDecision::Allow,
                     LsmDecision::Deny => PolicyDecision::Deny,
@@ -268,7 +268,7 @@ impl SyscallTracer {
                                 metrics.record_cache_invalidation("full");
                                 // Re-populate with current policy
                                 for (&nr, name) in &self.syscall_table {
-                                    let decision = self.policy.decision_for_syscall(name);
+                                    let decision = self.policy.decision_for_syscall(None, name);
                                     let pd = match decision {
                                         LsmDecision::Allow => PolicyDecision::Allow,
                                         LsmDecision::Deny => PolicyDecision::Deny,
@@ -282,7 +282,7 @@ impl SyscallTracer {
                                 metrics.record_cache_invalidation("syscall");
                                 // Re-evaluate this specific syscall
                                 if let Some(name) = self.syscall_table.get(&nr) {
-                                    let decision = self.policy.decision_for_syscall(name);
+                                    let decision = self.policy.decision_for_syscall(None, name);
                                     let pd = match decision {
                                         LsmDecision::Allow => PolicyDecision::Allow,
                                         LsmDecision::Deny => PolicyDecision::Deny,
@@ -380,7 +380,7 @@ impl SyscallTracer {
             .unwrap_or("unknown");
         let metrics = kernel_metrics();
 
-        let lsm_decision = self.policy.decision_for_syscall(syscall_name);
+        let lsm_decision = self.policy.decision_for_syscall(Some(pid), syscall_name);
         let decision = match lsm_decision {
             LsmDecision::Allow => {
                 metrics.record_syscall_event("allow", syscall_name);

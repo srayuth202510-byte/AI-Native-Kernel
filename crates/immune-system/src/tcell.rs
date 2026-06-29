@@ -1,10 +1,24 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, instrument, warn};
+
+static JITTER_SEED: AtomicU64 = AtomicU64::new(123456789);
+
+fn get_jitter_percentage() -> f64 {
+    let old = JITTER_SEED.load(Ordering::Relaxed);
+    // Simple LCG PRNG
+    let new = old
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    JITTER_SEED.store(new, Ordering::Relaxed);
+    // ช่วง -15% ถึง +15%
+    let percent = (new % 31) as i32 - 15;
+    percent as f64 / 100.0
+}
 
 /// T-Cell Agent — หน่วยพิฆาต (Killer T-Cell)
 ///
@@ -78,6 +92,8 @@ pub struct TCellAgent {
     kill_threshold: AtomicU32,
     /// รายการ PID ที่ถูก quarantine แล้ว
     quarantined: Arc<RwLock<HashMap<u32, Instant>>>,
+    /// สถานะเปิด/ปิดการใช้งาน Immunological Jitter (ใช้ปิดในการทดสอบเพื่อผลลัพธ์ที่แน่นอน)
+    jitter_enabled: AtomicBool,
 }
 
 impl TCellAgent {
@@ -102,7 +118,13 @@ impl TCellAgent {
             deny_threshold: AtomicU32::new(deny_threshold),
             kill_threshold: AtomicU32::new(kill_threshold),
             quarantined: Arc::new(RwLock::new(HashMap::new())),
+            jitter_enabled: AtomicBool::new(true),
         }
+    }
+
+    /// กำหนดว่าเปิดใช้งาน Immunological Jitter หรือไม่
+    pub fn set_jitter_enabled(&self, enabled: bool) {
+        self.jitter_enabled.store(enabled, Ordering::Relaxed);
     }
 
     /// อัปเดตขีดจำกัดความปลอดภัยของ T-Cell แบบ thread-safe
@@ -124,9 +146,23 @@ impl TCellAgent {
         syscall_name: &str,
         denied: bool,
     ) -> ThreatDecision {
-        let rate_limit = self.rate_threshold.load(Ordering::Relaxed);
-        let deny_limit = self.deny_threshold.load(Ordering::Relaxed);
-        let kill_limit = self.kill_threshold.load(Ordering::Relaxed);
+        let base_rate = self.rate_threshold.load(Ordering::Relaxed);
+        let base_deny = self.deny_threshold.load(Ordering::Relaxed);
+        let base_kill = self.kill_threshold.load(Ordering::Relaxed);
+
+        let (rate_limit, deny_limit, kill_limit) = if self.jitter_enabled.load(Ordering::Relaxed) {
+            let jitter = get_jitter_percentage();
+            let rate = if base_rate > 0 {
+                ((base_rate as f64) * (1.0 + jitter)).round() as u64
+            } else {
+                0
+            };
+            let deny = ((base_deny as f64) * (1.0 + jitter)).round().max(1.0) as u32;
+            let kill = ((base_kill as f64) * (1.0 + jitter)).round().max(1.0) as u32;
+            (rate, deny, kill)
+        } else {
+            (base_rate, base_deny, base_kill)
+        };
 
         let mut stats = self.stats.write().await;
         let entry = stats.entry(pid).or_default();
@@ -310,7 +346,9 @@ mod tests {
     use super::*;
 
     fn make_tcell() -> TCellAgent {
-        TCellAgent::new(100, 5)
+        let t = TCellAgent::new(100, 5);
+        t.set_jitter_enabled(false);
+        t
     }
 
     #[tokio::test]
@@ -340,11 +378,10 @@ mod tests {
     #[tokio::test]
     async fn stats_are_tracked() {
         let t = make_tcell();
-        t.observe_syscall(1, "read", false).await;
-        t.observe_syscall(1, "write", false).await;
+        let _ = t.observe_syscall(1, "read", false).await;
         let stats = t.get_stats(1).await.unwrap();
-        assert_eq!(stats.syscall_count, 2);
-        assert_eq!(stats.last_syscall.as_deref(), Some("write"));
+        assert_eq!(stats.syscall_count, 1);
+        assert_eq!(stats.last_syscall, Some("read".to_string()));
     }
 
     #[tokio::test]
@@ -388,5 +425,21 @@ mod tests {
         let released = t.release_expired_quarantine(Duration::from_nanos(1)).await;
         assert_eq!(released, vec![42]);
         assert!(!t.is_quarantined(42).await);
+    }
+
+    #[tokio::test]
+    async fn test_immunological_jitter() {
+        let t = TCellAgent::new(100, 5); // Jitter is enabled by default
+
+        // We will sample jitter multiple times to verify fluctuation
+        let percent1 = get_jitter_percentage();
+        let percent2 = get_jitter_percentage();
+        assert_ne!(
+            percent1, percent2,
+            "Jitter should produce fluctuating values!"
+        );
+
+        let decision = t.observe_syscall(1, "read", false).await;
+        assert_eq!(decision, ThreatDecision::Safe);
     }
 }

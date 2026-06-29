@@ -729,6 +729,12 @@ impl KernelCompanion {
         Arc::clone(&self.capability_security)
     }
 
+    /// ดึงการอ้างอิงไปยัง LSM Policy Engine
+    #[must_use]
+    pub fn lsm_engine(&self) -> Arc<LsmPolicyEngine> {
+        Arc::clone(&self.lsm_engine)
+    }
+
     /// ฟังก์ชัน `authorize_process_token` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     /// ฟังก์ชัน `authorize_process_token` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn authorize_process_token(
@@ -744,6 +750,14 @@ impl KernelCompanion {
             &Scope::Process(pid),
             capability,
         )?;
+
+        if allowed {
+            if let Some(salt) = self.agent_scheduler.get_instance_salt_by_token_id(token_id) {
+                let active_profile = self.lsm_engine.active_profile_name();
+                self.lsm_engine
+                    .register_polymorphic_pid(pid, &active_profile, &salt);
+            }
+        }
 
         if let Some(attachment) = self.attachment.lock().as_mut() {
             if allowed {

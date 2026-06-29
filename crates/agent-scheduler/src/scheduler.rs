@@ -406,6 +406,19 @@ impl AgentScheduler {
             .ok_or(SchedulerError::AgentNotFound)
     }
 
+    /// ดึงค่า instance_salt ของ Agent ที่ได้รับ Token ID นี้ (ใช้แบบ synchronous)
+    #[must_use]
+    pub fn get_instance_salt_by_token_id(&self, token_id: u64) -> Option<[u8; 16]> {
+        if let Ok(agents) = self.agents.try_read() {
+            for agent in agents.values() {
+                if agent.capabilities.iter().any(|t| t.id == token_id) {
+                    return Some(agent.instance_salt);
+                }
+            }
+        }
+        None
+    }
+
     /// ดึงประวัติข้อมูลควบคุมของ Agent ทั้งหมดที่กำลังทำงานอยู่ในปัจจุบัน
     pub async fn get_running_agents(&self) -> Vec<AgentControlBlock> {
         let agents = self.agents.read().await;
@@ -466,12 +479,25 @@ impl AgentScheduler {
             }
         }
 
+        let agent_salt = {
+            let agents = self.agents.read().await;
+            let agent = agents.get(&agent_id).ok_or(SchedulerError::AgentNotFound)?;
+            agent.instance_salt
+        };
+
         if token.capabilities.is_empty() {
             return Err(SchedulerError::CapabilityDenied);
         }
 
         let capability_security = Arc::clone(&self.capability_security);
-        let token_to_issue = token.clone();
+        let mut token_to_issue = token.clone();
+
+        // PAD (Polymorphic Agent DNA): ผสม instance_salt เข้ากับ secret key
+        for (i, salt_byte) in agent_salt.iter().enumerate().take(16) {
+            token_to_issue.secret[i] ^= *salt_byte;
+        }
+
+        let token_for_agent = token_to_issue.clone();
         let grant_result = task::spawn_blocking(move || {
             for capability in &token_to_issue.capabilities {
                 let allowed = capability_security
@@ -494,10 +520,11 @@ impl AgentScheduler {
         let agent = agents
             .get_mut(&agent_id)
             .ok_or(SchedulerError::AgentNotFound)?;
-        agent.capabilities.push(token.clone());
-        let _ = self
-            .monitoring_tx
-            .send(AgentEvent::AgentCapabilityGranted(agent_id, token));
+        agent.capabilities.push(token_for_agent.clone());
+        let _ = self.monitoring_tx.send(AgentEvent::AgentCapabilityGranted(
+            agent_id,
+            token_for_agent,
+        ));
         Ok(())
     }
 

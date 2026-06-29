@@ -26,6 +26,8 @@ pub struct AgentControlBlock {
     pub workload_class: WorkloadClass,
     /// เป้าหมายของอุปกรณ์ประมวลผล (Compute Target)
     pub compute_target: Option<ComputeTarget>,
+    /// เกลือสุ่มเข้ารหัสเฉพาะตัวของเอเจนต์ตัวนี้ (Polymorphic DNA Salt)
+    pub instance_salt: [u8; 16],
 }
 
 /// สถานะวงจรชีวิต (Lifecycle States) ของ Agent ในระบบ
@@ -49,6 +51,7 @@ impl AgentControlBlock {
     /// สร้าง Agent Control Block ชุดใหม่สำหรับ ID ที่กำหนด ด้วยค่าเริ่มต้นของระบบ
     #[must_use]
     pub fn new(id: u64) -> Self {
+        let instance_salt = *uuid::Uuid::new_v4().as_bytes();
         Self {
             id,
             state: AgentState::Creating,
@@ -59,12 +62,14 @@ impl AgentControlBlock {
             last_restart: Instant::now(),
             workload_class: WorkloadClass::SmallLlm,
             compute_target: Some(ComputeTarget::Cpu),
+            instance_salt,
         }
     }
 
     /// สร้าง Agent Control Block ที่ยังไม่ได้ประเมินเป้าหมายสำหรับความต้องการ placement
     #[must_use]
     pub fn new_unplaced(id: u64, workload_class: WorkloadClass) -> Self {
+        let instance_salt = *uuid::Uuid::new_v4().as_bytes();
         Self {
             id,
             state: AgentState::Creating,
@@ -75,6 +80,7 @@ impl AgentControlBlock {
             last_restart: Instant::now(),
             workload_class,
             compute_target: None,
+            instance_salt,
         }
     }
 }
@@ -150,6 +156,7 @@ mod tests {
         assert_eq!(acb1.context_key, acb2.context_key);
         assert_eq!(acb1.capabilities, acb2.capabilities);
         assert_eq!(acb1.restart_attempts, acb2.restart_attempts);
+        assert_eq!(acb1.instance_salt, acb2.instance_salt);
     }
 
     #[test]

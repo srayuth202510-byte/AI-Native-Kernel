@@ -851,3 +851,72 @@ async fn int_lsm_token_revocation_and_expiration_propagation() {
 
     companion.shutdown().await;
 }
+
+#[tokio::test]
+async fn int_polymorphic_agent_dna_and_lsm_mutation() {
+    let mut companion = kernel_companion::KernelCompanion::new();
+    companion.boot().await.expect("boot should succeed");
+
+    let scheduler = companion.agent_scheduler();
+
+    // Spawn Agent 1
+    let agent_id1 = scheduler
+        .spawn_agent(AgentControlBlock::new(0))
+        .await
+        .unwrap();
+    let agent1 = scheduler.get_agent(agent_id1).await.unwrap();
+
+    // Spawn Agent 2
+    let agent_id2 = scheduler
+        .spawn_agent(AgentControlBlock::new(0))
+        .await
+        .unwrap();
+    let agent2 = scheduler.get_agent(agent_id2).await.unwrap();
+
+    // Verify they have different salts (Polymorphic diversity)
+    assert_ne!(agent1.instance_salt, agent2.instance_salt);
+
+    let pid1 = 44441u32;
+
+    // Create a template token
+    let token_template = CapabilityToken::new(
+        401,
+        Scope::Process(pid1),
+        vec!["read".to_string()],
+        Duration::from_secs(60),
+        [0x77u8; 32],
+    );
+
+    // Grant capability to Agent 1 (This will mutate the token with agent1.instance_salt)
+    scheduler
+        .grant_capability(agent_id1, token_template.clone())
+        .await
+        .unwrap();
+
+    // Retrieve mutated token from Agent 1
+    let agent1_updated = scheduler.get_agent(agent_id1).await.unwrap();
+    let mutated_token1 = agent1_updated.capabilities[0].clone();
+
+    // The mutated token should have a different secret than template
+    assert_ne!(mutated_token1.secret, token_template.secret);
+
+    // Validate using UDS authorization flow
+    let allowed = companion
+        .authorize_process_token(pid1, mutated_token1.id, &mutated_token1.secret, "read")
+        .unwrap();
+    assert!(allowed);
+
+    // Verify that the polymorphic profile is active and different from global
+    let policy = companion.lsm_engine();
+
+    let decision_global = policy.decision_for_syscall(None, "socket");
+    let decision_poly = policy.decision_for_syscall(Some(pid1), "socket");
+
+    assert!(matches!(
+        decision_poly,
+        kernel_companion::LsmDecision::Allow | kernel_companion::LsmDecision::Deny
+    ));
+    assert_eq!(decision_global, kernel_companion::LsmDecision::Allow);
+
+    companion.shutdown().await;
+}

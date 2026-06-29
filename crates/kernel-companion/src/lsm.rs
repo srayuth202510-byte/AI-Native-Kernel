@@ -43,6 +43,8 @@ pub struct LsmPolicyEngine {
     profiles: RwLock<BTreeMap<String, HashSet<String>>>,
     /// รายชื่อ syscall ที่ถูกบล็อกโดย Immune System antibodies (deny rules)
     blocked_syscalls: RwLock<std::collections::HashSet<String>>,
+    /// รายชื่อ syscall ที่ได้รับอนุญาตหลังการผันแปรทางพันธุกรรมแยกราย PID (Polymorphic Agent DNA)
+    mutated_pids: RwLock<std::collections::HashMap<u32, HashSet<String>>>,
 }
 
 impl LsmPolicyEngine {
@@ -70,6 +72,7 @@ impl LsmPolicyEngine {
             active_profile: RwLock::new(config.active_profile_name().to_string()),
             profiles: RwLock::new(profiles),
             blocked_syscalls: RwLock::new(std::collections::HashSet::new()),
+            mutated_pids: RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -121,13 +124,62 @@ impl LsmPolicyEngine {
         Ok(())
     }
 
+    /// ลงทะเบียนและสร้าง allowlist กลายพันธุ์ (Polymorphic Agent DNA) สำหรับ PID หนึ่งๆ
+    pub fn register_polymorphic_pid(&self, pid: u32, parent_profile: &str, salt: &[u8; 16]) {
+        let parent_allowlist = self
+            .profiles
+            .read()
+            .get(parent_profile)
+            .cloned()
+            .unwrap_or_else(|| self.get_allowed_syscalls());
+
+        let critical = ["read", "write", "rt_sigreturn", "exit", "exit_group"];
+        let mut mutated = parent_allowlist.clone();
+
+        for syscall in &parent_allowlist {
+            if critical.contains(&syscall.as_str()) {
+                continue;
+            }
+            // คำนวณ Hash แบบง่าย (djb2) เพื่อตัดสินใจแบบ deterministic จากเกลือของเอเจนต์
+            let mut hash = 5381u32;
+            for byte in syscall.bytes() {
+                hash = hash
+                    .wrapping_shl(5)
+                    .wrapping_add(hash)
+                    .wrapping_add(byte as u32);
+            }
+            let mut salt_mix = 0u32;
+            for (idx, byte) in salt.iter().enumerate() {
+                salt_mix = salt_mix
+                    .wrapping_add(*byte as u32)
+                    .wrapping_mul(idx as u32 + 1);
+            }
+            hash = hash.wrapping_add(salt_mix);
+            // มีโอกาส 10% ที่จะถูก Deprivilege (ถอนสิทธิ์ออกสุ่มๆ)
+            if hash % 10 == 0 {
+                mutated.remove(syscall);
+                debug!(
+                    "PAD (Polymorphic Agent DNA): Deprivileged syscall {} for PID {}",
+                    syscall, pid
+                );
+            }
+        }
+
+        self.mutated_pids.write().insert(pid, mutated);
+        info!(
+            "PAD (Polymorphic Agent DNA): Registered polymorphic allowlist for PID {}",
+            pid
+        );
+    }
+
     /// ตรวจสอบ syscall และตัดสินใจว่าจะอนุญาตหรือปฏิเสธตามกฎที่กำหนดไว้
+    /// รองรับการแยกแยะราย PID ตามกลไก Polymorphic Agent DNA
     /// 1. ตรวจสอบ Blocklist (Immune System Antibodies) — DENY ถ้าตรง
-    /// 2. ตรวจสอบ Allowlist — ALLOW ถ้าตรง
-    /// 3. Default = DENY (Zero-Trust fail-closed)
+    /// 2. ตรวจสอบ Polymorphic/Global Allowlist — ALLOW ถ้าตรง
+    /// 3. Default = DENY (Fail-closed)
     #[must_use]
     #[instrument(skip(self), fields(syscall = %syscall))]
-    pub fn decision_for_syscall(&self, syscall: &str) -> LsmDecision {
+    pub fn decision_for_syscall(&self, pid: Option<u32>, syscall: &str) -> LsmDecision {
         let metrics = kernel_metrics();
         // ขั้นแรก: ตรวจสอบ Blocklist จาก Immune System antibodies
         if self.blocked_syscalls.read().contains(syscall) {
@@ -139,7 +191,19 @@ impl LsmPolicyEngine {
             return LsmDecision::Deny;
         }
 
-        if self.get_allowed_syscalls().contains(syscall) {
+        // ขั้นสอง: ตรวจสอบ Allowlist (เลือกเช็คแบบ Polymorphic ราย PID หรือ Global ตามลำดับ)
+        let is_allowed = if let Some(p) = pid {
+            let mutated_map = self.mutated_pids.read();
+            if let Some(mutated_list) = mutated_map.get(&p) {
+                mutated_list.contains(syscall)
+            } else {
+                self.get_allowed_syscalls().contains(syscall)
+            }
+        } else {
+            self.get_allowed_syscalls().contains(syscall)
+        };
+
+        if is_allowed {
             metrics.record_lsm_decision("allow", "allowlist");
             debug!(decision = "allow", "อนุญาต syscall ตามนโยบาย Zero-Trust");
             return LsmDecision::Allow;
@@ -413,18 +477,33 @@ mod tests {
     fn read_write_recvmsg_allowed() {
         // ทดสอบว่า syscall read, write, recvmsg ต้องได้รับอนุญาตตามนโยบาย Zero-Trust
         let engine = LsmPolicyEngine::new();
-        assert_eq!(engine.decision_for_syscall("read"), LsmDecision::Allow);
-        assert_eq!(engine.decision_for_syscall("write"), LsmDecision::Allow);
-        assert_eq!(engine.decision_for_syscall("recvmsg"), LsmDecision::Allow);
+        assert_eq!(
+            engine.decision_for_syscall(None, "read"),
+            LsmDecision::Allow
+        );
+        assert_eq!(
+            engine.decision_for_syscall(None, "write"),
+            LsmDecision::Allow
+        );
+        assert_eq!(
+            engine.decision_for_syscall(None, "recvmsg"),
+            LsmDecision::Allow
+        );
     }
 
     #[test]
     fn execve_fork_denied_socket_allowed() {
         // ทดสอบว่า execve/fork ถูกปฏิเสธ แต่ socket อนุญาต (network-aware agents)
         let engine = LsmPolicyEngine::new();
-        assert_eq!(engine.decision_for_syscall("execve"), LsmDecision::Deny);
-        assert_eq!(engine.decision_for_syscall("fork"), LsmDecision::Deny);
-        assert_eq!(engine.decision_for_syscall("socket"), LsmDecision::Allow);
+        assert_eq!(
+            engine.decision_for_syscall(None, "execve"),
+            LsmDecision::Deny
+        );
+        assert_eq!(engine.decision_for_syscall(None, "fork"), LsmDecision::Deny);
+        assert_eq!(
+            engine.decision_for_syscall(None, "socket"),
+            LsmDecision::Allow
+        );
     }
 
     #[test]
@@ -432,12 +511,12 @@ mod tests {
         // ทดสอบว่า syscall ที่ไม่รู้จักต้องถูกปฏิเสธตามหลัก fail-closed
         let engine = LsmPolicyEngine::new();
         assert_eq!(
-            engine.decision_for_syscall("definitely_not_a_real_syscall"),
+            engine.decision_for_syscall(None, "definitely_not_a_real_syscall"),
             LsmDecision::Deny
         );
-        assert_eq!(engine.decision_for_syscall(""), LsmDecision::Deny);
+        assert_eq!(engine.decision_for_syscall(None, ""), LsmDecision::Deny);
         assert_eq!(
-            engine.decision_for_syscall("definitely_not_a_real_syscall_2"),
+            engine.decision_for_syscall(None, "definitely_not_a_real_syscall_2"),
             LsmDecision::Deny
         );
     }
@@ -469,7 +548,7 @@ mod tests {
         let engine = LsmPolicyEngine::default();
         // ทดสอบด้วย syscall สุ่มที่ไม่อยู่ใน allowlist
         assert_eq!(
-            engine.decision_for_syscall("this_syscall_should_not_exist"),
+            engine.decision_for_syscall(None, "this_syscall_should_not_exist"),
             LsmDecision::Deny,
             "ค่าเริ่มต้นต้องปฏิเสธ syscall ที่ไม่รู้จัก"
         );
@@ -491,7 +570,7 @@ mod tests {
             "set_robust_list",
         ] {
             assert_eq!(
-                engine.decision_for_syscall(syscall),
+                engine.decision_for_syscall(None, syscall),
                 LsmDecision::Allow,
                 "{syscall} should be allowed by default runtime allowlist"
             );
@@ -513,8 +592,14 @@ mod tests {
             ..LsmConfig::default()
         };
         let engine = LsmPolicyEngine::with_config(&config);
-        assert_eq!(engine.decision_for_syscall("socket"), LsmDecision::Deny);
-        assert_eq!(engine.decision_for_syscall("read"), LsmDecision::Allow);
+        assert_eq!(
+            engine.decision_for_syscall(None, "socket"),
+            LsmDecision::Deny
+        );
+        assert_eq!(
+            engine.decision_for_syscall(None, "read"),
+            LsmDecision::Allow
+        );
     }
 
     #[test]
@@ -525,8 +610,14 @@ mod tests {
             .set_active_profile("strict")
             .expect("strict profile should exist");
         assert_eq!(engine.active_profile_name(), "strict");
-        assert_eq!(engine.decision_for_syscall("socket"), LsmDecision::Deny);
-        assert_eq!(engine.decision_for_syscall("read"), LsmDecision::Allow);
+        assert_eq!(
+            engine.decision_for_syscall(None, "socket"),
+            LsmDecision::Deny
+        );
+        assert_eq!(
+            engine.decision_for_syscall(None, "read"),
+            LsmDecision::Allow
+        );
     }
 
     #[test]
@@ -591,5 +682,55 @@ mod tests {
         attachment.detach();
         assert!(!attachment.is_attached(), "should be detached after detach");
         eprintln!("PASS: LSM full attachment lifecycle validated");
+    }
+
+    #[test]
+    fn test_polymorphic_agent_dna_mutation() {
+        let engine = LsmPolicyEngine::new();
+        let pid1 = 12345u32;
+        let pid2 = 54321u32;
+
+        let salt1 = [0u8; 16];
+        let salt2 = [255u8; 16];
+
+        engine.register_polymorphic_pid(pid1, "runtime", &salt1);
+        engine.register_polymorphic_pid(pid2, "runtime", &salt2);
+
+        // Verify that critical syscalls like read and write are still allowed for both
+        assert_eq!(
+            engine.decision_for_syscall(Some(pid1), "read"),
+            LsmDecision::Allow
+        );
+        assert_eq!(
+            engine.decision_for_syscall(Some(pid2), "read"),
+            LsmDecision::Allow
+        );
+        assert_eq!(
+            engine.decision_for_syscall(Some(pid1), "write"),
+            LsmDecision::Allow
+        );
+        assert_eq!(
+            engine.decision_for_syscall(Some(pid2), "write"),
+            LsmDecision::Allow
+        );
+
+        // Verify that non-critical syscalls have different allow status (polymorphic diversity)
+        // We will scan all non-critical allowed syscalls of the runtime profile to find if there is diversity.
+        let allowed_global = engine.get_allowed_syscalls();
+        let mut diff_found = false;
+
+        for syscall in &allowed_global {
+            let dec1 = engine.decision_for_syscall(Some(pid1), syscall);
+            let dec2 = engine.decision_for_syscall(Some(pid2), syscall);
+            if dec1 != dec2 {
+                diff_found = true;
+                break;
+            }
+        }
+
+        assert!(
+            diff_found,
+            "PAD: Spawning agents with different salts should produce diverse allowlists!"
+        );
     }
 }
