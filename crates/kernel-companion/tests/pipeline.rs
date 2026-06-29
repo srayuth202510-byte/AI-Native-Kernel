@@ -75,7 +75,7 @@ async fn int_immune_system_closed_loop() {
     assert!(received.source == "tcell-agent");
     assert!(received.payload.contains("threat:"));
 
-    // Phase 4: B-Cell learns the pattern and generates antibody
+    // Phase 4: B-Cell learns the pattern and generates shadow antibody
     for _ in 0..5 {
         bcell.learn_threat(vec!["execve".to_string()], 8).await;
     }
@@ -83,9 +83,14 @@ async fn int_immune_system_closed_loop() {
     assert!(antibody.is_some());
     assert_eq!(antibody.unwrap().blocked_syscall, "execve");
 
-    let antibodies = bcell.get_antibodies().await;
-    assert_eq!(antibodies.len(), 1);
-    assert_eq!(antibodies[0].blocked_syscall, "execve");
+    // Antibody is in shadow mode (observation window) — not yet enforced
+    let shadows = bcell.get_shadow_antibodies().await;
+    assert_eq!(shadows.len(), 1);
+    assert_eq!(shadows[0].rule.blocked_syscall, "execve");
+
+    // No enforce antibodies yet
+    let antibodies = bcell.get_enforce_antibodies().await;
+    assert_eq!(antibodies.len(), 0);
 }
 
 // ---------------------------------------------------------------------------

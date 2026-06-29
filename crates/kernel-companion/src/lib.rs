@@ -454,14 +454,14 @@ impl KernelCompanion {
                         }
                         // 2. งานประจำช่วงเวลา (Periodic Tasks)
                         _ = tokio::time::sleep(immune_interval) => {
-                            // สั่งดึงและอัปเดต Antibody ที่เหลือ
-                            let antibodies = bcell.take_new_antibodies().await;
-                            for ab in &antibodies {
+                            // Sweep shadow antibodies — promote those that passed observation window
+                            let promoted = bcell.sweep_shadow_antibodies().await;
+                            for ab in &promoted {
                                 lsm.add_blocked_syscall(&ab.blocked_syscall);
                                 warn!(
                                     syscall = %ab.blocked_syscall,
                                     confidence = ab.confidence,
-                                    "Immune System: applied antibody rule to LSM Policy Engine"
+                                    "Immune System: shadow antibody promoted to enforce — applied to LSM Policy Engine"
                                 );
                             }
 
