@@ -93,6 +93,10 @@ pub struct LlamaLib {
     pub llama_free: unsafe extern "C" fn(ctx: *mut LlamaContext),
 }
 
+fn make_cstring(value: &str) -> Result<CString, String> {
+    CString::new(value).map_err(|_| format!("CString input contains interior NUL: {value:?}"))
+}
+
 impl LlamaLib {
     #[allow(clippy::missing_transmute_annotations)]
     pub fn load() -> Result<Self, String> {
@@ -104,7 +108,7 @@ impl LlamaLib {
 
         let mut handle = ptr::null_mut();
         for path in &paths {
-            let cpath = CString::new(*path).unwrap();
+            let cpath = make_cstring(path)?;
             // RTLD_NOW = 2
             handle = unsafe { dlopen(cpath.as_ptr(), 2) };
             if !handle.is_null() {
@@ -118,7 +122,7 @@ impl LlamaLib {
 
         unsafe {
             let get_sym = |name: &str| -> Result<*mut c_void, String> {
-                let cname = CString::new(name).unwrap();
+                let cname = make_cstring(name)?;
                 let sym = dlsym(handle, cname.as_ptr());
                 if sym.is_null() {
                     return Err(format!("Symbol not found: {}", name));

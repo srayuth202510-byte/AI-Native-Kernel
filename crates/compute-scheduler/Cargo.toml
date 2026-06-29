@@ -12,6 +12,7 @@ keywords = ["ai", "scheduler", "compute", "gpu"]
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+parking_lot = { workspace = true }
 async-trait = "0.1"
 sysinfo = "0.30"
 nvml-wrapper = "0.10.0"

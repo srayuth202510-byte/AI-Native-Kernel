@@ -55,7 +55,7 @@ Binaries produced:
 ./scripts/run.sh companion -- -c /path/to/config.toml
 
 # With eBPF simulation fallback (no root required)
-ANK_EARLY_BPF=true ./scripts/run.sh companion
+ANK_EBPF_ENABLE_FALLBACK=true ./scripts/run.sh companion
 ```
 
 The daemon loads config from `config/default.toml`, applies environment variable overrides (`ANK_*`), then boots all subsystems:
@@ -251,7 +251,7 @@ cargo run --release --bin ank-cli -- place <json>                    # Placement
 | `ANK_WARM_STORE_PATH` | `context_memory.warm_store_path` | `/tmp/ank-warm-store` |
 | `ANK_AUDIT_LOG_PATH` | `capability_security.audit_log_path` | `/tmp/ank-audit.log` |
 | `ANK_LSM_PROFILE` | `lsm.active_profile` | `runtime` |
-| `ANK_EARLY_BPF` | enables eBPF fallback | `false` |
+| `ANK_EBPF_ENABLE_FALLBACK` | enables eBPF fallback | `false` |
 | `ANK_RETRY_MAX_ATTEMPTS` | `retry_telemetry.retry_max_attempts` | `3` |
 | `ANK_RETRY_INITIAL_BACKOFF_MS` | `retry_telemetry.retry_initial_backoff_ms` | `100` |
 | `ANK_RETRY_BACKOFF_MULTIPLIER` | `retry_telemetry.retry_backoff_multiplier` | `2.0` |
@@ -293,8 +293,10 @@ This checks the WORM (Write Once Read Many) audit log for tampering by validatin
 ### Run with eBPF Simulation (No Root)
 
 ```bash
-ANK_EARLY_BPF=true ./scripts/run.sh companion
+ANK_EBPF_ENABLE_FALLBACK=true ./scripts/run.sh companion
 ```
+
+The legacy alias `ANK_EARLY_BPF=true` is still accepted for compatibility.
 
 Or in the config:
 

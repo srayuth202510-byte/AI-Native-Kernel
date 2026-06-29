@@ -2,6 +2,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
+fn parse_bool_value(value: &str) -> Option<bool> {
+    value.parse::<bool>().ok()
+}
+
+fn resolve_ebpf_fallback_env(
+    enable_fallback: Option<&str>,
+    legacy_enable_fallback: Option<&str>,
+) -> Option<bool> {
+    enable_fallback
+        .and_then(parse_bool_value)
+        .or_else(|| legacy_enable_fallback.and_then(parse_bool_value))
+}
+
 /// Top-level configuration for the AI-Native Kernel companion daemon.
 /// Loaded from `config/default.toml` and overridable via CLI args / env vars.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -174,10 +187,13 @@ impl Config {
         if let Ok(v) = std::env::var("ANK_COMPUTE_MODE") {
             self.compute_scheduler.default_mode = v;
         }
-        if let Ok(v) = std::env::var("ANK_EARLY_BPF") {
-            if let Ok(b) = v.parse::<bool>() {
-                self.ebpf.enable_fallback = b;
-            }
+        let enable_fallback = std::env::var("ANK_EBPF_ENABLE_FALLBACK").ok();
+        let legacy_enable_fallback = std::env::var("ANK_EARLY_BPF").ok();
+        if let Some(enable_fallback) = resolve_ebpf_fallback_env(
+            enable_fallback.as_deref(),
+            legacy_enable_fallback.as_deref(),
+        ) {
+            self.ebpf.enable_fallback = enable_fallback;
         }
         if let Ok(v) = std::env::var("ANK_LSM_PROFILE") {
             self.lsm.active_profile = v;
@@ -1045,5 +1061,23 @@ mod tests {
         let config = LsmConfig::default();
         let strict = &config.profiles["strict"].allowed_syscalls;
         assert_eq!(strict, &vec!["read", "write", "recvmsg", "close"]);
+    }
+
+    #[test]
+    fn new_fallback_env_var_takes_precedence() {
+        let resolved = resolve_ebpf_fallback_env(Some("false"), Some("true"));
+        assert_eq!(resolved, Some(false));
+    }
+
+    #[test]
+    fn legacy_fallback_env_var_is_still_supported() {
+        let resolved = resolve_ebpf_fallback_env(None, Some("true"));
+        assert_eq!(resolved, Some(true));
+    }
+
+    #[test]
+    fn invalid_new_fallback_env_var_falls_back_to_legacy() {
+        let resolved = resolve_ebpf_fallback_env(Some("not-a-bool"), Some("true"));
+        assert_eq!(resolved, Some(true));
     }
 }

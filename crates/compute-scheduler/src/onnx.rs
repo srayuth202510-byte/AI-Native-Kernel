@@ -85,6 +85,10 @@ pub struct OnnxRuntimeLib {
     pub api: &'static OrtApi,
 }
 
+fn make_cstring(value: &str) -> Result<CString, String> {
+    CString::new(value).map_err(|_| format!("CString input contains interior NUL: {value:?}"))
+}
+
 impl OnnxRuntimeLib {
     pub fn load() -> Result<Self, String> {
         let paths = [
@@ -96,7 +100,7 @@ impl OnnxRuntimeLib {
 
         let mut handle = ptr::null_mut();
         for path in &paths {
-            let cpath = CString::new(*path).unwrap();
+            let cpath = make_cstring(path)?;
             // RTLD_NOW = 2
             handle = unsafe { dlopen(cpath.as_ptr(), 2) };
             if !handle.is_null() {
@@ -108,7 +112,7 @@ impl OnnxRuntimeLib {
             return Err("Failed to load libonnxruntime.so".to_string());
         }
 
-        let symbol_name = CString::new("OrtGetApiBase").unwrap();
+        let symbol_name = make_cstring("OrtGetApiBase")?;
         let sym = unsafe { dlsym(handle, symbol_name.as_ptr()) };
         if sym.is_null() {
             unsafe { dlclose(handle) };

@@ -493,6 +493,7 @@ dependencies = [
  "async-trait",
  "criterion",
  "nvml-wrapper",
+ "parking_lot",
  "sysinfo",
  "thiserror 1.0.69",
  "tokio",

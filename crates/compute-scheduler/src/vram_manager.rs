@@ -1,6 +1,6 @@
 use nvml_wrapper::Nvml;
+use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::RwLock;
 use tracing::{info, warn};
 
 /// ข้อผิดพลาดของการจัดสรร VRAM หรือ Circuit Breaker ทำงาน
@@ -44,7 +44,7 @@ impl GpuVramManager {
 
     /// ตรวจสอบระดับการใช้งาน VRAM รวมในปัจจุบัน (ไบต์)
     pub fn current_usage(&self) -> usize {
-        let allocated = self.allocated.read().unwrap();
+        let allocated = self.allocated.read();
         allocated.values().sum()
     }
 
@@ -105,7 +105,7 @@ impl GpuVramManager {
         }
 
         // 3. บันทึกการจองเนื้อที่
-        let mut allocated = self.allocated.write().unwrap();
+        let mut allocated = self.allocated.write();
         allocated.insert(agent_id.to_string(), requested_bytes);
         info!(
             agent_id = %agent_id,
@@ -119,7 +119,7 @@ impl GpuVramManager {
 
     /// ปลดปล่อยเนื้อที่ VRAM เมื่อ Agent ทำงานเสร็จสิ้น หรือต้องการคืนพื้นที่
     pub fn release_vram(&self, agent_id: &str) {
-        let mut allocated = self.allocated.write().unwrap();
+        let mut allocated = self.allocated.write();
         if let Some(bytes) = allocated.remove(agent_id) {
             info!(
                 agent_id = %agent_id,
