@@ -394,4 +394,174 @@ mod tests {
         assert_eq!(manager.retry_config().max_attempts, 3);
         assert!(manager.telemetry_ttl_config().auto_cleanup);
     }
+
+    #[tokio::test]
+    async fn test_retry_with_timeout_triggers_retry() {
+        let config = RetryConfig::new(3, 10, 1.0, 100, 50, false);
+        let attempts = Arc::new(tokio::sync::Mutex::new(0u32));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let result: anyhow::Result<i32> = config
+            .retry_with_backoff(
+                move || {
+                    let a = Arc::clone(&attempts_clone);
+                    async move {
+                        let mut val = a.lock().await;
+                        *val += 1;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        Ok::<_, anyhow::Error>(42)
+                    }
+                },
+                Some("timeout_op"),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        let final_attempts = *attempts.lock().await;
+        assert!(
+            final_attempts <= 4,
+            "should have stopped after max_attempts"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retry_jitter_disabled_produces_exact_backoff() {
+        let config = RetryConfig::new(2, 100, 1.0, 1000, 5000, false);
+        let start = Instant::now();
+        let attempts = Arc::new(tokio::sync::Mutex::new(0u32));
+        let a = Arc::clone(&attempts);
+
+        let _: anyhow::Result<i32> = config
+            .retry_with_backoff(
+                move || {
+                    let c = Arc::clone(&a);
+                    async move {
+                        let mut v = c.lock().await;
+                        *v += 1;
+                        Err(anyhow::anyhow!("fail"))
+                    }
+                },
+                None,
+            )
+            .await;
+        let elapsed = start.elapsed().as_millis() as u64;
+        assert!(
+            elapsed >= 100,
+            "should have backed off at least 100ms, got {elapsed}ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retry_backoff_caps_at_max_backoff() {
+        let config = RetryConfig::new(5, 100, 10.0, 500, 5000, false);
+        assert_eq!(config.calculate_backoff(1), 100);
+        assert_eq!(
+            config.calculate_backoff(2),
+            500,
+            "100*10=1000 capped at 500"
+        );
+        assert_eq!(config.calculate_backoff(3), 500);
+        assert_eq!(config.calculate_backoff(4), 500);
+        assert_eq!(config.calculate_backoff(5), 500);
+    }
+
+    #[test]
+    fn test_jitter_produces_different_values() {
+        let config = RetryConfig::default();
+        let v1 = config.jitter(1000, 1);
+        let v2 = config.jitter(1000, 2);
+        assert_ne!(v1, v2, "different attempt seeds should differ");
+        assert!(v1 >= 1, "jitter must not produce zero");
+    }
+
+    #[test]
+    fn test_jitter_disabled_returns_backoff_unchanged() {
+        let config = RetryConfig::new(3, 100, 2.0, 10000, 5000, false);
+        let result = config.jitter(500, 3);
+        assert_eq!(result, 500);
+    }
+
+    #[test]
+    fn test_telemetry_ttl_config_new_with_custom_values() {
+        let config =
+            TelemetryTTLConfig::new(10_000, 5_000, 60_000, 30_000, 10_000, 1_000, false, false);
+        assert_eq!(config.metric_cache_ttl_ms, 10_000);
+        assert_eq!(config.telemetry_snapshot_ttl_ms, 5_000);
+        assert_eq!(config.audit_log_ttl_ms, 60_000);
+        assert_eq!(config.intent_metadata_ttl_ms, 30_000);
+        assert_eq!(config.cleanup_interval_ms, 10_000);
+        assert_eq!(config.telemetry_publish_interval_ms, 1_000);
+        assert!(!config.include_timestamps);
+        assert!(!config.auto_cleanup);
+    }
+
+    #[test]
+    fn test_telemetry_ttl_is_expired_returns_true_for_expired() {
+        let config = TelemetryTTLConfig::default();
+        let very_old = Instant::now() - Duration::from_millis(100_000);
+        assert!(config.is_expired(very_old, 10_000));
+    }
+
+    #[test]
+    fn test_telemetry_ttl_is_expired_fresh_not_expired() {
+        let config = TelemetryTTLConfig::default();
+        let fresh = Instant::now();
+        assert!(!config.is_expired(fresh, 60_000));
+    }
+
+    #[tokio::test]
+    async fn test_retry_and_telemetry_manager_with_configs_and_execute() {
+        let retry = RetryConfig::new(2, 50, 2.0, 1000, 5000, false);
+        let ttl =
+            TelemetryTTLConfig::new(10_000, 5_000, 60_000, 30_000, 10_000, 2_000, false, false);
+        let manager = RetryAndTelemetryManager::with_configs(retry, ttl);
+        assert_eq!(manager.retry_config().max_attempts, 2);
+        assert_eq!(manager.retry_config().initial_backoff_ms, 50);
+        assert!(!manager.telemetry_ttl_config().include_timestamps);
+
+        let counter = Arc::new(tokio::sync::Mutex::new(0u32));
+        let c = Arc::clone(&counter);
+        let result = manager
+            .execute_with_retry(
+                move || {
+                    let cnt = Arc::clone(&c);
+                    async move {
+                        let mut v = cnt.lock().await;
+                        *v += 1;
+                        Ok::<_, anyhow::Error>(*v)
+                    }
+                },
+                Some("manager_integration"),
+            )
+            .await;
+        assert_eq!(result.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_retry_and_telemetry_manager_execute_exhausted() {
+        let retry = RetryConfig::new(1, 10, 1.0, 100, 5000, false);
+        let manager = RetryAndTelemetryManager::with_configs(retry, TelemetryTTLConfig::default());
+        let counter = Arc::new(tokio::sync::Mutex::new(0u32));
+        let c = Arc::clone(&counter);
+        let result: anyhow::Result<i32> = manager
+            .execute_with_retry(
+                move || {
+                    let cnt = Arc::clone(&c);
+                    async move {
+                        let mut v = cnt.lock().await;
+                        *v += 1;
+                        Err::<i32, _>(anyhow::anyhow!("persistent failure"))
+                    }
+                },
+                Some("exhausted_test"),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            *counter.lock().await,
+            2,
+            "max_attempts=1 means 2 total calls"
+        );
+    }
 }
