@@ -248,5 +248,5 @@ This vault will be updated as the project evolves.
 ---
 
 **Maintainer**: AI-Native Kernel Team
-**Last Updated**: 2026-06-26
-**Version**: prototype-refactor
+**Last Updated**: 2026-06-29
+**Version**: phase-2

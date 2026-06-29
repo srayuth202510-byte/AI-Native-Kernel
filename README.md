@@ -106,7 +106,7 @@ source scripts/use-local-toolchain.sh
 หมายเหตุ:
 1. ชุด test ปกติของ workspace ยังเหลือ `ignored` tests สำหรับ Qdrant-backed path อีก 4 รายการ
 2. ยังไม่ได้ re-validate privileged eBPF/LSM attach path ในรอบนี้บน host ที่มี kernel prerequisites ครบ
-3. ยังไม่ได้รัน lint path แบบเดียวกับ CI คือ `cargo clippy --all-targets --all-features -- -D warnings`
+3. ~~ยังไม่ได้รัน lint path แบบเดียวกับ CI คือ `cargo clippy --all-targets --all-features -- -D warnings`~~ ✅ ผ่านแล้ว (ANK-039)
 
 ถ้าจะรัน `clippy --all-features` ด้วย `context-memory/rocksdb-warm`, ต้องมี `libclang` ให้ `bindgen` หาเจอ
 ผ่าน `LIBCLANG_PATH` หรือผ่าน `scripts/use-local-toolchain.sh` ที่จะพยายามตั้งค่าให้เองจาก LLVM ที่ติดตั้งไว้

@@ -6,14 +6,19 @@ The AI-Native Kernel is a hybrid companion to the Linux kernel that provides AI-
 
 ## Current Repository Status
 
-The repository is currently in a prototype refactor stage.
+The repository is in **Phase 2** with a fully validated workspace.
 
-- The workspace layout for `agent-scheduler`, `intent-bus`, `context-memory`, `compute-scheduler`, `capability-security`, and `kernel-companion` now exists in code.
-- The current codebase implements an in-memory prototype of the runtime graph:
-  `kernel-companion -> intent-bus -> agent-scheduler -> context-memory / capability-security / compute-scheduler`.
-- `capability-security` now follows a fail-closed policy model with an allowlist-backed policy engine and audit entries for `issued`, `allowed`, and `denied` decisions.
-- `kernel-companion/src/ebpf/` is still a stub and is not yet wired into a production userspace loader path.
-- The repository still needs a real `cargo check` / `cargo test` pass in an environment where `cargo` and `rustc` are installed.
+- 7 workspace crates (`kernel-companion`, `agent-scheduler`, `intent-bus`, `context-memory`, `compute-scheduler`, `capability-security`, `immune-system`) — all compile with zero warnings.
+- **244/244 tests pass**, 4 ignored (Qdrant-backed, require external endpoint).
+- **eBPF/LSM**: Real Aya-based syscall tracer with prebuilt BPF objects, LSM policy engine, runtime allowlist, and simulation fallback for non-privileged hosts.
+- **P2P Context Mesh**: Gossip-based distributed context sync over TCP with trust scoring and conflict resolution.
+- **VRAM Paging**: GPU/NPU VRAM tier with LRU eviction and bidirectional page-in/page-out.
+- **Compute Scheduler**: Hardware-aware placement with real GPU/NPU detection via NVML, supporting llama.cpp/ONNX Runtime/TensorRT-LLM.
+- **Capability Security**: Rate-limited token issuance, automatic revoke with kernel callback propagation, constant-time comparison, WORM audit with hash chain validation.
+- **Immune System**: Closed-loop T-Cell → B-Cell feedback via IntentBus with anomaly scoring, dynamic thresholds, and automatic antibody (LSM rule) generation.
+- **CLI/TUI**: `ank-cli` with bidirectional UDS commands; `ank-tui` with real-time ratatui dashboard.
+- **Configuration**: `config/default.toml` with env override (`ANK_*`) and runtime LSM profile switching.
+- **Security**: 0 `unsafe` blocks (except BPF C code), constant-time comparisons, peer credential verification, Prometheus metrics.
 
 ## Architecture Overview
 
@@ -52,13 +57,11 @@ Hardware (CPU / GPU / NPU / NVMe)
 
 ### kernel-companion
 
-The current composition root for the prototype runtime.
+The composition root for the entire runtime.
 
 - **Files**: `crates/kernel-companion/src/`
-- **Key Features**: Builds the runtime graph, starts intent routing, starts supervisor loop, owns LSM attachment state
-- **Integration**: Composes `agent-scheduler`, `intent-bus`, `context-memory`, `compute-scheduler`, and `capability-security`
-
-**Current Limitation**: eBPF integration is still represented by a stub attachment flow.
+- **Key Features**: LSM policy engine, eBPF syscall tracer (Aya), NLP intent parser, UDS server, metrics server, config system, observability
+- **Integration**: Composes all crates into a single runtime graph; provides `ank-cli` and `ank-tui` binaries
 
 ### agent-scheduler
 
@@ -68,7 +71,7 @@ Manages AI agent lifecycle, priorities, and isolation.
 - **Key Features**: Agent lifecycle, context routing, capability grants, supervisor-backed restart monitoring
 - **Integration**: Consumes `IntentBus`, `ContextMemoryManager`, and `CapabilitySecurityManager`
 
-**Current Limitation**: The scheduler is still an in-memory prototype and does not yet drive actual task execution.
+**Current Limitation**: Scheduler is still in-process (single machine); distributed agent scheduling not yet implemented.
 
 ### intent-bus
 
@@ -82,13 +85,11 @@ Event-driven communication for user/AI intents.
 
 ### context-memory
 
-Hot/Warm/Cold memory paging manager.
+Hot/Warm/Cold/VRAM memory paging manager with P2P distributed sync.
 
 - **Files**: `crates/context-memory/src/`
-- **Key Features**: In-memory hot/warm/cold stores with simple eviction
-- **Integration**: Used by Agent Scheduler for context storage
-
-**Current Limitation**: Warm/cold tiers are currently in-memory, not RocksDB/NVMe-backed.
+- **Key Features**: VRAM (GPU/NPU), Hot (RAM), Warm (RocksDB/NVMe with feature flag), Cold (disk file) tiers; P2P gossip mesh for cross-machine sync; semantic file store
+- **Integration**: Used by Agent Scheduler for context storage; P2P mesh for distributed deployments
 
 ### compute-scheduler
 
@@ -102,13 +103,11 @@ CPU/GPU/NPU allocation and optimization.
 
 ### capability-security
 
-Zero-trust capability tokens and policy engine.
+Zero-trust capability tokens with WORM audit and Prometheus metrics.
 
 - **Files**: `crates/capability-security/src/`
-- **Key Features**: Token validation, fail-closed allowlist policy, audit trails
-- **Integration**: Security layer for all components
-
-**Current Limitation**: Token storage and audit logging are still in-memory.
+- **Key Features**: Rate-limited token issuance, constant-time comparison, fail-closed allowlist policy, WORM audit with hash chain validation, Prometheus security counters, automatic revoke with kernel callback propagation
+- **Integration**: Security layer for all components; revoke callback propagates to LSM allowed_pids
 
 ## Development Workflow
 

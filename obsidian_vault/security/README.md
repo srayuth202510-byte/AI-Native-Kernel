@@ -4,15 +4,18 @@ This document describes the security-first design of the AI-Native Kernel, follo
 
 ## Current Prototype Note
 
-The repository now contains a working prototype security crate in `crates/capability-security/src/`.
+The repository now contains a mature security crate in `crates/capability-security/src/`.
 
 Current implementation facts:
 
-- token validation is in-memory
-- policy is fail-closed
+- token validation is in-memory (with constant-time comparison)
+- policy is fail-closed (default DENY)
 - policy decisions are constrained by an allowlist
-- audit entries are currently in-memory records, not a persistent WORM backend yet
-- `authorize_token`, `validate`, and `decision_for` all emit audit records
+- WORM audit logger is file-backed with hash chain validation and cryptographic log verification
+- `authorize_token`, `validate`, and `decision_for` all emit audit records with Prometheus metrics counters
+- token issuance is rate-limited (configurable via `max_issue_rate`)
+- automatic revoke with callback propagation to kernel LSM `allowed_pids`
+- revocation callbacks registered via `register_revocation_callback`
 
 ## Zero-Trust Security Model
 
