@@ -36,7 +36,7 @@ jobs:
       - name: Install eBPF toolchain
         run: |
           sudo apt-get update && \
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y clang llvm libelf-dev linux-tools-common linux-tools-generic
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y clang llvm libclang-dev bpftool libelf-dev linux-tools-common linux-tools-generic linux-headers-$(uname -r)
 
       - name: Generate eBPF prebuilt objects (if BTF available)
         run: |
@@ -46,17 +46,8 @@ jobs:
           echo "Prebuilt objects:"
           ls -la crates/kernel-companion/prebuilt-bpf/
 
-      - name: Verify formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lint with Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Run tests
-        run: cargo test --workspace --verbose
-
-      - name: Build release binary
-        run: cargo build --release
+      - name: Run CI validation suite
+        run: bash scripts/run-ci-validations.sh
 
       - name: Verify prebuilt objects present
         run: |

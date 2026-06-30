@@ -23,6 +23,7 @@ Quick check:
 ./scripts/run.sh prereqs
 ./scripts/run.sh install-prereqs   # Debian/Ubuntu only
 ./scripts/run.sh validate-ebpf     # Privileged host validation for real attach
+bash ./scripts/run-ci-validations.sh
 ```
 
 If you are running inside Ubuntu Core or another restricted environment, use
