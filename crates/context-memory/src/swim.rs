@@ -308,6 +308,7 @@ impl FailureDetector {
     /// 3. เลือก Node Alive สุ่มเพื่อ Ping
     /// 4. ถ้า Ping ไม่สำเร็จ → ลอง Indirect Probe
     /// 5. ถ้าทั้งหมดล้มเหลว → ตั้งสถานะ Suspect
+    ///
     /// คืนค่ารายชื่อ Node ที่ถูกประกาศ Dead ในรอบนี้
     pub async fn ping_round(&self) -> Vec<String> {
         let now = (self.now_fn)();
