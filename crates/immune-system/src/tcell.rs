@@ -97,6 +97,8 @@ pub struct TCellAgent {
     jitter_enabled: AtomicBool,
     /// รายชื่อโปรเซสที่ได้รับการยกเว้นจากการ Kill (Exempted processes)
     exempt_processes: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// รายการ PID ที่ได้รับการยกเว้นจากการ Kill (Exempted PIDs)
+    exempt_pids: Arc<RwLock<std::collections::HashSet<u32>>>,
     /// จำนวนวินาทีติดต่อกันที่ต้องตรวจพบความผิดปกติก่อนตัดสินใจ Kill
     violation_window_limit: AtomicU32,
     /// ปรับสัดส่วนการตรวจจับ (Sensitivity factor) ราย PID
@@ -136,6 +138,7 @@ impl TCellAgent {
                 .into_iter()
                 .collect(),
             )),
+            exempt_pids: Arc::new(RwLock::new(std::collections::HashSet::new())),
             violation_window_limit: AtomicU32::new(3),
             pid_sensitivity_factors: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -260,12 +263,17 @@ impl TCellAgent {
         if total_violations >= violation_limit {
             // Check if process is exempted from being terminated (Blast Radius Minimization)
             let is_exempt = {
-                let name_opt = get_process_comm(pid);
-                let exempt = self.exempt_processes.read().await;
-                if let Some(ref name) = name_opt {
-                    exempt.contains(name)
+                let pids = self.exempt_pids.read().await;
+                if pids.contains(&pid) {
+                    true
                 } else {
-                    false
+                    let name_opt = get_process_comm(pid);
+                    let exempt = self.exempt_processes.read().await;
+                    if let Some(ref name) = name_opt {
+                        exempt.contains(name)
+                    } else {
+                        false
+                    }
                 }
             };
 
@@ -365,6 +373,11 @@ impl TCellAgent {
     /// เพิ่มรายชื่อโปรเซสที่ได้รับการยกเว้นจากการ Kill (Exempt from Kill)
     pub async fn add_exempt_process(&self, name: impl Into<String>) {
         self.exempt_processes.write().await.insert(name.into());
+    }
+
+    /// เพิ่ม PID ที่ได้รับการยกเว้นจากการ Kill (Exempt from Kill)
+    pub async fn add_exempt_pid(&self, pid: u32) {
+        self.exempt_pids.write().await.insert(pid);
     }
 
     /// กำหนดเกณฑ์จำนวนวินาทีติดต่อกันในการเกิดความผิดปกติก่อนสั่ง Kill
@@ -583,9 +596,7 @@ mod tests {
         t.set_violation_window_limit(1);
 
         let own_pid = std::process::id();
-        if let Some(own_name) = get_process_comm(own_pid) {
-            t.add_exempt_process(own_name).await;
-        }
+        t.add_exempt_pid(own_pid).await;
 
         // Generate enough violations to trigger Kill
         for _ in 0..25 {
