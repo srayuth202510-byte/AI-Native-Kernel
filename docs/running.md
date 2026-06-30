@@ -300,6 +300,14 @@ cargo bench -p context-memory --bench rocksdb_bench --features context-memory/ro
 This includes the persistent warm-store reopen path that measures Cold→Warm recovery time.
 If `bindgen` cannot find `libclang`, set `LIBCLANG_PATH` or install `libclang-dev` first.
 
+### Validate P2P Mesh
+
+```bash
+./scripts/run.sh validate-p2p
+```
+
+This runs the distributed context mesh tests in `crates/context-memory/src/p2p_mesh.rs`.
+
 ### Run with eBPF Simulation (No Root)
 
 ```bash
