@@ -13,6 +13,7 @@ cd "$PROJECT_ROOT"
 
 DEFAULT_QDRANT_URL="http://localhost:6334"
 QDRANT_URL="${QDRANT_URL:-}"
+QDRANT_STARTUP_RETRIES="${QDRANT_STARTUP_RETRIES:-120}"
 
 cleanup() {
     if [[ -n "${MOCK_PID:-}" ]]; then
@@ -73,13 +74,15 @@ else
     QDRANT_URL="$DEFAULT_QDRANT_URL"
     export QDRANT_URL
     echo "==> QDRANT_URL not set; starting local Qdrant mock at ${QDRANT_URL}"
+    echo "==> Prebuilding Qdrant mock example"
+    cargo build -p context-memory --example qdrant_mock
     cargo run -p context-memory --example qdrant_mock >/tmp/ank-qdrant-mock.log 2>&1 &
     MOCK_PID=$!
 fi
 
 export QDRANT_URL
 
-for _ in $(seq 1 30); do
+for _ in $(seq 1 "$QDRANT_STARTUP_RETRIES"); do
     if [[ -n "${MOCK_PID:-}" ]] && ! kill -0 "$MOCK_PID" 2>/dev/null; then
         echo "Qdrant mock process (PID $MOCK_PID) has exited unexpectedly" >&2
         cat /tmp/ank-qdrant-mock.log 2>/dev/null || true
@@ -92,9 +95,10 @@ for _ in $(seq 1 30); do
 done
 
 if ! wait_for_qdrant "$QDRANT_URL"; then
-    echo "Qdrant endpoint is not reachable after 30 retries: ${QDRANT_URL}" >&2
+    echo "Qdrant endpoint is not reachable after ${QDRANT_STARTUP_RETRIES} retries: ${QDRANT_URL}" >&2
     if [[ -n "${MOCK_PID:-}" ]]; then
         echo "Mock PID ${MOCK_PID} is still running but not accepting connections"
+        cat /tmp/ank-qdrant-mock.log 2>/dev/null || true
     fi
     exit 1
 fi
