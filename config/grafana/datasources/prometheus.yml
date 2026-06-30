@@ -1,0 +1,12 @@
+# AI-Native Kernel — Grafana Prometheus Datasource
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s
+      queryTimeout: 30s

@@ -1,0 +1,12 @@
+# AI-Native Kernel — Grafana Dashboard Provisioning
+apiVersion: 1
+providers:
+  - name: "AI-Native Kernel"
+    orgId: 1
+    folder: "AI-Native Kernel"
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

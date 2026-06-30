@@ -1,0 +1,19 @@
+# AI-Native Kernel — Prometheus Scrape Configuration
+# Scrapes the ank-companion metrics endpoint for kernel, security, and eBPF metrics.
+# Together with Tempo for traces and Grafana for visualization.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  scrape_timeout: 3s
+
+scrape_configs:
+  - job_name: "ank-companion"
+    static_configs:
+      - targets: ["host.docker.internal:9090"]
+        labels:
+          service: "ank-companion"
+          component: "kernel"
+    metrics_path: "/metrics"
+    scheme: "http"
+    # Rate-limit metrics ingestion to match companion throughput
+    sample_limit: 10000

@@ -1,0 +1,660 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "barchart", "name": "Bar chart", "version": "" },
+    { "type": "panel", "id": "table", "name": "Table", "version": "" }
+  ],
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "id": 1,
+      "panels": [],
+      "repeatDirection": "h",
+      "title": "Overview",
+      "type": "row"
+    },
+    {
+      "id": 2,
+      "title": "Policy Decisions (LSM)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(ank_lsm_policy_decisions_total[1m]))",
+          "legendFormat": "rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Security Decisions",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 3, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(security_policy_decisions_total[1m]))",
+          "legendFormat": "rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Blocked Syscalls",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 6, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "ank_lsm_blocked_syscalls",
+          "legendFormat": "blocked"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Token Validation Failures",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 9, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(security_token_validation_failures_total[1m]))",
+          "legendFormat": "failures"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.1 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "eBPF Mode",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "count(ank_ebpf_active_mode{mode=\"real\"} == 1)",
+          "legendFormat": "real"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Audit Entries",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 15, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(security_audit_entries_total[1m]))",
+          "legendFormat": "rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Tokens Issued",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(security_tokens_issued_total[1m]))",
+          "legendFormat": "rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "collapsed": false,
+      "id": 9,
+      "panels": [],
+      "title": "Security & Policy Decisions",
+      "type": "row"
+    },
+    {
+      "id": 10,
+      "title": "LSM Policy Decisions by Decision",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(ank_lsm_policy_decisions_total{decision=\"allow\"}[1m]))",
+          "legendFormat": "allow"
+        },
+        {
+          "expr": "sum(rate(ank_lsm_policy_decisions_total{decision=\"deny\"}[1m]))",
+          "legendFormat": "deny"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20,
+            "stacking": { "mode": "none" },
+            "axisCenteredZero": false
+          },
+          "mappings": []
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "deny" }, "properties": [{ "id": "color", "value": { "fixed": "red" } }] },
+          { "matcher": { "id": "byName", "options": "allow" }, "properties": [{ "id": "color", "value": { "fixed": "green" } }] }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "title": "LSM Policy Decisions by Reason",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "topk(10, sum(rate(ank_lsm_policy_decisions_total[1m])) by (reason))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "mappings": [],
+          "custom": {
+            "stacking": { "mode": "normal" }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "title": "Security Decisions (Allow vs Deny)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(security_policy_decisions_total{decision=\"allow\"}[1m]))",
+          "legendFormat": "allow"
+        },
+        {
+          "expr": "sum(rate(security_policy_decisions_total{decision=\"deny\"}[1m]))",
+          "legendFormat": "deny"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20,
+            "stacking": { "mode": "none" }
+          },
+          "mappings": []
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "deny" }, "properties": [{ "id": "color", "value": { "fixed": "red" } }] },
+          { "matcher": { "id": "byName", "options": "allow" }, "properties": [{ "id": "color", "value": { "fixed": "green" } }] }
+        ]
+      }
+    },
+
+    {
+      "collapsed": false,
+      "id": 13,
+      "panels": [],
+      "title": "Syscalls & eBPF",
+      "type": "row"
+    },
+    {
+      "id": 14,
+      "title": "Syscall Events by Decision",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(ank_syscall_events_total{decision=\"allow\"}[1m]))",
+          "legendFormat": "allow"
+        },
+        {
+          "expr": "sum(rate(ank_syscall_events_total{decision=\"deny\"}[1m]))",
+          "legendFormat": "deny"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20,
+            "stacking": { "mode": "none" }
+          },
+          "mappings": []
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "deny" }, "properties": [{ "id": "color", "value": { "fixed": "red" } }] },
+          { "matcher": { "id": "byName", "options": "allow" }, "properties": [{ "id": "color", "value": { "fixed": "green" } }] }
+        ]
+      }
+    },
+    {
+      "id": 15,
+      "title": "Top Denied Syscalls",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "topk(10, sum(rate(ank_syscall_events_total{decision=\"deny\"}[1m])) by (syscall))",
+          "legendFormat": "{{syscall}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "mappings": [],
+          "custom": {
+            "stacking": { "mode": "none" },
+            "axisLabel": "Rate (calls/sec)"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 16,
+      "title": "eBPF Attach Attempts",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(ank_ebpf_attach_attempts_total[1m])) by (component, result)",
+          "legendFormat": "{{component}} {{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20,
+            "stacking": { "mode": "none" }
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "collapsed": false,
+      "id": 17,
+      "panels": [],
+      "title": "Caching & Telemetry",
+      "type": "row"
+    },
+    {
+      "id": 18,
+      "title": "Syscall Drops by Reason",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(ank_syscall_event_drops_total[1m])) by (reason)",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 30,
+            "stacking": { "mode": "normal" }
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 19,
+      "title": "Cache Invalidations by Scope",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(ank_cache_invalidations_total[1m])) by (scope)",
+          "legendFormat": "{{scope}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 30,
+            "stacking": { "mode": "normal" }
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "title": "Token & Audit Volume",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(security_tokens_issued_total[1m])",
+          "legendFormat": "tokens issued"
+        },
+        {
+          "expr": "rate(security_audit_entries_total[1m])",
+          "legendFormat": "audit entries"
+        },
+        {
+          "expr": "rate(security_token_validation_failures_total[1m])",
+          "legendFormat": "validation failures"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 15,
+            "stacking": { "mode": "none" }
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "collapsed": false,
+      "id": 21,
+      "panels": [],
+      "title": "Performance Budget (Reference Targets)",
+      "type": "row"
+    },
+    {
+      "id": 22,
+      "title": "Agent Spawn Latency (Budget: P99 < 500µs)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "500",
+          "legendFormat": "budget (µs)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "µs",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 400 },
+              { "color": "red", "value": 500 }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "500": { "color": "green", "text": "P99 < 500µs ✓" }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 23,
+      "title": "Context Switch Latency (Budget: P99 < 50µs)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "50",
+          "legendFormat": "budget (µs)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "µs",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 40 },
+              { "color": "red", "value": 50 }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "50": { "color": "green", "text": "P99 < 50µs ✓" }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 24,
+      "title": "Syscall Latency (Budget: P99 < 1ms)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "1000",
+          "legendFormat": "budget (µs)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "µs",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 800 },
+              { "color": "red", "value": 1000 }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1000": { "color": "green", "text": "P99 < 1ms ✓" }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 25,
+      "title": "IntentBus Throughput (Budget: > 10k/sec)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "10000",
+          "legendFormat": "budget (ops/sec)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 10000 }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "10000": { "color": "green", "text": "> 10k/sec ✓" }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["ank", "ai-native-kernel", "observability"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m"],
+    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"]
+  },
+  "timezone": "browser",
+  "title": "AI-Native Kernel",
+  "uid": "ank-kernel",
+  "version": 1,
+  "weekStart": ""
+}
