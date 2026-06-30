@@ -6,43 +6,73 @@ use qdrant_client::qdrant::{PointStruct, SearchPoints, UpsertPoints};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;
+use tracing::{debug, info, instrument, warn};
 
 /// Timeout สำหรับ Qdrant HTTP calls
 const QDRANT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// จำนวนครั้งสูงสุดสำหรับ retry
+const MAX_RETRIES: u32 = 3;
+
+/// ระยะเวลา wait ก่อน retry (_exponential backoff_)
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(100);
+
 /// ตัวจัดการพื้นที่จัดเก็บและค้นหาตามความหมาย (Semantic Store)
 /// ใช้ Qdrant สำหรับค้นหาด้วย Vector (Cosine Similarity)
+/// รองรับ retry logic, batch operations, และ filtered search
 pub struct SemanticStore {
     client: Qdrant,
     collection_name: String,
 }
 
+impl std::fmt::Debug for SemanticStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SemanticStore")
+            .field("collection", &self.collection_name)
+            .finish()
+    }
+}
+
 impl SemanticStore {
     /// สร้างอินสแตนซ์ใหม่โดยเชื่อมต่อไปยัง Qdrant Server และเตรียม Collection
+    #[instrument(skip(vector_size), fields(collection = %collection_name))]
     pub async fn new(url: &str, collection_name: &str, vector_size: u64) -> Result<Self> {
         let client = Qdrant::from_url(url).build()?;
 
-        // เตรียมสร้าง Collection หากยังไม่มี (สำหรับ MVP) - with timeout
-        let exists = timeout(QDRANT_TIMEOUT, client.collection_exists(collection_name))
-            .await
-            .context("Qdrant: collection_exists timeout")?;
-        if !exists? {
-            timeout(
-                QDRANT_TIMEOUT,
-                client.create_collection(CreateCollection {
-                    collection_name: collection_name.to_string(),
-                    vectors_config: Some(VectorsConfig {
-                        config: Some(Config::Params(VectorParams {
-                            size: vector_size,
-                            distance: Distance::Cosine.into(),
-                            ..Default::default()
-                        })),
+        let exists = retry(|| async {
+            timeout(QDRANT_TIMEOUT, client.collection_exists(collection_name))
+                .await
+                .context("Qdrant: collection_exists timeout")?
+                .context("Qdrant: collection_exists failed")
+        })
+        .await?;
+
+        if !exists {
+            retry(|| async {
+                timeout(
+                    QDRANT_TIMEOUT,
+                    client.create_collection(CreateCollection {
+                        collection_name: collection_name.to_string(),
+                        vectors_config: Some(VectorsConfig {
+                            config: Some(Config::Params(VectorParams {
+                                size: vector_size,
+                                distance: Distance::Cosine.into(),
+                                ..Default::default()
+                            })),
+                        }),
+                        ..Default::default()
                     }),
-                    ..Default::default()
-                }),
-            )
-            .await
-            .context("Qdrant: create_collection timeout")??;
+                )
+                .await
+                .context("Qdrant: create_collection timeout")?
+                .context("Qdrant: create_collection failed")
+            })
+            .await?;
+
+            info!(
+                collection = collection_name,
+                vector_size, "Qdrant collection created"
+            );
         }
 
         Ok(Self {
@@ -52,6 +82,7 @@ impl SemanticStore {
     }
 
     /// บันทึกหรืออัปเดตข้อมูลบริบท (Context) ในรูปแบบ Vector เข้าสู่ระบบ
+    #[instrument(skip(self, vector, payload), fields(id = %id))]
     pub async fn upsert(
         &self,
         id: &str,
@@ -59,99 +90,264 @@ impl SemanticStore {
         payload: HashMap<String, qdrant_client::qdrant::Value>,
     ) -> Result<()> {
         let point = PointStruct::new(id.to_string(), vector, payload);
-        timeout(
-            QDRANT_TIMEOUT,
-            self.client.upsert_points(UpsertPoints {
-                collection_name: self.collection_name.clone(),
-                wait: Some(true),
-                points: vec![point],
-                ..Default::default()
-            }),
-        )
-        .await
-        .context("Qdrant: upsert_points timeout")??;
+        retry(|| async {
+            timeout(
+                QDRANT_TIMEOUT,
+                self.client.upsert_points(UpsertPoints {
+                    collection_name: self.collection_name.clone(),
+                    wait: Some(true),
+                    points: vec![point.clone()],
+                    ..Default::default()
+                }),
+            )
+            .await
+            .context("Qdrant: upsert_points timeout")?
+            .context("Qdrant: upsert_points failed")
+        })
+        .await?;
+        debug!(id = id, "Qdrant upsert completed");
+        Ok(())
+    }
+
+    /// บันทึกข้อมูลหลายจุดพร้อมกัน (Batch Upsert)
+    /// แบ่งเป็น batches ขนาด 100 จุดเพื่อป้องกัน request ขนาดใหญ่เกินไป
+    #[instrument(skip(self, points), fields(count = points.len()))]
+    pub async fn upsert_batch(&self, points: Vec<PointStruct>) -> Result<()> {
+        const BATCH_SIZE: usize = 100;
+
+        for chunk in points.chunks(BATCH_SIZE) {
+            let batch = chunk.to_vec();
+            let batch_len = batch.len();
+            retry(|| async {
+                timeout(
+                    QDRANT_TIMEOUT,
+                    self.client.upsert_points(UpsertPoints {
+                        collection_name: self.collection_name.clone(),
+                        wait: Some(true),
+                        points: batch.clone(),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .context("Qdrant: upsert_batch timeout")?
+                .context("Qdrant: upsert_batch failed")
+            })
+            .await?;
+            debug!(batch_size = batch_len, "Qdrant batch upsert completed");
+        }
         Ok(())
     }
 
     /// ค้นหาบริบทที่ใกล้เคียงที่สุดตามความหมาย (Semantic Search)
+    #[instrument(skip(self, vector), fields(limit))]
     pub async fn search(
         &self,
         vector: Vec<f32>,
         limit: u64,
     ) -> Result<Vec<qdrant_client::qdrant::ScoredPoint>> {
-        let result = timeout(
-            QDRANT_TIMEOUT,
-            self.client.search_points(SearchPoints {
-                collection_name: self.collection_name.clone(),
-                vector,
-                limit,
-                with_payload: Some(true.into()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .context("Qdrant: search_points timeout")??;
+        let result = retry(|| async {
+            timeout(
+                QDRANT_TIMEOUT,
+                self.client.search_points(SearchPoints {
+                    collection_name: self.collection_name.clone(),
+                    vector: vector.clone(),
+                    limit,
+                    with_payload: Some(true.into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .context("Qdrant: search_points timeout")?
+            .context("Qdrant: search_points failed")
+        })
+        .await?;
+        debug!(
+            result_count = result.result.len(),
+            "Qdrant search completed"
+        );
         Ok(result.result)
     }
 
-    /// ค้นหาบริบทและส่งคืนเฉพาะ ID และ Metadata เป็น String Map เพื่อลดความซับซ้อนของโครงสร้างข้อมูล
+    /// ค้นหาบริบทแบบมีเงื่อนไข (Filtered Search)
+    /// ค้นหา vector ที่ใกล้เคียงที่สุดแต่กรองตาม payload key/value ที่กำหนด
+    #[instrument(skip(self, vector), fields(limit, filter_key = %filter_key))]
+    pub async fn search_filtered(
+        &self,
+        vector: Vec<f32>,
+        limit: u64,
+        filter_key: &str,
+        filter_value: &str,
+    ) -> Result<Vec<qdrant_client::qdrant::ScoredPoint>> {
+        use qdrant_client::qdrant::{Condition, Filter};
+
+        let result = retry(|| async {
+            timeout(
+                QDRANT_TIMEOUT,
+                self.client.search_points(SearchPoints {
+                    collection_name: self.collection_name.clone(),
+                    vector: vector.clone(),
+                    limit,
+                    with_payload: Some(true.into()),
+                    filter: Some(Filter {
+                        must: vec![Condition::matches(
+                            filter_key.to_string(),
+                            filter_value.to_string(),
+                        )],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .context("Qdrant: search_filtered timeout")?
+            .context("Qdrant: search_filtered failed")
+        })
+        .await?;
+        debug!(
+            result_count = result.result.len(),
+            "Qdrant filtered search completed"
+        );
+        Ok(result.result)
+    }
+
+    /// ค้นหาบริบทและส่งคืนเฉพาะ ID และ Metadata เป็น String Map
+    #[instrument(skip(self, vector), fields(limit))]
     pub async fn search_metadata(
         &self,
         vector: Vec<f32>,
         limit: u64,
     ) -> Result<Vec<(String, HashMap<String, String>)>> {
         let results = self.search(vector, limit).await?;
-        let mut extracted = Vec::new();
-
-        for point in results {
-            let id = match point
-                .id
-                .as_ref()
-                .and_then(|id| id.point_id_options.as_ref())
-            {
-                Some(qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u)) => u.clone(),
-                Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)) => n.to_string(),
-                None => continue,
-            };
-
-            let mut metadata = HashMap::new();
-            for (key, val) in point.payload {
-                if let Some(qdrant_client::qdrant::value::Kind::StringValue(s)) = val.kind {
-                    metadata.insert(key, s);
-                } else if let Some(qdrant_client::qdrant::value::Kind::IntegerValue(i)) = val.kind {
-                    metadata.insert(key, i.to_string());
-                }
-            }
-            extracted.push((id, metadata));
-        }
-
-        Ok(extracted)
+        Ok(extract_metadata_from_points(results))
     }
 
     /// ลบข้อมูลบริบท (Context) ออกจากระบบ Qdrant ด้วย ID
+    #[instrument(skip(self), fields(id = %id))]
     pub async fn delete(&self, id: &str) -> Result<()> {
         use qdrant_client::qdrant::{
             DeletePoints, PointsIdsList, PointsSelector, points_selector::PointsSelectorOneOf,
         };
 
-        timeout(
-            QDRANT_TIMEOUT,
-            self.client.delete_points(DeletePoints {
-                collection_name: self.collection_name.clone(),
-                wait: Some(true),
-                points: Some(PointsSelector {
-                    points_selector_one_of: Some(PointsSelectorOneOf::Points(PointsIdsList {
-                        ids: vec![id.to_string().into()],
-                    })),
+        retry(|| async {
+            timeout(
+                QDRANT_TIMEOUT,
+                self.client.delete_points(DeletePoints {
+                    collection_name: self.collection_name.clone(),
+                    wait: Some(true),
+                    points: Some(PointsSelector {
+                        points_selector_one_of: Some(PointsSelectorOneOf::Points(PointsIdsList {
+                            ids: vec![id.to_string().into()],
+                        })),
+                    }),
+                    ..Default::default()
                 }),
-                ..Default::default()
-            }),
-        )
-        .await
-        .context("Qdrant: delete_points timeout")?
-        .map_err(|e| anyhow::anyhow!(e))?;
+            )
+            .await
+            .context("Qdrant: delete_points timeout")?
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("Qdrant: delete_points failed")
+        })
+        .await?;
+        debug!(id = id, "Qdrant delete completed");
         Ok(())
     }
+
+    /// ลบหลายจุดพร้อมกัน (Batch Delete)
+    #[instrument(skip(self), fields(count = ids.len()))]
+    pub async fn delete_batch(&self, ids: &[String]) -> Result<()> {
+        use qdrant_client::qdrant::{
+            DeletePoints, PointsIdsList, PointsSelector, points_selector::PointsSelectorOneOf,
+        };
+
+        let point_ids: Vec<_> = ids.iter().map(|id| id.to_string().into()).collect();
+        retry(|| async {
+            timeout(
+                QDRANT_TIMEOUT,
+                self.client.delete_points(DeletePoints {
+                    collection_name: self.collection_name.clone(),
+                    wait: Some(true),
+                    points: Some(PointsSelector {
+                        points_selector_one_of: Some(PointsSelectorOneOf::Points(PointsIdsList {
+                            ids: point_ids.clone(),
+                        })),
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .context("Qdrant: delete_batch timeout")?
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("Qdrant: delete_batch failed")
+        })
+        .await?;
+        debug!(count = ids.len(), "Qdrant batch delete completed");
+        Ok(())
+    }
+}
+
+/// ช่วยดึง metadata จาก ScoredPoint results
+pub(crate) fn extract_metadata_from_points(
+    results: Vec<qdrant_client::qdrant::ScoredPoint>,
+) -> Vec<(String, HashMap<String, String>)> {
+    let mut extracted = Vec::new();
+
+    for point in results {
+        let id = match point
+            .id
+            .as_ref()
+            .and_then(|id| id.point_id_options.as_ref())
+        {
+            Some(qdrant_client::qdrant::point_id::PointIdOptions::Uuid(u)) => u.clone(),
+            Some(qdrant_client::qdrant::point_id::PointIdOptions::Num(n)) => n.to_string(),
+            None => continue,
+        };
+
+        let mut metadata = HashMap::new();
+        for (key, val) in point.payload {
+            if let Some(qdrant_client::qdrant::value::Kind::StringValue(s)) = val.kind {
+                metadata.insert(key, s);
+            } else if let Some(qdrant_client::qdrant::value::Kind::IntegerValue(i)) = val.kind {
+                metadata.insert(key, i.to_string());
+            } else if let Some(qdrant_client::qdrant::value::Kind::DoubleValue(d)) = val.kind {
+                metadata.insert(key, d.to_string());
+            } else if let Some(qdrant_client::qdrant::value::Kind::BoolValue(b)) = val.kind {
+                metadata.insert(key, b.to_string());
+            }
+        }
+        extracted.push((id, metadata));
+    }
+
+    extracted
+}
+
+/// Retry with exponential backoff — ใช้สำหรับ Qdrant calls ที่อาจ fail ชั่วคราว
+async fn retry<F, Fut, T>(mut f: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut last_err = None;
+
+    for attempt in 0..MAX_RETRIES {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                warn!(
+                    attempt = attempt + 1,
+                    max_retries = MAX_RETRIES,
+                    error = %e,
+                    "Qdrant call failed, retrying"
+                );
+                last_err = Some(e);
+                if attempt + 1 < MAX_RETRIES {
+                    let delay = RETRY_BASE_DELAY * 2u32.pow(attempt);
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("retry: no attempts made")))
 }
 
 #[cfg(test)]
@@ -205,6 +401,52 @@ mod tests {
             .is_ok()
     }
 
+    #[test]
+    fn extract_metadata_from_points_works() {
+        use qdrant_client::qdrant::{
+            PointId, ScoredPoint, Value, point_id::PointIdOptions, value::Kind,
+        };
+
+        let mut payload = HashMap::new();
+        payload.insert(
+            "path".to_string(),
+            Value {
+                kind: Some(Kind::StringValue("test.txt".into())),
+            },
+        );
+        payload.insert(
+            "size".to_string(),
+            Value {
+                kind: Some(Kind::IntegerValue(42)),
+            },
+        );
+        payload.insert(
+            "score_val".to_string(),
+            Value {
+                kind: Some(Kind::DoubleValue(2.71)),
+            },
+        );
+
+        let points = vec![ScoredPoint {
+            id: Some(PointId {
+                point_id_options: Some(PointIdOptions::Uuid("test-uuid".into())),
+            }),
+            payload,
+            score: 0.95,
+            version: 1,
+            vectors: None,
+            order_value: None,
+            shard_key: None,
+        }];
+
+        let result = extract_metadata_from_points(points);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "test-uuid");
+        assert_eq!(result[0].1.get("path").unwrap(), "test.txt");
+        assert_eq!(result[0].1.get("size").unwrap(), "42");
+        assert_eq!(result[0].1.get("score_val").unwrap(), "2.71");
+    }
+
     #[tokio::test]
     async fn test_qdrant_semantic_store() -> Result<()> {
         if !check_qdrant_online().await {
@@ -217,7 +459,7 @@ mod tests {
 
         let store = SemanticStore::new(&qdrant_url(), "ank_context", 128).await?;
 
-        let vector1 = vec![0.1; 128]; // Mock embedding
+        let vector1 = vec![0.1; 128];
         let mut payload1 = HashMap::new();
         payload1.insert("intent".to_string(), "open browser".into());
 
@@ -229,7 +471,6 @@ mod tests {
             )
             .await?;
 
-        // Search for nearest neighbor
         let results = store.search(vector1, 1).await?;
         assert_eq!(results.len(), 1);
 
@@ -261,7 +502,6 @@ mod tests {
 
         let store = SemanticStore::new(&qdrant_url(), "ank_context_multi", 64).await?;
 
-        // เตรียมข้อมูล 3 จุด
         let vec1 = vec![1.0; 64];
         let vec2 = vec![-1.0; 64];
         let vec3 = vec![0.0; 64];
@@ -295,8 +535,6 @@ mod tests {
             )
             .await?;
 
-        // ค้นหาแบบใกล้เคียง vec1 มากที่สุด (cosine similarity)
-        // ควรจะได้ doc-p เป็นอันดับ 1
         let results = store.search(vec1, 2).await?;
         assert_eq!(results.len(), 2);
 
@@ -328,10 +566,40 @@ mod tests {
 
         let store = SemanticStore::new(&qdrant_url(), "ank_context_empty", 32).await?;
 
-        // ค้นหาใน collection เปล่า หรือไม่ได้ใส่ข้อมูล
         let results = store.search(vec![0.5; 32], 5).await?;
         assert!(results.len() <= 5);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_retry_success_on_first_attempt() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(retry(|| async { Ok::<_, anyhow::Error>(42) }));
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_retry_eventually_succeeds() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(retry(|| {
+            let cc = call_count_clone.clone();
+            async move {
+                let count = cc.fetch_add(1, Ordering::Relaxed);
+                if count < 2 {
+                    Err(anyhow::anyhow!("transient error"))
+                } else {
+                    Ok(99)
+                }
+            }
+        }));
+        assert_eq!(result.unwrap(), 99);
+        assert_eq!(call_count.load(Ordering::Relaxed), 3);
     }
 }
