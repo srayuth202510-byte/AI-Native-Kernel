@@ -291,6 +291,15 @@ cargo run --release --bin ank-cli -- verify-audit
 
 This checks the WORM (Write Once Read Many) audit log for tampering by validating the hash chain.
 
+### Benchmark Warm Recovery
+
+```bash
+cargo bench -p context-memory --bench rocksdb_bench --features context-memory/rocksdb-warm
+```
+
+This includes the persistent warm-store reopen path that measures Cold→Warm recovery time.
+If `bindgen` cannot find `libclang`, set `LIBCLANG_PATH` or install `libclang-dev` first.
+
 ### Run with eBPF Simulation (No Root)
 
 ```bash

@@ -3,7 +3,20 @@ use context_memory::warm::WarmStore;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
-fn bench_rocksdb_warm_store(c: &mut Criterion) {
+#[cfg(feature = "rocksdb-warm")]
+fn prepare_persistent_warm_store(path: &std::path::Path) {
+    let mut store = WarmStore::new_with_path(path);
+    let payload = vec![0u8; 1024];
+
+    for i in 0..5_000 {
+        store.insert(format!("preload_{i:05}"), payload.clone());
+    }
+
+    drop(store);
+}
+
+#[cfg(feature = "rocksdb-warm")]
+fn bench_rocksdb_warm_io(c: &mut Criterion) {
     let mut group = c.benchmark_group("RocksDB_WarmStore");
     // ตั้งเวลาวัดที่น้อยลงหน่อย เพราะ RocksDB อาจจะใช้เวลานานถ้ารันเยอะ
     group.measurement_time(Duration::from_secs(5));
@@ -48,6 +61,31 @@ fn bench_rocksdb_warm_store(c: &mut Criterion) {
     });
 
     group.finish();
+}
+
+#[cfg(feature = "rocksdb-warm")]
+fn bench_rocksdb_warm_reload(c: &mut Criterion) {
+    let mut group = c.benchmark_group("RocksDB_WarmStore_Recovery");
+    group.measurement_time(Duration::from_secs(5));
+
+    let path = std::env::temp_dir().join(format!("ank-rocksdb-bench-{}", uuid::Uuid::new_v4()));
+    prepare_persistent_warm_store(&path);
+
+    group.bench_function("reopen_and_reconstruct_fifo", |b| {
+        b.iter(|| {
+            let store = WarmStore::new_with_path(black_box(&path));
+            black_box(store.len())
+        });
+    });
+
+    group.finish();
+    let _ = std::fs::remove_dir_all(&path);
+}
+
+#[cfg(feature = "rocksdb-warm")]
+fn bench_rocksdb_warm_store(c: &mut Criterion) {
+    bench_rocksdb_warm_io(c);
+    bench_rocksdb_warm_reload(c);
 }
 
 criterion_group!(benches, bench_rocksdb_warm_store);

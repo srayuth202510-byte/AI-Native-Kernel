@@ -47,8 +47,19 @@ check_prereqs() {
 validate_ebpf() {
     echo "==> Validating privileged eBPF/LSM attach path..."
     "$SCRIPT_DIR/check-ebpf-prereqs.sh"
-    "${RTK[@]}" cargo test -p kernel-companion --lib validate_lsm_hooks_attach_to_kernel -- --nocapture
-    "${RTK[@]}" cargo test -p kernel-companion --lib validate_tracepoint_attach_to_kernel -- --nocapture
+    local tests=(
+        validate_ebpf_syscall_tracer_loads
+        validate_ebpf_lsm_security_loads
+        validate_lsm_hooks_attach_to_kernel
+        validate_tracepoint_attach_to_kernel
+        validate_lsm_full_attachment_lifecycle
+    )
+    local test_name
+    for test_name in "${tests[@]}"; do
+        echo "==> Running privileged validation test: ${test_name}"
+        "${RTK[@]}" cargo test -p kernel-companion --lib "${test_name}" -- --nocapture
+    done
+    echo "==> Privileged eBPF/LSM validation completed"
 }
 
 install_prereqs() {
