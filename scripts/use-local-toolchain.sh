@@ -8,20 +8,30 @@ fi
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$TOOLCHAIN_SOURCE")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
+ZIG_BUNDLE="$ROOT/.tools/zig-x86_64-linux-0.16.0/zig"
 
 if [ -d "$ROOT/.tools/rust-1.96.0/bin" ]; then
     export PATH="$ROOT/.tools/rust-1.96.0/bin:$PATH"
 fi
-if [ -d "$ROOT/.tools/zig-x86_64-linux-0.16.0" ]; then
+if [ -x "$ZIG_BUNDLE" ]; then
     export PATH="$ROOT/.tools/zig-x86_64-linux-0.16.0:$PATH"
 fi
 if [ -d "$ROOT/.cargo-home" ] || mkdir -p "$ROOT/.cargo-home" 2>/dev/null; then
     export CARGO_HOME="$ROOT/.cargo-home"
 fi
-export CC="$ROOT/scripts/zig-cc.sh"
-export AR="$ROOT/scripts/zig-ar.sh"
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$ROOT/scripts/zig-cc.sh"
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_AR="$ROOT/scripts/zig-ar.sh"
+
+if [ -x "$ZIG_BUNDLE" ]; then
+    export CC="$ROOT/scripts/zig-cc.sh"
+    export AR="$ROOT/scripts/zig-ar.sh"
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$ROOT/scripts/zig-cc.sh"
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_AR="$ROOT/scripts/zig-ar.sh"
+else
+    export CC="${CC:-clang}"
+    export AR="${AR:-ar}"
+    unset CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER
+    unset CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_AR
+fi
+
 if [ -d "/snap/codex/34/usr/lib/git-core" ]; then
     export GIT_EXEC_PATH="/snap/codex/34/usr/lib/git-core"
 fi
