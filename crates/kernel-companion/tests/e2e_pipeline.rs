@@ -4,6 +4,7 @@
 //! โมดูลนี้รวบรวมฟังก์ชันการทำงานที่จำเป็นทั้งหมด
 use agent_scheduler::{
     AgentScheduler, DistributedRoutingPolicy, RemoteNodeState, block::AgentControlBlock,
+    block::AgentState,
 };
 use capability_security::CapabilitySecurityManager;
 use context_memory::ContextMemoryManager;
@@ -601,6 +602,303 @@ async fn e2e_two_node_delegated_spawn() {
     let remote_agents = scheduler_b.get_running_agents().await;
     assert_eq!(remote_agents.len(), 1);
     assert_eq!(remote_agents[0].id, 2);
+
+    cancel_a_forwarder.cancel();
+    cancel_b_listener.cancel();
+    cancel_b_router.cancel();
+
+    forwarder_task.await.unwrap();
+    listener_task.await.unwrap();
+    router_task.await.unwrap();
+}
+
+// ---- E2E-9: Two-node remote lifecycle management (pause/resume/terminate) ----
+
+#[tokio::test]
+async fn e2e_two_node_remote_lifecycle_management() {
+    let (bus_a, scheduler_a, _, _) = arc_pipeline();
+    let (bus_b, scheduler_b, _, _) = arc_pipeline();
+
+    scheduler_a
+        .configure_routing_policy(DistributedRoutingPolicy {
+            local_node_id: "node-a".to_string(),
+            remote_enabled: true,
+            max_local_agents: 1,
+            overload_threshold_percent: 100,
+            min_remote_trust: 80,
+            max_candidate_nodes: 2,
+        })
+        .await;
+    scheduler_b
+        .configure_routing_policy(DistributedRoutingPolicy {
+            local_node_id: "node-b".to_string(),
+            remote_enabled: false,
+            max_local_agents: 4,
+            overload_threshold_percent: 100,
+            min_remote_trust: 80,
+            max_candidate_nodes: 2,
+        })
+        .await;
+    scheduler_a
+        .upsert_remote_node(RemoteNodeState::new(
+            "node-b",
+            4,
+            100,
+            vec!["small".to_string(), "large".to_string()],
+        ))
+        .await;
+
+    scheduler_a
+        .spawn_agent(AgentControlBlock::new(0))
+        .await
+        .expect("seed local agent should spawn");
+
+    let (bridge_a_io, bridge_b_io) = tokio::io::duplex(8 * 1024);
+
+    let cancel_a_forwarder = CancellationToken::new();
+    let cancel_b_listener = CancellationToken::new();
+    let cancel_b_router = CancellationToken::new();
+
+    // Router on node B: processes intents published to bus_b
+    let router_task = tokio::spawn({
+        let scheduler_b = Arc::clone(&scheduler_b);
+        let bus_b = Arc::clone(&bus_b);
+        let cancel = cancel_b_router.clone();
+        async move {
+            let mut subscriber = bus_b.subscribe();
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                    }
+                    maybe_intent = subscriber.receive() => {
+                        let Some(intent) = maybe_intent else {
+                            break;
+                        };
+                        let _ = scheduler_b.route_intent(intent.clone()).await;
+
+                        if intent.intent_type == IntentType::Event && intent.source == "agent-scheduler" {
+                            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
+                                if data.get("action").and_then(|value| value.as_str()) == Some("PlacementRequest") {
+                                    let agent_id = data["agent_id"].as_u64().unwrap();
+                                    let resp_payload = serde_json::json!({
+                                        "action": "PlacementResponse",
+                                        "agent_id": agent_id,
+                                        "compute_target": "Cpu",
+                                    })
+                                    .to_string();
+                                    bus_b
+                                        .publish(Intent::new(
+                                            format!("resp-{agent_id}"),
+                                            IntentType::Event,
+                                            resp_payload,
+                                            IntentPriority::High,
+                                            "compute-scheduler",
+                                        ))
+                                        .await
+                                        .unwrap();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Multi-hop forwarder on node A: forwards all delegated intents over bridge
+    let forwarder_task = tokio::spawn({
+        let bus_a = Arc::clone(&bus_a);
+        let cancel = cancel_a_forwarder.clone();
+        async move {
+            let mut subscriber = bus_a.subscribe();
+            let (reader, mut writer) = tokio::io::split(bridge_a_io);
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                    }
+                    maybe_intent = subscriber.receive() => {
+                        let Some(intent) = maybe_intent else {
+                            break;
+                        };
+
+                        if intent
+                            .metadata
+                            .get("routing_mode")
+                            .map(String::as_str)
+                            != Some("delegated")
+                        {
+                            continue;
+                        }
+
+                        let envelope = serde_json::json!({ "intent": intent });
+                        let payload = format!("{}\n", envelope);
+                        writer.write_all(payload.as_bytes()).await.unwrap();
+                        writer.flush().await.unwrap();
+
+                        line.clear();
+                        reader.read_line(&mut line).await.unwrap();
+                        let ack: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                        assert_eq!(ack["accepted"], true);
+                    }
+                }
+            }
+        }
+    });
+
+    // Listener on node B: receives intents from bridge and publishes to bus_b
+    let listener_task = tokio::spawn({
+        let bus_b = Arc::clone(&bus_b);
+        let cancel = cancel_b_listener.clone();
+        async move {
+            let (reader, mut writer) = tokio::io::split(bridge_b_io);
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                    }
+                    read_result = reader.read_line(&mut line) => {
+                        read_result.unwrap();
+                        let intent: Intent = serde_json::from_value(
+                            serde_json::from_str::<serde_json::Value>(line.trim())
+                                .unwrap()["intent"].clone(),
+                        ).unwrap();
+                        bus_b.publish(intent).await.unwrap();
+                        let ack = serde_json::json!({
+                            "accepted": true,
+                            "node_id": "node-b",
+                            "error": null,
+                        });
+                        writer.write_all(format!("{}\n", ack).as_bytes()).await.unwrap();
+                        writer.flush().await.unwrap();
+                    }
+                }
+            }
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // --- Step 1: Delegated spawn ---
+    scheduler_a
+        .route_intent(Intent::new(
+            "delegated-spawn",
+            IntentType::Command,
+            "spawn-agent",
+            IntentPriority::Critical,
+            "node-a-test",
+        ))
+        .await
+        .expect("delegated route should succeed");
+
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if scheduler_b.get_running_agents().await.len() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("node B should eventually spawn delegated agent");
+
+    assert_eq!(
+        scheduler_a.get_running_agents().await.len(),
+        1,
+        "node A should only keep the seed local agent"
+    );
+    let remote_agents = scheduler_b.get_running_agents().await;
+    assert_eq!(remote_agents.len(), 1);
+    let remote_id = remote_agents[0].id;
+    assert_eq!(remote_id, 2);
+
+    // --- Step 2: Remote pause ---
+    scheduler_a
+        .remote_pause_agent(remote_id, "node-b")
+        .await
+        .expect("remote pause should dispatch");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let paused = scheduler_b
+        .get_agent(remote_id)
+        .await
+        .expect("agent should exist on node B after remote pause");
+    assert_eq!(
+        paused.state,
+        AgentState::Paused,
+        "agent should be Paused after remote pause"
+    );
+
+    // --- Step 3: Remote resume ---
+    scheduler_a
+        .remote_resume_agent(remote_id, "node-b")
+        .await
+        .expect("remote resume should dispatch");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resumed = scheduler_b
+        .get_agent(remote_id)
+        .await
+        .expect("agent should exist on node B after remote resume");
+    assert_eq!(
+        resumed.state,
+        AgentState::Running,
+        "agent should be Running after remote resume"
+    );
+
+    // --- Step 4: Remote status ---
+    scheduler_a
+        .remote_agent_status(remote_id, "node-b")
+        .await
+        .expect("remote status should dispatch");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let status = scheduler_b
+        .get_agent(remote_id)
+        .await
+        .expect("agent should still exist on node B");
+    assert_eq!(
+        status.state,
+        AgentState::Running,
+        "agent should still be Running after status query"
+    );
+
+    // --- Step 5: Remote terminate ---
+    scheduler_a
+        .remote_terminate_agent(remote_id, "node-b")
+        .await
+        .expect("remote terminate should dispatch");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let terminated = scheduler_b.get_agent(remote_id).await;
+    assert!(
+        terminated.is_err(),
+        "agent should be gone from node B after remote terminate"
+    );
+
+    // --- Step 6: node A local agent untouched ---
+    assert_eq!(
+        scheduler_a.get_running_agents().await.len(),
+        1,
+        "node A should still have its local seed agent"
+    );
 
     cancel_a_forwarder.cancel();
     cancel_b_listener.cancel();
