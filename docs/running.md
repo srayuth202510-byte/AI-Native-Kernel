@@ -294,11 +294,11 @@ This checks the WORM (Write Once Read Many) audit log for tampering by validatin
 ### Benchmark Warm Recovery
 
 ```bash
-cargo bench -p context-memory --bench rocksdb_bench --features context-memory/rocksdb-warm
+./scripts/run.sh validate-warm-bench
 ```
 
-This includes the persistent warm-store reopen path that measures Cold→Warm recovery time.
-If `bindgen` cannot find `libclang`, set `LIBCLANG_PATH` or install `libclang-dev` first.
+This includes a preflight check, a `--no-run` compile step, and the persistent warm-store reopen benchmark that measures Cold→Warm recovery time.
+If `bindgen` cannot find `libclang`, set `LIBCLANG_PATH` or provide a host LLVM/libclang toolchain first.
 
 ### Validate P2P Mesh
 

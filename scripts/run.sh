@@ -68,6 +68,12 @@ validate_p2p() {
     echo "==> P2P / distributed context mesh validation completed"
 }
 
+validate_warm_bench() {
+    echo "==> Validating RocksDB warm benchmark path..."
+    "$SCRIPT_DIR/run-warm-bench.sh"
+    echo "==> RocksDB warm benchmark validation completed"
+}
+
 install_prereqs() {
     echo "==> Installing real eBPF prerequisites..."
     "$SCRIPT_DIR/install-ebpf-deps.sh" "$@"
@@ -101,12 +107,15 @@ case "$MODE" in
     validate-p2p)
         validate_p2p
         ;;
+    validate-warm-bench)
+        validate_warm_bench
+        ;;
     install-prereqs)
         shift 2>/dev/null || true
         install_prereqs "$@"
         ;;
     *)
-        echo "Usage: $0 [companion|cli|tui|build|prereqs|validate-ebpf|validate-p2p|install-prereqs] [args...]"
+        echo "Usage: $0 [companion|cli|tui|build|prereqs|validate-ebpf|validate-p2p|validate-warm-bench|install-prereqs] [args...]"
         echo ""
         echo "  companion  (default) Build & run the companion daemon"
         echo "  cli        Build & run the ANK CLI"
@@ -115,6 +124,7 @@ case "$MODE" in
         echo "  prereqs    Check real eBPF/LSM prerequisites"
         echo "  validate-ebpf  Run prereq checks and privileged kernel attach tests"
         echo "  validate-p2p   Run distributed context mesh validation tests"
+        echo "  validate-warm-bench  Check and run the RocksDB warm recovery benchmark"
         echo "  install-prereqs  Install real eBPF/LSM dependencies on Debian/Ubuntu"
         exit 1
         ;;
