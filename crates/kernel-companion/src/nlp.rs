@@ -47,6 +47,86 @@ pub fn parse_natural_language_intent(intent: &Intent) -> Option<Intent> {
         return None;
     }
 
+    let payload_lower = intent.payload.to_lowercase();
+
+    // Check direct filesystem patterns first
+    if payload_lower.starts_with("write file ") {
+        let rest = &intent.payload["write file ".len()..];
+        let parts: Vec<&str> = rest.splitn(2, " containing ").collect();
+        if parts.len() == 2 {
+            let path = parts[0].trim().to_string();
+            let content = parts[1].trim().to_string();
+            let mut metadata = HashMap::new();
+            metadata.insert("path".to_string(), path);
+            metadata.insert("content".to_string(), content);
+
+            let mut cmd = Intent::new(
+                uuid::Uuid::new_v4().to_string(),
+                IntentType::Command,
+                "write-file".to_string(),
+                IntentPriority::High,
+                "nlp-router".to_string(),
+            );
+            cmd.metadata = metadata;
+            return Some(cmd);
+        }
+    } else if payload_lower.starts_with("read file ") {
+        let path = intent.payload["read file ".len()..].trim().to_string();
+        if !path.is_empty() {
+            let mut metadata = HashMap::new();
+            metadata.insert("path".to_string(), path);
+
+            let mut cmd = Intent::new(
+                uuid::Uuid::new_v4().to_string(),
+                IntentType::Command,
+                "read-file".to_string(),
+                IntentPriority::High,
+                "nlp-router".to_string(),
+            );
+            cmd.metadata = metadata;
+            return Some(cmd);
+        }
+    } else if payload_lower.starts_with("search file ")
+        || payload_lower.starts_with("search files for ")
+    {
+        let prefix = if payload_lower.starts_with("search files for ") {
+            "search files for "
+        } else {
+            "search file "
+        };
+        let query = intent.payload[prefix.len()..].trim().to_string();
+        if !query.is_empty() {
+            let mut metadata = HashMap::new();
+            metadata.insert("query".to_string(), query);
+
+            let mut cmd = Intent::new(
+                uuid::Uuid::new_v4().to_string(),
+                IntentType::Command,
+                "search-file".to_string(),
+                IntentPriority::High,
+                "nlp-router".to_string(),
+            );
+            cmd.metadata = metadata;
+            return Some(cmd);
+        }
+    } else if payload_lower.starts_with("delete file ") {
+        let path = intent.payload["delete file ".len()..].trim().to_string();
+        if !path.is_empty() {
+            let mut metadata = HashMap::new();
+            metadata.insert("path".to_string(), path);
+
+            let mut cmd = Intent::new(
+                uuid::Uuid::new_v4().to_string(),
+                IntentType::Command,
+                "delete-file".to_string(),
+                IntentPriority::High,
+                "nlp-router".to_string(),
+            );
+            cmd.metadata = metadata;
+            return Some(cmd);
+        }
+    }
+
     let query_vector = generate_embedding(&intent.payload);
 
     // กำหนดโปรโตไทป์ความหมายของคำสั่งต่างๆ
@@ -152,5 +232,85 @@ mod tests {
 
         let parsed = parse_natural_language_intent(&intent);
         assert!(parsed.is_none(), "unrelated text should be ignored");
+    }
+
+    #[test]
+    fn test_parse_fs_write_intent() {
+        let intent = Intent::new(
+            "id-fs-1",
+            IntentType::NaturalLanguage,
+            "write file secrets.txt containing very-private-data",
+            IntentPriority::Medium,
+            "user",
+        );
+
+        let parsed = parse_natural_language_intent(&intent).expect("should parse");
+        assert_eq!(parsed.intent_type, IntentType::Command);
+        assert_eq!(parsed.payload, "write-file");
+        assert_eq!(
+            parsed.metadata.get("path").map(|s| s.as_str()),
+            Some("secrets.txt")
+        );
+        assert_eq!(
+            parsed.metadata.get("content").map(|s| s.as_str()),
+            Some("very-private-data")
+        );
+    }
+
+    #[test]
+    fn test_parse_fs_read_intent() {
+        let intent = Intent::new(
+            "id-fs-2",
+            IntentType::NaturalLanguage,
+            "read file secrets.txt",
+            IntentPriority::Medium,
+            "user",
+        );
+
+        let parsed = parse_natural_language_intent(&intent).expect("should parse");
+        assert_eq!(parsed.intent_type, IntentType::Command);
+        assert_eq!(parsed.payload, "read-file");
+        assert_eq!(
+            parsed.metadata.get("path").map(|s| s.as_str()),
+            Some("secrets.txt")
+        );
+    }
+
+    #[test]
+    fn test_parse_fs_search_intent() {
+        let intent = Intent::new(
+            "id-fs-3",
+            IntentType::NaturalLanguage,
+            "search files for neural network design",
+            IntentPriority::Medium,
+            "user",
+        );
+
+        let parsed = parse_natural_language_intent(&intent).expect("should parse");
+        assert_eq!(parsed.intent_type, IntentType::Command);
+        assert_eq!(parsed.payload, "search-file");
+        assert_eq!(
+            parsed.metadata.get("query").map(|s| s.as_str()),
+            Some("neural network design")
+        );
+    }
+
+    #[test]
+    fn test_parse_fs_delete_intent() {
+        let intent = Intent::new(
+            "id-fs-4",
+            IntentType::NaturalLanguage,
+            "delete file secrets.txt",
+            IntentPriority::Medium,
+            "user",
+        );
+
+        let parsed = parse_natural_language_intent(&intent).expect("should parse");
+        assert_eq!(parsed.intent_type, IntentType::Command);
+        assert_eq!(parsed.payload, "delete-file");
+        assert_eq!(
+            parsed.metadata.get("path").map(|s| s.as_str()),
+            Some("secrets.txt")
+        );
     }
 }

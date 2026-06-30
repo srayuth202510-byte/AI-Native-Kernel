@@ -568,6 +568,15 @@ pub struct ContextMemoryConfig {
     #[serde(default = "default_warm_store_path")]
     /// ข้อมูล `warm_store_path` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub warm_store_path: String,
+    #[serde(default = "default_sfs_enabled")]
+    /// เปิดใช้งาน Semantic File System
+    pub sfs_enabled: bool,
+    #[serde(default = "default_sfs_root_path")]
+    /// พาธสำหรับจัดเก็บไฟล์เซแมนติก
+    pub sfs_root_path: String,
+    #[serde(default = "default_qdrant_url")]
+    /// URL ของ Qdrant server
+    pub qdrant_url: String,
 }
 
 impl Default for ContextMemoryConfig {
@@ -579,6 +588,9 @@ impl Default for ContextMemoryConfig {
             p2p_listen_addr: default_p2p_listen_addr(),
             p2p_bootstrap_nodes: default_p2p_bootstrap(),
             warm_store_path: default_warm_store_path(),
+            sfs_enabled: default_sfs_enabled(),
+            sfs_root_path: default_sfs_root_path(),
+            qdrant_url: default_qdrant_url(),
         }
     }
 }
@@ -608,6 +620,15 @@ fn default_warm_store_path() -> String {
     } else {
         "/tmp/ank-warm-store".to_string()
     }
+}
+fn default_sfs_enabled() -> bool {
+    false
+}
+fn default_sfs_root_path() -> String {
+    "/tmp/ank-sfs".to_string()
+}
+fn default_qdrant_url() -> String {
+    "http://localhost:6334".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

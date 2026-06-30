@@ -16,6 +16,7 @@ use compute_scheduler::placement::{PlacementPolicy, WorkloadClass};
 use compute_scheduler::{ComputeProfile, ComputeScheduler};
 use context_memory::ContextMemoryManager;
 use context_memory::p2p_mesh::{NodeTelemetry, P2PMeshManager};
+use context_memory::{SemanticFileSystem, semantic::SemanticStore};
 use immune_system::{BCellAgent, MacrophageAgent, TCellAgent, ThreatDecision};
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::collections::HashSet;
@@ -131,8 +132,14 @@ pub struct KernelCompanion {
     p2p_listener_task: Option<JoinHandle<()>>,
     /// handle ของ P2P gossip sync loop task
     p2p_gossip_task: Option<JoinHandle<()>>,
+    /// handle ของ P2P failure detector loop task
+    p2p_failure_detector_task: Option<JoinHandle<()>>,
     /// ตัวจัดการการตั้งค่าการรีสตาร์ตและการตรวจตรา
     retry_telemetry_manager: Arc<RetryAndTelemetryManager>,
+    /// ระบบจัดการไฟล์แบบเซแมนติก
+    sfs: Option<Arc<SemanticFileSystem>>,
+    /// handle ของ SFS intent processing task
+    sfs_task: Option<JoinHandle<()>>,
 }
 
 impl KernelCompanion {
@@ -249,7 +256,10 @@ impl KernelCompanion {
             p2p_mesh: None,
             p2p_listener_task: None,
             p2p_gossip_task: None,
+            p2p_failure_detector_task: None,
             retry_telemetry_manager,
+            sfs: None,
+            sfs_task: None,
         }
     }
 
@@ -750,6 +760,11 @@ impl KernelCompanion {
                         p2p_gossip_mgr.start_gossip_loop().await;
                     }));
 
+                    let p2p_fd_mgr = Arc::clone(&p2p_mgr);
+                    self.p2p_failure_detector_task = Some(tokio::spawn(async move {
+                        p2p_fd_mgr.start_failure_detector_loop().await;
+                    }));
+
                     let p2p_bootstrap_mgr = Arc::clone(&p2p_mgr);
                     let bootstrap_nodes = self.config.context_memory.p2p_bootstrap_nodes.clone();
                     tokio::spawn(async move {
@@ -897,6 +912,164 @@ impl KernelCompanion {
                 }));
             }
 
+            // ── Initialize Semantic File System (SFS) ──
+            if self.config.context_memory.sfs_enabled {
+                info!("Initializing Semantic File System (SFS)...");
+                let qdrant_url = std::env::var("QDRANT_URL")
+                    .unwrap_or_else(|_| self.config.context_memory.qdrant_url.clone());
+                let collection = "semantic_fs".to_string();
+                let vector_size: usize = 128; // matching NLP djb2 word-hash embedding vector size
+
+                match SemanticStore::new(&qdrant_url, &collection, vector_size as u64).await {
+                    Ok(store) => {
+                        match SemanticFileSystem::new(
+                            &self.config.context_memory.sfs_root_path,
+                            Arc::new(store),
+                            vector_size,
+                        )
+                        .await
+                        {
+                            Ok(sfs_inst) => {
+                                let sfs_arc = Arc::new(sfs_inst);
+                                self.sfs = Some(Arc::clone(&sfs_arc));
+                                info!("Semantic File System (SFS) initialized successfully.");
+
+                                // Spawn the background SFS command processor task
+                                let sfs_intent_bus = Arc::clone(&self.intent_bus);
+                                let mut sfs_sub = sfs_intent_bus.subscribe();
+
+                                self.sfs_task = Some(tokio::spawn(async move {
+                                    info!("SFS Command Processor task started.");
+                                    loop {
+                                        match sfs_sub.receive().await {
+                                            Some(intent) => {
+                                                if intent.intent_type == IntentType::Command {
+                                                    let bus = Arc::clone(&sfs_intent_bus);
+                                                    let sfs_ref = Arc::clone(&sfs_arc);
+                                                    tokio::spawn(async move {
+                                                        match intent.payload.as_str() {
+                                                            "write-file" => {
+                                                                if let (Some(path), Some(content)) = (
+                                                                    intent.metadata.get("path"),
+                                                                    intent.metadata.get("content"),
+                                                                ) {
+                                                                    match sfs_ref
+                                                                        .write_file(path, content)
+                                                                        .await
+                                                                    {
+                                                                        Ok(()) => {
+                                                                            let _ = bus.publish(Intent::new(
+                                                                                uuid::Uuid::new_v4().to_string(),
+                                                                                IntentType::Event,
+                                                                                format!("Successfully wrote file {path}"),
+                                                                                intent_bus::IntentPriority::Medium,
+                                                                                "sfs-processor",
+                                                                            )).await;
+                                                                        }
+                                                                        Err(e) => {
+                                                                            warn!(
+                                                                                "SFS write error: {e}"
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            "read-file" => {
+                                                                if let Some(path) =
+                                                                    intent.metadata.get("path")
+                                                                {
+                                                                    match sfs_ref
+                                                                        .read_file(path)
+                                                                        .await
+                                                                    {
+                                                                        Ok(content) => {
+                                                                            let _ = bus.publish(Intent::new(
+                                                                                uuid::Uuid::new_v4().to_string(),
+                                                                                IntentType::Event,
+                                                                                format!("File content: {content}"),
+                                                                                intent_bus::IntentPriority::Medium,
+                                                                                "sfs-processor",
+                                                                            )).await;
+                                                                        }
+                                                                        Err(e) => {
+                                                                            warn!(
+                                                                                "SFS read error: {e}"
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            "search-file" => {
+                                                                if let Some(query) =
+                                                                    intent.metadata.get("query")
+                                                                {
+                                                                    match sfs_ref
+                                                                        .search_paths(query, 5)
+                                                                        .await
+                                                                    {
+                                                                        Ok(results) => {
+                                                                            let _ = bus.publish(Intent::new(
+                                                                                uuid::Uuid::new_v4().to_string(),
+                                                                                IntentType::Event,
+                                                                                format!("Search results: {:?}", results),
+                                                                                intent_bus::IntentPriority::Medium,
+                                                                                "sfs-processor",
+                                                                            )).await;
+                                                                        }
+                                                                        Err(e) => {
+                                                                            warn!(
+                                                                                "SFS search error: {e}"
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            "delete-file" => {
+                                                                if let Some(path) =
+                                                                    intent.metadata.get("path")
+                                                                {
+                                                                    match sfs_ref
+                                                                        .delete_file(path)
+                                                                        .await
+                                                                    {
+                                                                        Ok(()) => {
+                                                                            let _ = bus.publish(Intent::new(
+                                                                                uuid::Uuid::new_v4().to_string(),
+                                                                                IntentType::Event,
+                                                                                format!("Successfully deleted file {path}"),
+                                                                                intent_bus::IntentPriority::Medium,
+                                                                                "sfs-processor",
+                                                                            )).await;
+                                                                        }
+                                                                        Err(e) => {
+                                                                            warn!(
+                                                                                "SFS delete error: {e}"
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                    });
+                                                }
+                                            }
+                                            None => break,
+                                        }
+                                    }
+                                }));
+                            }
+                            Err(e) => {
+                                warn!("Failed to initialize Semantic File System: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to initialize Semantic Store (Qdrant): {e}");
+                    }
+                }
+            }
+
             let cancel_uds = tokio_util_cancel::CancellationToken::new();
             self.uds_cancel = Some(cancel_uds.clone());
             let uds_task = uds::start_uds_server(
@@ -963,6 +1136,9 @@ impl KernelCompanion {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(true);
         }
+        if let Some(task) = self.sfs_task.take() {
+            task.abort();
+        }
         if let Some(cancel) = self.tracer_cancel.take() {
             cancel.cancel();
         }
@@ -1004,6 +1180,10 @@ impl KernelCompanion {
             let _ = task.await;
         }
         if let Some(task) = self.p2p_gossip_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        if let Some(task) = self.p2p_failure_detector_task.take() {
             task.abort();
             let _ = task.await;
         }

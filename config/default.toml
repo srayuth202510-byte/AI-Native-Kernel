@@ -48,6 +48,9 @@ p2p_enabled = false
 p2p_listen_addr = "127.0.0.1:9091"
 p2p_bootstrap_nodes = []
 warm_store_path = "/tmp/ank-warm-store"
+sfs_enabled = false
+sfs_root_path = "/tmp/ank-sfs"
+qdrant_url = "http://localhost:6334"
 
 [compute_scheduler]
 # To run without mock fallbacks for compute engines, set env ANK_COMPUTE_MOCK_FALLBACK=false
