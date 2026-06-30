@@ -96,6 +96,11 @@ write_summary() {
 finalize() {
     local overall_exit_code="${1:-0}"
     write_summary "$overall_exit_code"
+    echo
+    echo "==> CI Validation Summary Table ==>"
+    cat "$SUMMARY_PATH"
+    echo "==================================="
+    echo
 }
 
 trap 'status=$?; finalize "$status"; exit "$status"' EXIT
