@@ -33,7 +33,25 @@ For full validation, the host must provide:
 
 ## Option 1: Classic Ubuntu/Debian Host
 
-Run these commands on a classic host shell, container, or chroot that has `apt-get`:
+Preferred path:
+
+```bash
+./scripts/bootstrap-validation-host.sh
+```
+
+To provision and immediately execute the validation workflows:
+
+```bash
+./scripts/bootstrap-validation-host.sh --run-validations
+```
+
+Dry run:
+
+```bash
+./scripts/bootstrap-validation-host.sh --dry-run
+```
+
+Manual equivalent if you do not want to use the bootstrap script:
 
 ```bash
 sudo apt-get update
