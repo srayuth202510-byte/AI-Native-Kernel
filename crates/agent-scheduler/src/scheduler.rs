@@ -7,8 +7,9 @@ use compute_scheduler::ComputeTarget;
 use compute_scheduler::placement::WorkloadClass;
 use context_memory::ContextMemoryManager;
 use intent_bus::{
-    Intent, IntentBus, IntentType, META_ORIGIN_NODE, META_ROUTING_MODE, META_TARGET_NODE,
-    ROUTING_MODE_DELEGATED, ROUTING_MODE_LOCAL,
+    Intent, IntentBus, IntentType, LIFECYCLE_PAUSE, LIFECYCLE_RESUME, LIFECYCLE_STATUS,
+    LIFECYCLE_TERMINATE, META_AGENT_ID, META_LIFECYCLE_OP, META_ORIGIN_NODE, META_ROUTING_MODE,
+    META_ROUTING_REASON, META_TARGET_NODE, ROUTING_MODE_DELEGATED, ROUTING_MODE_LOCAL,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use std::time::Duration;
 use tokio::sync::{RwLock, broadcast};
 use tokio::task;
 use tokio::task::JoinHandle;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 /// ตัวจัดตารางเวลาและการประมวลผลของ Agent (Agent Scheduler)
 /// ทำหน้าที่บริหารจัดการสถานะ วงจรชีวิต และการสื่อสารประสานงานของ Agent ทั้งหมดในระบบ
@@ -436,6 +437,172 @@ impl AgentScheduler {
         Ok(())
     }
 
+    /// Send a lifecycle intent to a remote node.
+    async fn send_lifecycle_intent(
+        &self,
+        op: &str,
+        agent_id: u64,
+        target_node: &str,
+    ) -> Result<(), SchedulerError> {
+        let local_id = self.routing_policy.read().await.local_node_id.clone();
+        let intent = Intent::new(
+            format!("lifecycle-{op}-{agent_id}-{}", fastrand::u64(..)),
+            IntentType::Command,
+            "lifecycle",
+            intent_bus::IntentPriority::High,
+            &local_id,
+        )
+        .with_metadata(META_AGENT_ID, agent_id.to_string())
+        .with_metadata(META_LIFECYCLE_OP, op)
+        .with_metadata(META_ORIGIN_NODE, &local_id)
+        .with_metadata(META_TARGET_NODE, target_node)
+        .with_metadata(META_ROUTING_MODE, ROUTING_MODE_DELEGATED)
+        .with_metadata(
+            META_ROUTING_REASON,
+            format!("remote lifecycle {op} from {local_id}"),
+        );
+
+        self.intent_bus
+            .publish(intent)
+            .await
+            .map_err(|_| SchedulerError::IntentDispatchFailed)
+    }
+
+    /// Pause an agent on a remote node via IntentBus.
+    ///
+    /// # Errors
+    /// Returns `SchedulerError::IntentDispatchFailed` if the bus is unavailable.
+    pub async fn remote_pause_agent(
+        &self,
+        agent_id: u64,
+        target_node: impl Into<String>,
+    ) -> Result<(), SchedulerError> {
+        self.send_lifecycle_intent(LIFECYCLE_PAUSE, agent_id, &target_node.into())
+            .await
+    }
+
+    /// Resume an agent on a remote node via IntentBus.
+    ///
+    /// # Errors
+    /// Returns `SchedulerError::IntentDispatchFailed` if the bus is unavailable.
+    pub async fn remote_resume_agent(
+        &self,
+        agent_id: u64,
+        target_node: impl Into<String>,
+    ) -> Result<(), SchedulerError> {
+        self.send_lifecycle_intent(LIFECYCLE_RESUME, agent_id, &target_node.into())
+            .await
+    }
+
+    /// Terminate an agent on a remote node via IntentBus.
+    ///
+    /// # Errors
+    /// Returns `SchedulerError::IntentDispatchFailed` if the bus is unavailable.
+    pub async fn remote_terminate_agent(
+        &self,
+        agent_id: u64,
+        target_node: impl Into<String>,
+    ) -> Result<(), SchedulerError> {
+        self.send_lifecycle_intent(LIFECYCLE_TERMINATE, agent_id, &target_node.into())
+            .await
+    }
+
+    /// Query the status of an agent on a remote node via IntentBus.
+    ///
+    /// # Errors
+    /// Returns `SchedulerError::IntentDispatchFailed` if the bus is unavailable.
+    pub async fn remote_agent_status(
+        &self,
+        agent_id: u64,
+        target_node: impl Into<String>,
+    ) -> Result<(), SchedulerError> {
+        self.send_lifecycle_intent(LIFECYCLE_STATUS, agent_id, &target_node.into())
+            .await
+    }
+
+    /// Sync remote node state from P2P mesh telemetry.
+    pub async fn sync_remote_nodes_from_mesh(
+        &self,
+        mesh: &context_memory::p2p_mesh::P2PMeshManager,
+    ) {
+        let telemetries = mesh.get_telemetry_snapshot().await;
+        for (node_id, telemetry) in telemetries {
+            self.upsert_remote_node(RemoteNodeState {
+                node_id,
+                available_agent_slots: telemetry.available_agent_slots,
+                trust_score: 100,
+                capabilities: telemetry.capabilities.clone(),
+            })
+            .await;
+        }
+    }
+
+    /// Start a background task that periodically syncs remote node state from the P2P mesh.
+    pub fn start_remote_sync_loop(
+        self: Arc<Self>,
+        mesh: Arc<context_memory::p2p_mesh::P2PMeshManager>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                self.sync_remote_nodes_from_mesh(&mesh).await;
+            }
+        })
+    }
+
+    /// Handle an incoming lifecycle intent from a remote node.
+    async fn handle_lifecycle_intent(&self, intent: &Intent) -> Result<(), SchedulerError> {
+        let local_node_id = self.routing_policy.read().await.local_node_id.clone();
+        let target = intent.metadata.get(META_TARGET_NODE);
+
+        // If this intent targets a different node, ignore it
+        if target.is_some_and(|t| t != &local_node_id) {
+            debug!(target, "ignoring lifecycle intent for another node");
+            return Ok(());
+        }
+
+        let agent_id = intent
+            .metadata
+            .get(META_AGENT_ID)
+            .and_then(|v| v.parse::<u64>().ok())
+            .ok_or(SchedulerError::AgentNotFound)?;
+
+        let op = intent
+            .metadata
+            .get(META_LIFECYCLE_OP)
+            .map(String::as_str)
+            .unwrap_or("");
+
+        let origin = intent
+            .metadata
+            .get(META_ORIGIN_NODE)
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        info!(
+            op,
+            agent_id, origin, "AgentScheduler: handling remote lifecycle intent"
+        );
+
+        match op {
+            LIFECYCLE_PAUSE => self.pause_agent(agent_id).await,
+            LIFECYCLE_RESUME => self.resume_agent(agent_id).await,
+            LIFECYCLE_TERMINATE => self.terminate_agent(agent_id).await,
+            LIFECYCLE_STATUS => {
+                match self.get_agent(agent_id).await {
+                    Ok(agent) => info!(agent_id, state = ?agent.state, "remote status query"),
+                    Err(_) => warn!(agent_id, "remote status query: agent not found"),
+                }
+                Ok(())
+            }
+            other => {
+                warn!(op = other, "unknown lifecycle operation");
+                Ok(())
+            }
+        }
+    }
+
     /// หาเส้นทางและจัดการคำสั่งที่ส่งผ่านมาจาก Intent Bus
     ///
     /// # Errors
@@ -443,6 +610,9 @@ impl AgentScheduler {
     pub async fn route_intent(&self, intent: Intent) -> Result<(), SchedulerError> {
         match intent.intent_type {
             IntentType::Command => {
+                if intent.payload == "lifecycle" {
+                    return self.handle_lifecycle_intent(&intent).await;
+                }
                 if intent.payload == "spawn-agent" {
                     let local_node_id = self.routing_policy.read().await.local_node_id.clone();
                     if intent

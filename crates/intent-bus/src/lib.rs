@@ -27,6 +27,19 @@ pub const ROUTING_MODE_LOCAL: &str = "local";
 /// Metadata value for intents that were delegated to another node.
 pub const ROUTING_MODE_DELEGATED: &str = "delegated";
 
+/// Metadata key for the agent ID associated with a lifecycle operation.
+pub const META_AGENT_ID: &str = "agent_id";
+/// Metadata key for the lifecycle operation type (pause, resume, terminate, status).
+pub const META_LIFECYCLE_OP: &str = "lifecycle_op";
+/// Lifecycle operation: pause an agent on a remote node.
+pub const LIFECYCLE_PAUSE: &str = "pause";
+/// Lifecycle operation: resume an agent on a remote node.
+pub const LIFECYCLE_RESUME: &str = "resume";
+/// Lifecycle operation: terminate an agent on a remote node.
+pub const LIFECYCLE_TERMINATE: &str = "terminate";
+/// Lifecycle operation: query agent status from a remote node.
+pub const LIFECYCLE_STATUS: &str = "status";
+
 /// `Intent` คือตัวแทนของเจตจำนงหรือความต้องการที่ส่งเข้ามาในระบบ
 /// เพื่อให้ Agent หรือส่วนประกอบอื่น ๆ นำไปประมวลผลต่อ
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

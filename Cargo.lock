@@ -16,6 +16,7 @@ dependencies = [
  "compute-scheduler",
  "context-memory",
  "criterion",
+ "fastrand",
  "intent-bus",
  "serde_json",
  "thiserror 1.0.69",
