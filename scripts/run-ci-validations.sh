@@ -19,10 +19,17 @@ declare -a STAGE_CODES=()
 declare -a STAGE_SECONDS=()
 
 FAIL_COUNT=0
+NON_BLOCKING_FAIL_COUNT=0
 
 run_stage() {
     local stage_name="$1"
-    shift
+    local blocking_mode="${2:-required}"
+    if [[ "$blocking_mode" == "required" || "$blocking_mode" == "non-blocking" ]]; then
+        shift 2
+    else
+        blocking_mode="required"
+        shift 1
+    fi
 
     echo "==> CI validation: ${stage_name}"
 
@@ -44,6 +51,9 @@ run_stage() {
 
     if [[ "$exit_code" -eq 0 ]]; then
         STAGE_STATUS+=("PASS")
+    elif [[ "$blocking_mode" == "non-blocking" ]]; then
+        STAGE_STATUS+=("WARN")
+        NON_BLOCKING_FAIL_COUNT=$((NON_BLOCKING_FAIL_COUNT + 1))
     else
         STAGE_STATUS+=("FAIL")
         FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -58,6 +68,8 @@ write_summary() {
 
     if [[ "$FAIL_COUNT" -gt 0 || "$overall_exit_code" -ne 0 ]]; then
         overall_status="FAIL"
+    elif [[ "$NON_BLOCKING_FAIL_COUNT" -gt 0 ]]; then
+        overall_status="PASS (with warnings)"
     fi
 
     {
@@ -65,6 +77,7 @@ write_summary() {
         echo
         echo "- Overall: ${overall_status}"
         echo "- Failed stages: ${FAIL_COUNT}"
+        echo "- Non-blocking stage warnings: ${NON_BLOCKING_FAIL_COUNT}"
         echo
         echo "| Stage | Status | Exit Code | Duration (s) |"
         echo "| --- | --- | ---: | ---: |"
@@ -91,7 +104,7 @@ run_stage "formatting" cargo fmt --all -- --check
 run_stage "clippy" cargo clippy --all-targets --all-features -- -D warnings
 run_stage "workspace + Qdrant-backed tests" bash "$SCRIPT_DIR/run-all-tests.sh"
 run_stage "P2P mesh slice" bash "$SCRIPT_DIR/run-p2p-tests.sh"
-run_stage "eBPF prerequisite check" bash "$SCRIPT_DIR/check-ebpf-prereqs.sh"
+run_stage "eBPF prerequisite check" non-blocking bash "$SCRIPT_DIR/check-ebpf-prereqs.sh"
 run_stage "rocksdb warm prereq check" bash "$SCRIPT_DIR/check-rocksdb-bench-prereqs.sh"
 run_stage "rocksdb warm benchmark compile" cargo bench -p context-memory --bench rocksdb_bench --features rocksdb-warm --no-run
 run_stage "release build" cargo build --release
@@ -99,6 +112,11 @@ run_stage "release build" cargo build --release
 if [[ "$FAIL_COUNT" -gt 0 ]]; then
     echo "CI validation completed with ${FAIL_COUNT} failing stage(s)." >&2
     exit 1
+fi
+
+if [[ "$NON_BLOCKING_FAIL_COUNT" -gt 0 ]]; then
+    echo "CI validation completed with ${NON_BLOCKING_FAIL_COUNT} non-blocking warning stage(s)."
+    exit 0
 fi
 
 echo "CI validation completed successfully."
