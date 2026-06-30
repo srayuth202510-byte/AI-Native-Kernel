@@ -68,13 +68,18 @@ EOF
 }
 
 resolve_bpftool_package() {
+    local candidate=""
     local provider=""
 
     if ! command -v apt-cache >/dev/null 2>&1; then
         return 1
     fi
 
-    if apt-cache show bpftool >/dev/null 2>&1; then
+    candidate="$(
+        apt-cache policy bpftool 2>/dev/null |
+            awk '/^[[:space:]]*Candidate:/ { print $2; exit }'
+    )"
+    if [[ -n "$candidate" && "$candidate" != "(none)" ]]; then
         printf 'bpftool\n'
         return 0
     fi
