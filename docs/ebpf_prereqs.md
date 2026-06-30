@@ -8,6 +8,12 @@ Use this before expecting `kernel-companion` to attach real tracepoints or LSM h
 ./scripts/check-ebpf-prereqs.sh
 ```
 
+For a full privileged validation pass on a host with the required kernel capabilities:
+
+```bash
+./scripts/run.sh validate-ebpf
+```
+
 Or:
 
 ```bash

@@ -585,6 +585,7 @@ mod tests {
     // ── Integration tests (require Qdrant) ─────────────────────────
 
     #[tokio::test]
+    #[ignore = "requires a reachable Qdrant endpoint"]
     async fn test_semantic_file_system_operations() -> Result<()> {
         if !check_qdrant_online().await {
             println!(

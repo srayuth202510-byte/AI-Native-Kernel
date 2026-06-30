@@ -44,6 +44,13 @@ check_prereqs() {
     "$SCRIPT_DIR/check-ebpf-prereqs.sh"
 }
 
+validate_ebpf() {
+    echo "==> Validating privileged eBPF/LSM attach path..."
+    "$SCRIPT_DIR/check-ebpf-prereqs.sh"
+    "${RTK[@]}" cargo test -p kernel-companion --lib validate_lsm_hooks_attach_to_kernel -- --nocapture
+    "${RTK[@]}" cargo test -p kernel-companion --lib validate_tracepoint_attach_to_kernel -- --nocapture
+}
+
 install_prereqs() {
     echo "==> Installing real eBPF prerequisites..."
     "$SCRIPT_DIR/install-ebpf-deps.sh" "$@"
@@ -71,18 +78,22 @@ case "$MODE" in
     prereqs)
         check_prereqs
         ;;
+    validate-ebpf)
+        validate_ebpf
+        ;;
     install-prereqs)
         shift 2>/dev/null || true
         install_prereqs "$@"
         ;;
     *)
-        echo "Usage: $0 [companion|cli|tui|build|prereqs|install-prereqs] [args...]"
+        echo "Usage: $0 [companion|cli|tui|build|prereqs|validate-ebpf|install-prereqs] [args...]"
         echo ""
         echo "  companion  (default) Build & run the companion daemon"
         echo "  cli        Build & run the ANK CLI"
         echo "  tui        Build & run the TUI dashboard"
         echo "  build      Build only"
         echo "  prereqs    Check real eBPF/LSM prerequisites"
+        echo "  validate-ebpf  Run prereq checks and privileged kernel attach tests"
         echo "  install-prereqs  Install real eBPF/LSM dependencies on Debian/Ubuntu"
         exit 1
         ;;

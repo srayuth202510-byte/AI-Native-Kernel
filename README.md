@@ -104,8 +104,8 @@ source scripts/use-local-toolchain.sh
 4. `cargo test --workspace` ผ่าน
 
 หมายเหตุ:
-1. ชุด test ปกติของ workspace ยังเหลือ `ignored` tests สำหรับ Qdrant-backed path อีก 4 รายการ
-2. ยังไม่ได้ re-validate privileged eBPF/LSM attach path ในรอบนี้บน host ที่มี kernel prerequisites ครบ
+1. ชุด test ปกติของ workspace ยังเหลือ Qdrant-backed `#[ignore]` integration tests อีก 4 รายการ ซึ่งรันผ่าน `./scripts/run-qdrant-tests.sh`
+2. ยังไม่ได้ re-validate privileged eBPF/LSM attach path ในรอบนี้บน host ที่มี kernel prerequisites ครบ; ใช้ `./scripts/run.sh validate-ebpf` สำหรับ host validation
 3. ~~ยังไม่ได้รัน lint path แบบเดียวกับ CI คือ `cargo clippy --all-targets --all-features -- -D warnings`~~ ✅ ผ่านแล้ว (ANK-039)
 
 ถ้าจะรัน `clippy --all-features` ด้วย `context-memory/rocksdb-warm`, ต้องมี `libclang` ให้ `bindgen` หาเจอ

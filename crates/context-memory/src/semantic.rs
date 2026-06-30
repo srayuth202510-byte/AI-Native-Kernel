@@ -448,6 +448,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a reachable Qdrant endpoint"]
     async fn test_qdrant_semantic_store() -> Result<()> {
         if !check_qdrant_online().await {
             println!(
@@ -491,6 +492,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a reachable Qdrant endpoint"]
     async fn test_qdrant_semantic_store_multiple_points() -> Result<()> {
         if !check_qdrant_online().await {
             println!(
@@ -555,6 +557,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a reachable Qdrant endpoint"]
     async fn test_qdrant_semantic_store_empty_search() -> Result<()> {
         if !check_qdrant_online().await {
             println!(
