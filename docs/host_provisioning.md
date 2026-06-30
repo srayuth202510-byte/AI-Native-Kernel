@@ -7,6 +7,7 @@ This runbook provisions a host that can run:
 
 - `./scripts/run.sh validate-ebpf`
 - `./scripts/run.sh validate-warm-bench`
+- `.github/workflows/ebpf-validation.yml`
 
 ## Current Constraint
 
@@ -72,6 +73,15 @@ If both pass, run:
 ```bash
 ./scripts/run.sh validate-ebpf
 ./scripts/run.sh validate-warm-bench
+```
+
+If you want to use GitHub Actions for the privileged path, register this host as a
+self-hosted runner and trigger
+[ebpf-validation.yml](../.github/workflows/ebpf-validation.yml).
+The workflow defaults to runner labels:
+
+```text
+["self-hosted","linux","x64","ebpf-validation"]
 ```
 
 ## Option 2: Manually Provisioned LLVM Toolchain

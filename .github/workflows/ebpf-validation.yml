@@ -1,0 +1,78 @@
+name: eBPF Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs_on:
+        description: 'JSON array of runner labels for the privileged validation host'
+        required: true
+        default: '["self-hosted","linux","x64","ebpf-validation"]'
+      install_dependencies:
+        description: "Install Debian/Ubuntu eBPF dependencies before validation"
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  validate-ebpf:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-06-25
+          components: rustfmt, clippy
+          override: true
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install host dependencies
+        if: ${{ inputs.install_dependencies }}
+        run: bash scripts/install-ebpf-deps.sh --skip-check
+
+      - name: Run eBPF prerequisite check
+        run: |
+          mkdir -p target
+          bash scripts/check-ebpf-prereqs.sh | tee target/ebpf-prereqs.log
+
+      - name: Run privileged eBPF validation
+        run: bash scripts/run.sh validate-ebpf | tee target/ebpf-validation.log
+
+      - name: Write workflow summary
+        if: always()
+        run: |
+          {
+            echo "# eBPF Validation"
+            echo
+            echo "- Runner: \`${{ runner.name }}\`"
+            echo "- Labels: \`${{ inputs.runs_on }}\`"
+            echo "- Install dependencies: \`${{ inputs.install_dependencies }}\`"
+            echo
+            echo "Artifacts:"
+            echo "- \`target/ebpf-prereqs.log\`"
+            echo "- \`target/ebpf-validation.log\`"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload eBPF validation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebpf-validation-artifacts
+          path: |
+            target/ebpf-prereqs.log
+            target/ebpf-validation.log
+          if-no-files-found: warn

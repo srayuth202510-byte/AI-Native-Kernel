@@ -28,6 +28,14 @@ bash ./scripts/run-ci-validations.sh
 
 `scripts/run-ci-validations.sh` writes a summary report to `target/ci-validation-summary.md`.
 
+GitHub Actions is split into two lanes:
+
+- `CI` in [ci.yml](../.github/workflows/ci.yml) is the repo correctness gate
+- `eBPF Validation` in [ebpf-validation.yml](../.github/workflows/ebpf-validation.yml) is the manual privileged-host gate for real attach
+
+Run the dedicated eBPF workflow only on a provisioned host that satisfies
+[host_provisioning.md](host_provisioning.md).
+
 If you are running inside Ubuntu Core or another restricted environment, use
 [host_provisioning.md](host_provisioning.md) for external host setup.
 
