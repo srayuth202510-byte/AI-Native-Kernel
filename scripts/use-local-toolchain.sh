@@ -22,11 +22,13 @@ fi
 
 if [ -x "$ZIG_BUNDLE" ]; then
     export CC="$ROOT/scripts/zig-cc.sh"
+    export CXX="$ROOT/scripts/zig-cc.sh"
     export AR="$ROOT/scripts/zig-ar.sh"
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$ROOT/scripts/zig-cc.sh"
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_AR="$ROOT/scripts/zig-ar.sh"
 else
     export CC="${CC:-clang}"
+    export CXX="${CXX:-clang++}"
     export AR="${AR:-ar}"
     unset CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER
     unset CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_AR

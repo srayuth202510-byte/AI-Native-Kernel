@@ -34,4 +34,27 @@ while (($#)); do
     esac
 done
 
-exec "$ZIG" cc "${args[@]}"
+is_cpp=false
+final_args=()
+for arg in "${args[@]}"; do
+    if [[ "$arg" == "-lstdc++" ]]; then
+        is_cpp=true
+        final_args+=("-lc++")
+    elif [[ "$arg" == "-lc++" ]]; then
+        is_cpp=true
+        final_args+=("$arg")
+    elif [[ "$arg" == *.cc || "$arg" == *.cpp || "$arg" == *.cxx || "$arg" == *.C ]]; then
+        is_cpp=true
+        final_args+=("$arg")
+    else
+        final_args+=("$arg")
+    fi
+done
+
+if [[ "$is_cpp" == "true" ]]; then
+    exec "$ZIG" c++ "${final_args[@]}"
+else
+    exec "$ZIG" cc "${args[@]}"
+fi
+
+
