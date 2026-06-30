@@ -4,14 +4,21 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+/// จำนวน retry สูงสุดเริ่มต้นสำหรับ Cloud API
 const DEFAULT_RETRY_MAX: u32 = 3;
+/// ระยะเวลาหน่วงเริ่มต้นสำหรับ retry (ms)
 const DEFAULT_RETRY_BASE_MS: u64 = 500;
+/// ระยะเวลาหน่วงสูงสุดสำหรับ retry (ms)
 const DEFAULT_RETRY_MAX_MS: u64 = 10_000;
 
+/// การกำหนดค่าสำหรับ Retry ในการเรียก Cloud API
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
+    /// จำนวน retry สูงสุด
     max_retries: u32,
+    /// ระยะเวลาหน่วงเริ่มต้น (ms)
     base_delay_ms: u64,
+    /// ระยะเวลาหน่วงสูงสุด (ms)
     max_delay_ms: u64,
 }
 
@@ -25,16 +32,19 @@ impl Default for RetryConfig {
     }
 }
 
+/// คำนวณระยะเวลารอแบบ exponential backoff สำหรับ attempt ที่กำหนด
 fn backoff_ms(attempt: u32, config: &RetryConfig) -> u64 {
     let delay = config.base_delay_ms * 2u64.pow(attempt);
     delay.min(config.max_delay_ms)
 }
 
+/// เพิ่ม jitter แบบสุ่มเข้ากับเวลาหน่วงเพื่อกระจายการรอ
 fn jitter_ms(base: u64) -> u64 {
     let jitter = fastrand::u64(0..=base.saturating_div(2));
     base.saturating_add(jitter)
 }
 
+/// ดำเนินการ `operation` แบบลองใหม่ด้วย exponential backoff และ jitter
 async fn retry<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T, EngineError>
 where
     F: Fn() -> Fut,
@@ -63,54 +73,81 @@ where
     Err(last_err.unwrap_or_else(|| EngineError::Internal("retry exhausted".into())))
 }
 
+/// คำขอ Chat Completion แบบ OpenAI-compatible API
 #[derive(Serialize)]
 struct ChatCompletionRequest {
+    /// ชื่อโมเดลที่ใช้
     model: String,
+    /// รายการข้อความในประวัติการสนทนา
     messages: Vec<Message>,
+    /// จำนวน token สูงสุดที่ให้สร้าง
     max_tokens: usize,
+    /// ค่า temperature สำหรับสุ่มคำตอบ (ถ้าไม่ระบุจะใช้ค่าเริ่มต้น)
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// เปิด/ปิด streaming response
     stream: bool,
 }
 
+/// ข้อความในประวัติการสนทนา
 #[derive(Serialize)]
 struct Message {
+    /// บทบาทของผู้ส่ง (user, assistant, system)
     role: String,
+    /// เนื้อหาข้อความ
     content: String,
 }
 
+/// การตอบกลับจาก Chat Completion API
 #[derive(Deserialize)]
 struct ChatCompletionResponse {
+    /// รายการ choice ที่สร้างจากโมเดล
     choices: Vec<Choice>,
 }
 
+/// แต่ละ choice ในการตอบกลับ
 #[derive(Deserialize)]
 struct Choice {
+    /// ข้อความที่ถูกสร้างขึ้น
     message: ChoiceMessage,
 }
 
+/// ข้อความภายใน choice
 #[derive(Deserialize)]
 struct ChoiceMessage {
+    /// เนื้อหาของข้อความ
     content: String,
 }
 
+/// การตอบกลับจาก Health Check API
 #[derive(Deserialize)]
 #[allow(dead_code)]
 struct CloudHealthResponse {
+    /// สถานะของ service
     status: String,
 }
 
+/// เอ็นจินประมวลผลผ่าน Cloud API (OpenAI-compatible)
+/// รองรับการ retry, timeout, jitter และ fallback เป็น mock เมื่อไม่สามารถเชื่อมต่อได้
 pub struct CloudAiEngine {
+    /// URL ปลายทางของ API
     endpoint_url: String,
+    /// API Key สำหรับยืนยันตัวตน (⚠ ควรใช้ secrecy::SecretString ใน production)
     api_key: String,
+    /// ชื่อโมเดลที่ใช้
     model: String,
+    /// HTTP client สำหรับเชื่อมต่อ (ใช้ reqwest)
     client: reqwest::Client,
+    /// ระยะเวลา timeout สำหรับ request แต่ละครั้ง
     request_timeout: Duration,
+    /// การกำหนดค่า retry
     retry_config: RetryConfig,
+    /// เปิด/ปิดการ fallback เป็น mock เมื่อ server ไม่พร้อม
     fallback_mock: bool,
 }
 
 impl CloudAiEngine {
+    /// สร้าง CloudAiEngine ใหม่พร้อม URL ปลายทาง, API Key, และชื่อโมเดล
     #[must_use]
     pub fn new(
         endpoint_url: impl Into<String>,
@@ -137,6 +174,7 @@ impl CloudAiEngine {
         }
     }
 
+    /// ตั้งค่า timeout สำหรับ request (builder pattern)
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
@@ -148,18 +186,21 @@ impl CloudAiEngine {
         self
     }
 
+    /// ปิดการ fallback เป็น mock (ใช้เมื่อต้องการให้ error จริง ๆ)
     #[must_use]
     pub fn with_no_fallback(mut self) -> Self {
         self.fallback_mock = false;
         self
     }
 
+    /// กำหนดค่า retry config เอง (builder pattern)
     #[must_use]
     pub fn with_retry(mut self, config: RetryConfig) -> Self {
         self.retry_config = config;
         self
     }
 
+    /// เรียก Chat Completion API แบบ OpenAI-compatible
     async fn call_chat_completion(
         &self,
         prompt: &str,
@@ -214,6 +255,7 @@ impl CloudAiEngine {
             .ok_or_else(|| EngineError::Internal("no choices in response".into()))
     }
 
+    /// ตรวจสอบสุขภาพของ Cloud API
     async fn check_health(&self) -> bool {
         let url = format!("{}/v1/chat/completions", self.endpoint_url);
         match self.client.get(&url).send().await {
@@ -222,6 +264,7 @@ impl CloudAiEngine {
         }
     }
 
+    /// สร้างข้อความจำลอง (Mock) สำหรับใช้เมื่อ API ไม่พร้อม
     fn mock_generate(prompt: &str, max_tokens: usize, model: &str) -> String {
         let truncated = if prompt.len() > 50 {
             &prompt[..50]
@@ -234,6 +277,7 @@ impl CloudAiEngine {
 
 #[async_trait::async_trait]
 impl AiEngine for CloudAiEngine {
+    /// สร้างข้อความจาก Cloud API พร้อม retry และ fallback
     async fn generate(&self, prompt: &str, max_tokens: usize) -> Result<String, EngineError> {
         info!(
             endpoint = %self.endpoint_url,
@@ -258,6 +302,7 @@ impl AiEngine for CloudAiEngine {
         }
     }
 
+    /// สร้างข้อความแบบ batch ตามลำดับ
     async fn generate_batch(
         &self,
         prompts: &[String],
@@ -287,10 +332,12 @@ impl AiEngine for CloudAiEngine {
 mod tests {
     use super::*;
 
+    /// สร้าง CloudAiEngine สำหรับทดสอบ (ใช้ localhost ที่ไม่มีจริง)
     fn test_engine() -> CloudAiEngine {
         CloudAiEngine::new("http://localhost:19000", "sk-test-key", "gpt-4o-mini")
     }
 
+    /// ทดสอบว่าเมื่อปิด mock fallback แล้วการเรียก API ที่ไม่มีจริงจะเกิด error
     #[tokio::test]
     async fn test_cloud_engine_mock_fallback() {
         let engine = test_engine().with_no_fallback();
@@ -300,6 +347,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// ทดสอบว่าเมื่อเปิด mock fallback จะได้ผลลัพธ์จำลอง
     #[tokio::test]
     async fn test_cloud_engine_with_fallback() {
         let engine = test_engine();
@@ -310,6 +358,7 @@ mod tests {
         assert!(text.contains("gpt-4o-mini"));
     }
 
+    /// ทดสอบการ generate แบบ batch
     #[tokio::test]
     async fn test_cloud_engine_batch_mock() {
         let engine = test_engine();
@@ -320,12 +369,14 @@ mod tests {
         assert!(results[1].contains("cloud mock"));
     }
 
+    /// ทดสอบ health check เมื่อ server ไม่ทำงาน
     #[tokio::test]
     async fn test_health_check_returns_false_when_down() {
         let engine = test_engine();
         assert!(!engine.is_healthy().await);
     }
 
+    /// ทดสอบ retry ที่สำเร็จในที่สุด
     #[tokio::test]
     async fn test_retry_eventually_succeeds() {
         let attempt = std::sync::atomic::AtomicU32::new(0);
@@ -348,6 +399,7 @@ mod tests {
         assert_eq!(result.unwrap(), "success");
     }
 
+    /// ทดสอบ retry ที่หมดจำนวนครั้ง
     #[tokio::test]
     async fn test_retry_exhausted_returns_error() {
         let attempt = std::sync::atomic::AtomicU32::new(0);
@@ -364,9 +416,10 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert_eq!(attempt.load(std::sync::atomic::Ordering::Relaxed), 3); // 0, 1, 2
+        assert_eq!(attempt.load(std::sync::atomic::Ordering::Relaxed), 3);
     }
 
+    /// ทดสอบการคำนวณ backoff แบบ exponential
     #[test]
     fn test_backoff_ms() {
         let config = RetryConfig::default();
@@ -375,9 +428,10 @@ mod tests {
         assert_eq!(backoff_ms(2, &config), 2000);
         assert_eq!(backoff_ms(3, &config), 4000);
         assert_eq!(backoff_ms(4, &config), 8000);
-        assert_eq!(backoff_ms(5, &config), 10_000); // capped
+        assert_eq!(backoff_ms(5, &config), 10_000);
     }
 
+    /// ทดสอบว่า jitter อยู่ในช่วงที่กำหนด
     #[test]
     fn test_jitter_ms_in_range() {
         for base in [100, 500, 1000].iter() {

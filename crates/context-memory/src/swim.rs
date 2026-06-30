@@ -5,32 +5,52 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
+/// ฟังก์ชัน Ping: ส่ง Ping ไปยัง node และคืน latency (ms) หรือ None ถ้า timeout
 type PingFn = Arc<dyn Fn(&str) -> Option<f64> + Send + Sync>;
+/// ฟังก์ชัน Indirect Probe: ส่ง Ping ผ่าน node อื่นไปยัง target node
 type IndirectProbeFn = Arc<dyn Fn(&str, &str) -> Option<f64> + Send + Sync>;
+/// ฟังก์ชันบอกเวลาปัจจุบัน (ms) สำหรับการคำนวณ phi
 type NowFn = Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// ระยะเวลาระหว่างการ Ping แต่ละครั้ง (ms) — ยังไม่ใช้
 #[allow(dead_code)]
 const PING_INTERVAL_MS: u64 = 5_000;
+/// ระยะเวลา timeout สำหรับการรอ Ping (ms)
 const PING_TIMEOUT_MS: u64 = 2_000;
+/// จำนวนสูงสุดของ Indirect Probe ที่จะลอง
 const MAX_INDIRECT_PROBES: usize = 3;
+/// ค่า Phi Threshold สำหรับตัดสิน Suspect → Dead
 const SUSPICION_THRESHOLD: f64 = 3.0;
+/// ขนาดหน้าต่างสำหรับคำนวณค่าเฉลี่ย latency
 const LATENCY_WINDOW_SIZE: usize = 20;
+/// จำนวน Ping ที่พลาดติดต่อกันก่อนถือว่าสงสัย
 const MISSED_PING_THRESHOLD: u32 = 2;
 
+/// สถานะของ Node ในระบบ SWIM Failure Detector
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeStatus {
+    /// Node ยังทำงานปกติ
     Alive,
+    /// Node กำลังถูกสงสัยว่าอาจล่ม (รอการยืนยัน)
     Suspect,
+    /// Node ถูกประกาศว่าล่มแล้ว
     Dead,
+    /// ไม่ทราบสถานะ (Node นี้ไม่เคยถูกลงทะเบียน)
     Unknown,
 }
 
+/// สถิติของ Node สำหรับคำนวณ Phi Accrual Failure Detection
 #[derive(Debug, Clone)]
 struct NodeStats {
+    /// ประวัติ latency ที่บันทึกล่าสุด
     latencies: VecDeque<f64>,
+    /// ค่าเฉลี่ย latency (EWMA)
     mean_latency: f64,
+    /// ค่าเบี่ยงเบนมาตรฐานของ latency (EWMA)
     stddev_latency: f64,
+    /// จำนวน Ping ที่สำเร็จ
     ping_count: u64,
+    /// จำนวน Ping ที่ timeout
     timeout_count: u64,
 }
 
@@ -47,6 +67,7 @@ impl Default for NodeStats {
 }
 
 impl NodeStats {
+    /// บันทึก latency ของ Ping พร้อมอัปเดต EWMA (Exponentially Weighted Moving Average)
     fn record_latency(&mut self, latency_ms: f64) {
         const ALPHA: f64 = 0.125;
         let prev_mean = self.mean_latency;
@@ -61,11 +82,15 @@ impl NodeStats {
         self.ping_count += 1;
     }
 
+    /// บันทึกเหตุการณ์ timeout และปรับ mean_latency สูงขึ้น
     fn record_timeout(&mut self) {
         self.timeout_count += 1;
         self.mean_latency = (self.mean_latency * 0.9 + 2000.0 * 0.1).min(5000.0);
     }
 
+    /// คำนวณค่า Phi สำหรับ Phi Accrual Failure Detection
+    /// เป็นค่าความน่าจะเป็นที่ Node จะล่ม โดยใช้ CDF ของ Normal Distribution
+    /// Phi > SUSPICION_THRESHOLD (3.0) = Node น่าจะล่ม
     fn compute_phi(&self, time_since_last_ack_ms: f64) -> f64 {
         if self.stddev_latency < 1.0 {
             return if time_since_last_ack_ms > PING_TIMEOUT_MS as f64 * MISSED_PING_THRESHOLD as f64
@@ -88,6 +113,8 @@ impl NodeStats {
     }
 }
 
+/// การประมาณค่า Error Function (erf) สำหรับใช้ใน Phi Accrual Detection
+/// ใช้การประมาณแบบ Abramowitz and Stegun
 fn erf(x: f64) -> f64 {
     let sign = if x >= 0.0 { 1.0 } else { -1.0 };
     let x = x.abs();
@@ -100,17 +127,25 @@ fn erf(x: f64) -> f64 {
     sign * y
 }
 
+/// ข้อมูลสมาชิกในกลุ่ม SWIM
 #[derive(Debug, Clone)]
 pub struct MemberInfo {
+    /// รหัสประจำตัว Node
     pub node_id: String,
+    /// สถานะปัจจุบันของ Node
     pub status: NodeStatus,
+    /// เวลาที่ได้รับ ACK ล่าสุด (ms)
     pub last_ack_millis: u64,
+    /// เวลาที่เริ่มสงสัย Node นี้ (ms) — None ถ้ายังไม่ถูกสงสัย
     pub suspicion_start_millis: Option<u64>,
+    /// หมายเลข incarnation สำหรับ gossip protocol
     pub incarnation: u64,
+    /// สถิติ latency สำหรับคำนวณ Phi
     stats: NodeStats,
 }
 
 impl MemberInfo {
+    /// สร้าง MemberInfo ใหม่ในสถานะ Alive
     fn alive(node_id: String, now_ms: u64) -> Self {
         Self {
             node_id,
@@ -123,6 +158,7 @@ impl MemberInfo {
     }
 }
 
+/// เวลาปัจจุบันในหน่วย milliseconds ตั้งแต่ Unix epoch
 fn now_millis_std() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -130,11 +166,17 @@ fn now_millis_std() -> u64 {
         .unwrap_or(0)
 }
 
+/// กลไกตรวจจับความล้มเหลวแบบ SWIM (Scalable Weakly-consistent Infection-style Process Group Membership)
+/// ใช้ Phi Accrual Failure Detection เพื่อตัดสินสถานะของ Node ในเครือข่าย P2P
 #[derive(Clone)]
 pub struct FailureDetector {
+    /// รายการสมาชิกทั้งหมดในกลุ่ม
     members: Arc<RwLock<HashMap<String, MemberInfo>>>,
+    /// ฟังก์ชันสำหรับ Ping ไปยัง Node เป้าหมาย
     ping_fn: PingFn,
+    /// ฟังก์ชันสำหรับ Indirect Probe ผ่าน Node อื่น
     indirect_probe: IndirectProbeFn,
+    /// ฟังก์ชันบอกเวลาปัจจุบัน
     now_fn: NowFn,
 }
 
@@ -145,6 +187,7 @@ impl std::fmt::Debug for FailureDetector {
 }
 
 impl FailureDetector {
+    /// สร้าง FailureDetector ใหม่พร้อมฟังก์ชัน Ping, Indirect Probe, และเวลาปัจจุบัน
     #[must_use]
     pub fn new(ping_fn: PingFn, indirect_probe: IndirectProbeFn) -> Self {
         Self {
@@ -155,6 +198,7 @@ impl FailureDetector {
         }
     }
 
+    /// ลงทะเบียนสมาชิกใหม่ในระบบ Failure Detector
     pub async fn register(&self, node_id: &str) {
         let now = (self.now_fn)();
         let mut members = self.members.write().await;
@@ -164,6 +208,7 @@ impl FailureDetector {
         });
     }
 
+    /// บันทึกการรับ ACK จาก Node — จะกู้คืนสถานะกลับเป็น Alive ถ้าอยู่ในสถานะ Suspect หรือ Dead
     pub async fn record_ack(&self, node_id: &str) {
         let now = (self.now_fn)();
         let mut members = self.members.write().await;
@@ -186,6 +231,7 @@ impl FailureDetector {
         }
     }
 
+    /// บันทึกค่า latency สำหรับการ Ping ที่สำเร็จ
     pub async fn record_ping_latency(&self, node_id: &str, latency_ms: f64) {
         let mut members = self.members.write().await;
         if let Some(member) = members.get_mut(node_id) {
@@ -193,6 +239,7 @@ impl FailureDetector {
         }
     }
 
+    /// ตั้งสถานะ Node เป็น Suspect (สงสัยว่าอาจล่ม)
     pub async fn suspect(&self, node_id: &str, by: &str) {
         let now = (self.now_fn)();
         let mut members = self.members.write().await;
@@ -209,6 +256,7 @@ impl FailureDetector {
         }
     }
 
+    /// ประกาศว่า Node ล่มแล้ว (Dead)
     pub async fn mark_dead(&self, node_id: &str) {
         let mut members = self.members.write().await;
         if let Some(member) = members.get_mut(node_id) {
@@ -219,6 +267,7 @@ impl FailureDetector {
         }
     }
 
+    /// ตรวจสอบสถานะปัจจุบันของ Node
     pub async fn get_status(&self, node_id: &str) -> NodeStatus {
         let members = self.members.read().await;
         members
@@ -227,6 +276,7 @@ impl FailureDetector {
             .unwrap_or(NodeStatus::Unknown)
     }
 
+    /// ดึงรายชื่อ Node ที่ยัง Alive ทั้งหมด
     pub async fn alive_nodes(&self) -> Vec<String> {
         let members = self.members.read().await;
         members
@@ -236,11 +286,13 @@ impl FailureDetector {
             .collect()
     }
 
+    /// ดึงรายชื่อ Node ทั้งหมดที่ถูกลงทะเบียน
     pub async fn all_nodes(&self) -> Vec<String> {
         let members = self.members.read().await;
         members.keys().cloned().collect()
     }
 
+    /// ดึงรายชื่อ Node ที่ถูกสงสัย (Suspect)
     pub async fn suspect_nodes(&self) -> Vec<String> {
         let members = self.members.read().await;
         members
@@ -250,6 +302,13 @@ impl FailureDetector {
             .collect()
     }
 
+    /// ดำเนินการ Ping รอบเดียว (Ping Round)
+    /// 1. ตรวจสอบ Node ที่อยู่ในสถานะ Suspect และคำนวณ Phi
+    /// 2. ถ้า Phi เกิน Threshold → ประกาศ Dead
+    /// 3. เลือก Node Alive สุ่มเพื่อ Ping
+    /// 4. ถ้า Ping ไม่สำเร็จ → ลอง Indirect Probe
+    /// 5. ถ้าทั้งหมดล้มเหลว → ตั้งสถานะ Suspect
+    /// คืนค่ารายชื่อ Node ที่ถูกประกาศ Dead ในรอบนี้
     pub async fn ping_round(&self) -> Vec<String> {
         let now = (self.now_fn)();
         let mut dead_nodes = Vec::new();
@@ -334,6 +393,7 @@ impl FailureDetector {
 mod tests {
     use super::*;
 
+    /// ทดสอบการลงทะเบียนสมาชิกใหม่
     #[tokio::test]
     async fn test_register_new_member() {
         let detector = FailureDetector::new(Arc::new(|_| Some(10.0)), Arc::new(|_, _| Some(15.0)));
@@ -341,6 +401,7 @@ mod tests {
         assert_eq!(detector.get_status("node-1").await, NodeStatus::Alive);
     }
 
+    /// ทดสอบการกู้คืน Node ที่ถูกสงสัยด้วย ACK
     #[tokio::test]
     async fn test_ack_recovers_suspect() {
         let detector = FailureDetector::new(Arc::new(|_| Some(10.0)), Arc::new(|_, _| Some(15.0)));
@@ -351,6 +412,7 @@ mod tests {
         assert_eq!(detector.get_status("node-1").await, NodeStatus::Alive);
     }
 
+    /// ทดสอบการกรองเฉพาะ Node ที่ Alive
     #[tokio::test]
     async fn test_alive_nodes_filters_correctly() {
         let detector = FailureDetector::new(Arc::new(|_| Some(10.0)), Arc::new(|_, _| Some(15.0)));
@@ -360,6 +422,7 @@ mod tests {
         assert_eq!(alive.len(), 2);
     }
 
+    /// ทดสอบสถานะ Unknown สำหรับ Node ที่ไม่มีอยู่
     #[tokio::test]
     async fn test_unknown_node_status() {
         let detector = FailureDetector::new(Arc::new(|_| Some(10.0)), Arc::new(|_, _| Some(15.0)));
@@ -369,6 +432,7 @@ mod tests {
         );
     }
 
+    /// ทดสอบการลงทะเบียนอัตโนมัติเมื่อได้รับ ACK จาก Node ใหม่
     #[tokio::test]
     async fn test_ack_auto_registers_new_node() {
         let detector = FailureDetector::new(Arc::new(|_| Some(10.0)), Arc::new(|_, _| Some(15.0)));
@@ -376,6 +440,7 @@ mod tests {
         assert_eq!(detector.get_status("new-node").await, NodeStatus::Alive);
     }
 
+    /// ทดสอบการประกาศ Node เป็น Dead
     #[tokio::test]
     async fn test_mark_dead() {
         let detector = FailureDetector::new(Arc::new(|_| Some(10.0)), Arc::new(|_, _| Some(15.0)));
@@ -384,6 +449,7 @@ mod tests {
         assert_eq!(detector.get_status("node-1").await, NodeStatus::Dead);
     }
 
+    /// ทดสอบการประมาณค่า Error Function (erf)
     #[test]
     fn test_erf_approximation() {
         assert!((erf(0.0) - 0.0).abs() < 1e-6);
@@ -391,13 +457,13 @@ mod tests {
         assert!((erf(3.0) - 0.9999779095030014).abs() < 1e-6);
     }
 
+    /// ทดสอบการคำนวณ Phi สำหรับค่าเบี่ยงเบนต่างๆ
     #[test]
     fn test_phi_computation() {
         let mut stats = NodeStats::default();
         for _ in 0..10 {
             stats.record_latency(50.0);
         }
-        // 60ms is 0.78 stddev above mean after EWMA → phi ~0.68
         let phi_near = stats.compute_phi(60.0);
         assert!(phi_near > 0.1, "phi should be positive for mild deviation");
         assert!(phi_near < 1.5, "phi should be low for mild deviation");
@@ -409,6 +475,7 @@ mod tests {
         );
     }
 
+    /// ทดสอบ EWMA ของ NodeStats
     #[test]
     fn test_node_stats_ewma() {
         let mut stats = NodeStats::default();
@@ -419,30 +486,30 @@ mod tests {
         assert!(stats.mean_latency < 100.0);
     }
 
+    /// ทดสอบ Ping Round ที่สำเร็จ
     #[tokio::test]
     async fn test_ping_round_alive() {
         let detector = FailureDetector::new(Arc::new(|_| Some(10.0)), Arc::new(|_, _| Some(15.0)));
         detector.register("node-1").await;
         let dead = detector.ping_round().await;
-        // node should remain alive since ping_fn returns Some
         assert!(dead.is_empty());
         assert_eq!(detector.get_status("node-1").await, NodeStatus::Alive);
     }
 
+    /// ทดสอบ Ping Round ที่เกิด Suspect เมื่อ timeout
     #[tokio::test]
     async fn test_ping_round_suspect_on_timeout() {
         let detector = FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None));
         detector.register("node-1").await;
         let dead = detector.ping_round().await;
         assert!(dead.is_empty());
-        // all probes fail → suspect
         let status = detector.get_status("node-1").await;
         assert!(status == NodeStatus::Suspect || status == NodeStatus::Alive);
     }
 
+    /// ทดสอบ Indirect Probe ที่สามารถกู้คืน Node ได้
     #[tokio::test]
     async fn test_indirect_probe_recovers() {
-        // direct fails, indirect succeeds
         let detector = FailureDetector::new(
             Arc::new(|_| None),
             Arc::new(

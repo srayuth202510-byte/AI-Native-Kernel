@@ -3,13 +3,21 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time::{sleep, timeout};
 
+/// การกำหนดค่าสำหรับ Retry/Backoff
+/// ใช้ในการลองดำเนินการซ้ำเมื่อเกิดข้อผิดพลาด พร้อม exponential backoff และ jitter
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
+    /// จำนวนครั้งสูงสุดที่ลองใหม่ (ไม่รวมครั้งแรก)
     pub max_attempts: u32,
+    /// ระยะเวลารอเริ่มต้น (ms) สำหรับ backoff
     pub initial_backoff_ms: u64,
+    /// ตัวคูณสำหรับ exponential backoff
     pub backoff_multiplier: f64,
+    /// ระยะเวลารอสูงสุด (ms)
     pub max_backoff_ms: u64,
+    /// ระยะเวลา timeout สูงสุดสำหรับการดำเนินการแต่ละครั้ง (ms)
     pub timeout_ms: u64,
+    /// เปิด/ปิดการใช้ jitter เพื่อกระจายเวลารอ
     pub use_jitter: bool,
 }
 
@@ -27,6 +35,7 @@ impl Default for RetryConfig {
 }
 
 impl RetryConfig {
+    /// สร้าง RetryConfig ใหม่พร้อมกำหนดค่าทั้งหมด
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -47,6 +56,9 @@ impl RetryConfig {
         }
     }
 
+    /// ดำเนินการ `f` แบบลองใหม่ด้วย exponential backoff
+    /// จะลองซ้ำสูงสุด `max_attempts` ครั้ง (รวมครั้งแรก)
+    /// แต่ละครั้งมี timeout และ backoff พร้อม jitter
     pub async fn retry_with_backoff<F, Fut, T, E>(
         &self,
         f: F,
@@ -124,6 +136,8 @@ impl RetryConfig {
         Err(anyhow::anyhow!(msg))
     }
 
+    /// คำนวณ jitter เพื่อกระจายเวลารอไม่ให้พร้อมกัน
+    /// ใช้ pseudo-random ที่ deterministic จาก attempt number
     fn jitter(&self, backoff_ms: u64, attempt: u32) -> u64 {
         if !self.use_jitter {
             return backoff_ms;
@@ -140,6 +154,8 @@ impl RetryConfig {
         (backoff_ms as i64 + offset as i64 - range as i64).clamp(1, i64::MAX) as u64
     }
 
+    /// คำนวณระยะเวลา backoff สำหรับ attempt ที่กำหนด
+    /// ใช้ exponential backoff: initial * multiplier^(attempt-1) แต่ไม่เกิน max_backoff
     fn calculate_backoff(&self, attempt: u32) -> u64 {
         let ms =
             self.initial_backoff_ms as f64 * self.backoff_multiplier.powi((attempt - 1) as i32);
@@ -147,15 +163,24 @@ impl RetryConfig {
     }
 }
 
+/// การกำหนดค่า TTL สำหรับ Telemetry และการล้างข้อมูลอัตโนมัติ
 #[derive(Debug, Clone)]
 pub struct TelemetryTTLConfig {
+    /// TTL สำหรับ metric cache (ms)
     pub metric_cache_ttl_ms: u64,
+    /// TTL สำหรับ telemetry snapshot (ms)
     pub telemetry_snapshot_ttl_ms: u64,
+    /// TTL สำหรับ audit log entries (ms)
     pub audit_log_ttl_ms: u64,
+    /// TTL สำหรับ intent metadata (ms)
     pub intent_metadata_ttl_ms: u64,
+    /// ระยะเวลาระหว่างการล้างข้อมูลแต่ละครั้ง (ms)
     pub cleanup_interval_ms: u64,
+    /// ระยะเวลาระหว่างการ publish telemetry (ms)
     pub telemetry_publish_interval_ms: u64,
+    /// รวม timestamp ใน telemetry data หรือไม่
     pub include_timestamps: bool,
+    /// เปิด/ปิดการล้างข้อมูลอัตโนมัติ
     pub auto_cleanup: bool,
 }
 
@@ -175,6 +200,7 @@ impl Default for TelemetryTTLConfig {
 }
 
 impl TelemetryTTLConfig {
+    /// สร้าง TelemetryTTLConfig ใหม่พร้อมกำหนดค่าทั้งหมด
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -199,11 +225,13 @@ impl TelemetryTTLConfig {
         }
     }
 
+    /// ตรวจสอบว่า timestamp หมดอายุตาม TTL ที่กำหนดหรือไม่
     #[allow(dead_code)]
     fn is_expired(&self, timestamp: Instant, ttl_ms: u64) -> bool {
         timestamp.elapsed().as_millis() as u64 > ttl_ms
     }
 
+    /// ล้างข้อมูลที่หมดอายุทั้งหมด (ยังไม่สมบูรณ์ — placeholder สำหรับ Phase 2)
     #[allow(dead_code)]
     async fn cleanup_expired_entries<T1, T2, T3, T4>(
         &self,
@@ -222,12 +250,17 @@ impl Default for RetryAndTelemetryManager {
     }
 }
 
+/// ตัวจัดการ Retry และ Telemetry
+/// รวมฟังก์ชันการ retry ด้วย backoff และการจัดการ TTL สำหรับ telemetry data
 pub struct RetryAndTelemetryManager {
+    /// การกำหนดค่า retry/backoff
     retry_config: RetryConfig,
+    /// การกำหนดค่า TTL สำหรับ telemetry
     telemetry_ttl_config: TelemetryTTLConfig,
 }
 
 impl RetryAndTelemetryManager {
+    /// สร้าง RetryAndTelemetryManager ใหม่ด้วยค่าเริ่มต้น
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -236,6 +269,7 @@ impl RetryAndTelemetryManager {
         }
     }
 
+    /// สร้าง RetryAndTelemetryManager พร้อมกำหนดค่า retry และ telemetry TTL
     #[must_use]
     pub fn with_configs(
         retry_config: RetryConfig,
@@ -247,26 +281,31 @@ impl RetryAndTelemetryManager {
         }
     }
 
+    /// ดึงข้อมูลอ้างอิงไปยัง RetryConfig
     #[must_use]
     pub fn retry_config(&self) -> &RetryConfig {
         &self.retry_config
     }
 
+    /// ดึงข้อมูลอ้างอิงแบบ mutable ไปยัง RetryConfig
     #[must_use]
     pub fn retry_config_mut(&mut self) -> &mut RetryConfig {
         &mut self.retry_config
     }
 
+    /// ดึงข้อมูลอ้างอิงไปยัง TelemetryTTLConfig
     #[must_use]
     pub fn telemetry_ttl_config(&self) -> &TelemetryTTLConfig {
         &self.telemetry_ttl_config
     }
 
+    /// ดึงข้อมูลอ้างอิงแบบ mutable ไปยัง TelemetryTTLConfig
     #[must_use]
     pub fn telemetry_ttl_config_mut(&mut self) -> &mut TelemetryTTLConfig {
         &mut self.telemetry_ttl_config
     }
 
+    /// ดำเนินการ `f` พร้อม retry ด้วย backoff ผ่าน RetryConfig
     pub async fn execute_with_retry<F, Fut, T, E>(
         &self,
         f: F,
@@ -288,6 +327,7 @@ impl RetryAndTelemetryManager {
 mod tests {
     use super::*;
 
+    /// ทดสอบค่าเริ่มต้นของ RetryConfig
     #[tokio::test]
     async fn test_retry_config_default() {
         let config = RetryConfig::default();
@@ -299,6 +339,7 @@ mod tests {
         assert!(config.use_jitter);
     }
 
+    /// ทดสอบการ retry จนสำเร็จ (ต้องลอง 3 ครั้งจึงสำเร็จ)
     #[tokio::test]
     async fn test_retry_with_backoff_success_immediate() {
         let config = RetryConfig::default();
@@ -328,6 +369,7 @@ mod tests {
         assert_eq!(*counter.lock().await, 3);
     }
 
+    /// ทดสอบการ retry จนหมดจำนวนครั้ง (exhausted)
     #[tokio::test]
     async fn test_retry_exhausted() {
         let config = RetryConfig::default();
@@ -352,6 +394,7 @@ mod tests {
         assert_eq!(*attempts.lock().await, 4);
     }
 
+    /// ทดสอบการคำนวณ backoff แบบ exponential
     #[test]
     fn test_calculate_backoff() {
         let config = RetryConfig::default();
@@ -366,6 +409,7 @@ mod tests {
         assert_eq!(config.calculate_backoff(9), 10000);
     }
 
+    /// ทดสอบค่าเริ่มต้นของ TelemetryTTLConfig
     #[tokio::test]
     async fn test_telemetry_ttl_config_default() {
         let config = TelemetryTTLConfig::default();
@@ -379,6 +423,7 @@ mod tests {
         assert!(config.auto_cleanup);
     }
 
+    /// ทดสอบการตรวจสอบการหมดอายุของ TTL
     #[test]
     fn test_telemetry_ttl_is_expired() {
         let config = TelemetryTTLConfig::default();
@@ -388,6 +433,7 @@ mod tests {
         assert!(!config.is_expired(timestamp, 5_000_000));
     }
 
+    /// ทดสอบการสร้าง RetryAndTelemetryManager ด้วยค่าเริ่มต้น
     #[tokio::test]
     async fn test_retry_and_telemetry_manager_new() {
         let manager = RetryAndTelemetryManager::new();
@@ -395,6 +441,7 @@ mod tests {
         assert!(manager.telemetry_ttl_config().auto_cleanup);
     }
 
+    /// ทดสอบการ retry ที่เกิด timeout จนต้อง retry
     #[tokio::test]
     async fn test_retry_with_timeout_triggers_retry() {
         let config = RetryConfig::new(3, 10, 1.0, 100, 50, false);
@@ -425,6 +472,7 @@ mod tests {
         );
     }
 
+    /// ทดสอบว่าเมื่อปิด jitter แล้ว backoff เป็นค่าที่แน่นอนตามที่คำนวณ
     #[tokio::test]
     async fn test_retry_jitter_disabled_produces_exact_backoff() {
         let config = RetryConfig::new(2, 100, 1.0, 1000, 5000, false);
@@ -452,6 +500,7 @@ mod tests {
         );
     }
 
+    /// ทดสอบว่า backoff ถูก capped ที่ max_backoff
     #[tokio::test]
     async fn test_retry_backoff_caps_at_max_backoff() {
         let config = RetryConfig::new(5, 100, 10.0, 500, 5000, false);
@@ -466,6 +515,7 @@ mod tests {
         assert_eq!(config.calculate_backoff(5), 500);
     }
 
+    /// ทดสอบว่า jitter ให้ค่าที่แตกต่างกันสำหรับ attempt ต่างกัน
     #[test]
     fn test_jitter_produces_different_values() {
         let config = RetryConfig::default();
@@ -475,6 +525,7 @@ mod tests {
         assert!(v1 >= 1, "jitter must not produce zero");
     }
 
+    /// ทดสอบว่าเมื่อปิด jitter จะได้ค่า backoff เท่าเดิม
     #[test]
     fn test_jitter_disabled_returns_backoff_unchanged() {
         let config = RetryConfig::new(3, 100, 2.0, 10000, 5000, false);
@@ -482,6 +533,7 @@ mod tests {
         assert_eq!(result, 500);
     }
 
+    /// ทดสอบ TelemetryTTLConfig ด้วยค่าที่กำหนดเอง
     #[test]
     fn test_telemetry_ttl_config_new_with_custom_values() {
         let config =
@@ -496,6 +548,7 @@ mod tests {
         assert!(!config.auto_cleanup);
     }
 
+    /// ทดสอบการตรวจสอบ expired ด้วย timestamp ที่เก่ามาก
     #[test]
     fn test_telemetry_ttl_is_expired_returns_true_for_expired() {
         let config = TelemetryTTLConfig::default();
@@ -503,6 +556,7 @@ mod tests {
         assert!(config.is_expired(very_old, 10_000));
     }
 
+    /// ทดสอบการตรวจสอบ expired ด้วย timestamp ที่เพิ่งสร้าง
     #[test]
     fn test_telemetry_ttl_is_expired_fresh_not_expired() {
         let config = TelemetryTTLConfig::default();
@@ -510,6 +564,7 @@ mod tests {
         assert!(!config.is_expired(fresh, 60_000));
     }
 
+    /// ทดสอบ RetryAndTelemetryManager แบบ end-to-end ด้วย with_configs และ execute
     #[tokio::test]
     async fn test_retry_and_telemetry_manager_with_configs_and_execute() {
         let retry = RetryConfig::new(2, 50, 2.0, 1000, 5000, false);
@@ -538,6 +593,7 @@ mod tests {
         assert_eq!(result.unwrap(), 1);
     }
 
+    /// ทดสอบ RetryAndTelemetryManager เมื่อ retry หมดจำนวนครั้ง
     #[tokio::test]
     async fn test_retry_and_telemetry_manager_execute_exhausted() {
         let retry = RetryConfig::new(1, 10, 1.0, 100, 5000, false);

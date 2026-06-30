@@ -10,24 +10,38 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+/// ตัวแปร global สำหรับจัดเก็บ KernelMetrics (initialized once)
 static KERNEL_METRICS: OnceLock<Arc<KernelMetrics>> = OnceLock::new();
+/// ตัวแปร global สำหรับป้องกันการ init tracing ซ้ำ
 static TRACING_INIT: OnceLock<()> = OnceLock::new();
+/// ตัวแปร global สำหรับจัดเก็บ OTel Tracer Provider (สำหรับ shutdown)
 static OTEL_PROVIDER: OnceLock<Mutex<Option<SdkTracerProvider>>> = OnceLock::new();
 
+/// โหมดที่รู้จักสำหรับ eBPF components
 const KNOWN_EBPF_MODES: [&str; 2] = ["real", "simulation"];
 
+/// ตัววัดผล Kernel Metrics สำหรับ Prometheus
+/// ใช้ติดตามการตัดสินใจของ LSM, สถานะ eBPF, และเหตุการณ์ syscall
 #[derive(Debug)]
 pub struct KernelMetrics {
+    /// จำนวนการตัดสินใจของ LSM Policy แบ่งตามผล (allow/deny) และเหตุผล
     pub lsm_policy_decisions_total: IntCounterVec,
+    /// จำนวน syscall ที่ถูกบล็อกโดย immune-system antibodies ปัจจุบัน
     pub lsm_blocked_syscalls: IntGauge,
+    /// จำนวนครั้งที่พยายาม attach eBPF แบ่งตาม component และผลลัพธ์
     pub ebpf_attach_attempts_total: IntCounterVec,
+    /// โหมดการทำงานปัจจุบันของแต่ละ eBPF component (real/simulation)
     pub ebpf_active_mode: IntGaugeVec,
+    /// จำนวนเหตุการณ์ syscall ที่สังเกตเห็น แบ่งตาม decision และชื่อ syscall
     pub syscall_events_total: IntCounterVec,
+    /// จำนวนเหตุการณ์ syscall ที่ถูก drop แบ่งตามสาเหตุ
     pub syscall_event_drops_total: IntCounterVec,
+    /// จำนวนครั้งที่ cache ถูก invalidate แบ่งตามขอบเขต
     pub cache_invalidations_total: IntCounterVec,
 }
 
 impl KernelMetrics {
+    /// ลงทะเบียน metrics ทั้งหมดกับ Prometheus Registry
     pub fn register(registry: &Registry) -> Result<Arc<Self>, prometheus::Error> {
         let lsm_policy_decisions_total = IntCounterVec::new(
             Opts::new(
@@ -101,22 +115,26 @@ impl KernelMetrics {
         }))
     }
 
+    /// บันทึกการตัดสินใจของ LSM Policy (allow/deny)
     pub fn record_lsm_decision(&self, decision: &str, reason: &str) {
         self.lsm_policy_decisions_total
             .with_label_values(&[decision, reason])
             .inc();
     }
 
+    /// ตั้งค่าจำนวน syscall ที่ถูกบล็อกโดย antibodies
     pub fn set_blocked_syscalls(&self, count: usize) {
         self.lsm_blocked_syscalls.set(count as i64);
     }
 
+    /// บันทึกความพยายามในการ attach eBPF
     pub fn record_attach_attempt(&self, component: &str, result: &str) {
         self.ebpf_attach_attempts_total
             .with_label_values(&[component, result])
             .inc();
     }
 
+    /// ตั้งค่าโหมดการทำงานปัจจุบันของ eBPF component
     pub fn set_active_mode(&self, component: &str, mode: &str) {
         for known_mode in KNOWN_EBPF_MODES {
             self.ebpf_active_mode
@@ -125,18 +143,21 @@ impl KernelMetrics {
         }
     }
 
+    /// บันทึกเหตุการณ์ syscall ที่สังเกตเห็น
     pub fn record_syscall_event(&self, decision: &str, syscall: &str) {
         self.syscall_events_total
             .with_label_values(&[decision, syscall])
             .inc();
     }
 
+    /// บันทึกเหตุการณ์ syscall ที่ถูก drop
     pub fn record_syscall_drop(&self, reason: &str) {
         self.syscall_event_drops_total
             .with_label_values(&[reason])
             .inc();
     }
 
+    /// บันทึกการ invalidate cache
     pub fn record_cache_invalidation(&self, scope: &str) {
         self.cache_invalidations_total
             .with_label_values(&[scope])
@@ -144,6 +165,7 @@ impl KernelMetrics {
     }
 }
 
+/// ดึงอินสแตนซ์ของ KernelMetrics (สร้างครั้งแรกและเก็บไว้ใน OnceLock)
 #[must_use]
 pub fn kernel_metrics() -> Arc<KernelMetrics> {
     Arc::clone(KERNEL_METRICS.get_or_init(|| {
@@ -152,14 +174,21 @@ pub fn kernel_metrics() -> Arc<KernelMetrics> {
     }))
 }
 
+/// การกำหนดค่าสำหรับ Tracing (structured logging + OpenTelemetry)
 #[derive(Debug, Clone)]
 pub struct TracingConfig {
+    /// ระดับการบันทึก log (trace/debug/info/warn/error)
     pub log_level: String,
+    /// ปลายทางของ OpenTelemetry collector
     pub otel_endpoint: String,
+    /// ชื่อ service สำหรับ OTel
     pub otel_service_name: String,
+    /// ระยะเวลา timeout สำหรับ OTel export (ms)
     pub otel_export_timeout_ms: u64,
 }
 
+/// เริ่มต้นระบบ Tracing ด้วย structured JSON logging และ OTel (ถ้ากำหนด endpoint)
+/// สามารถเรียกได้ครั้งเดียวเท่านั้น การเรียกซ้ำจะถูกข้าม
 pub fn init_tracing(config: &TracingConfig) -> Result<(), Box<dyn std::error::Error>> {
     if TRACING_INIT.get().is_some() {
         return Ok(());
@@ -216,6 +245,7 @@ pub fn init_tracing(config: &TracingConfig) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// ปิดระบบ Tracing และ flush OTel spans ทั้งหมดก่อนปิดโปรแกรม
 pub fn shutdown_tracing() {
     if let Some(guard) = OTEL_PROVIDER.get() {
         if let Some(provider) = guard.lock().expect("OTel provider lock").take() {
@@ -230,6 +260,7 @@ pub fn shutdown_tracing() {
 mod tests {
     use super::*;
 
+    /// ทดสอบการลงทะเบียนและแสดงผล Kernel Metrics ทั้งหมด
     #[test]
     fn register_and_render_kernel_metrics() {
         let registry = Registry::new();

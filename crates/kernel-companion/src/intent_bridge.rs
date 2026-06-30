@@ -11,27 +11,41 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, timeout};
 use tracing::{debug, info, warn};
 
+/// ซองจดหมาย (Envelope) สำหรับส่ง Intent ผ่านเครือข่ายระหว่างโหนด
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RoutedIntentEnvelope {
+    /// Intent ที่ต้องการส่ง
     intent: Intent,
 }
 
+/// การตอบรับ (Acknowledgment) สำหรับ Intent ที่ส่งผ่านเครือข่าย
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RoutedIntentAck {
+    /// สถานะการยอมรับ Intent
     accepted: bool,
+    /// รหัสโหนดที่ตอบรับ
     node_id: String,
+    /// ข้อผิดพลาดหากไม่ยอมรับ
     error: Option<String>,
 }
 
+/// สะพานเชื่อมต่อ Intent (Intent Bridge) สำหรับการสื่อสารข้ามโหนดผ่าน TCP
+/// ใช้ส่ง Intent ที่ถูก Delegate ไปยังโหนดอื่นในเครือข่าย
+/// รองรับการ timeout และ ACK เพื่อความน่าเชื่อถือ
 #[derive(Debug, Clone)]
 pub struct IntentBridge {
+    /// รหัสของโหนดท้องถิ่น
     local_node_id: String,
+    /// รายการโหนดปลายทางที่รู้จัก (Peer) พร้อม Socket Address
     peers: Arc<RwLock<HashMap<String, SocketAddr>>>,
+    /// ระยะเวลารอการเชื่อมต่อสูงสุด
     connect_timeout: Duration,
+    /// ระยะเวลารอการตอบรับสูงสุด
     request_timeout: Duration,
 }
 
 impl IntentBridge {
+    /// สร้าง IntentBridge ใหม่พร้อมกำหนดค่ารายการ Peer และ Timeout
     #[must_use]
     pub fn new(
         local_node_id: impl Into<String>,
@@ -57,6 +71,7 @@ impl IntentBridge {
         }
     }
 
+    /// ดึงรายการ Peer ทั้งหมดพร้อมที่อยู่ Socket
     pub async fn peer_configs(&self) -> Vec<(String, SocketAddr)> {
         self.peers
             .read()
@@ -66,14 +81,18 @@ impl IntentBridge {
             .collect()
     }
 
+    /// เพิ่มหรืออัปเดต Peer ใหม่ในระบบ
     pub async fn upsert_peer(&self, node_id: impl Into<String>, addr: SocketAddr) {
         self.peers.write().await.insert(node_id.into(), addr);
     }
 
+    /// ลบ Peer ออกจากระบบ
     pub async fn remove_peer(&self, node_id: &str) {
         self.peers.write().await.remove(node_id);
     }
 
+    /// เริ่มต้น Listener สำหรับรับ Intent จากโหนดอื่นผ่าน TCP
+    /// เมื่อได้รับการเชื่อมต่อจะส่ง Intent เข้าสู่ Intent Bus ท้องถิ่น
     pub async fn start_listener(
         &self,
         intent_bus: Arc<IntentBus>,
@@ -128,6 +147,8 @@ impl IntentBridge {
         Ok(())
     }
 
+    /// เริ่มต้น Forwarder สำหรับส่ง Intent ขาออกไปยังโหนดอื่น
+    /// จะตรวจสอบว่า Intent ควรถูก Forward หรือไม่ก่อนส่ง
     pub async fn start_forwarder(
         &self,
         intent_bus: Arc<IntentBus>,
@@ -166,6 +187,8 @@ impl IntentBridge {
         Ok(())
     }
 
+    /// ส่ง Intent ไปยังโหนดปลายทางผ่าน TCP พร้อมรอ ACK
+    /// ใช้ serialization แบบ JSON สำหรับส่งข้อมูล และ retry ด้วย timeout
     async fn forward_intent(&self, target_node: &str, intent: Intent) -> Result<()> {
         let target_addr = self
             .peers
@@ -216,6 +239,8 @@ impl IntentBridge {
     }
 }
 
+/// ตรวจสอบว่า Intent ควรถูก Forward ไปยังโหนดอื่นหรือไม่
+/// Intent จะถูก Forward ต่อเมื่ออยู่ในโหมด Delegated และเป้าหมายไม่ใช่โหนดท้องถิ่น
 fn should_forward_intent(local_node_id: &str, intent: &Intent) -> bool {
     intent.metadata.get(META_ROUTING_MODE).map(String::as_str) == Some(ROUTING_MODE_DELEGATED)
         && intent
@@ -224,6 +249,9 @@ fn should_forward_intent(local_node_id: &str, intent: &Intent) -> bool {
             .is_some_and(|target_node| target_node != local_node_id)
 }
 
+/// จัดการการเชื่อมต่อขาเข้า (Inbound Connection) จากโหนดอื่น
+/// อ่าน Intent จาก Socket, ตรวจสอบเป้าหมาย, และเผยแพร่เข้าสู่ Intent Bus
+/// ส่ง ACK กลับเพื่อยืนยันการรับ
 async fn handle_inbound_connection(
     socket: TcpStream,
     intent_bus: Arc<IntentBus>,
@@ -287,6 +315,7 @@ mod tests {
     };
     use tokio::time::timeout;
 
+    /// ทดสอบว่า Intent จะถูก Forward เฉพาะเมื่ออยู่ในโหมด Delegated และเป้าหมายไม่ใช่โหนดท้องถิ่น
     #[test]
     fn forwards_only_delegated_remote_intents() {
         let local = "node-a";
@@ -312,6 +341,7 @@ mod tests {
         assert!(!should_forward_intent(local, &local_intent));
     }
 
+    /// ทดสอบว่า Intent Bridge สามารถ Forward Intent ไปยัง Listener ของอีกโหนดได้สำเร็จ
     #[tokio::test]
     async fn bridge_forwards_intent_to_remote_listener() {
         let target_listener = match std::net::TcpListener::bind("127.0.0.1:0") {
