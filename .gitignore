@@ -22,3 +22,8 @@
 *.pem
 *.key
 *.cert
+
+# Zig Cache
+/.zig-cache/
+/.zig-global-cache/
+
