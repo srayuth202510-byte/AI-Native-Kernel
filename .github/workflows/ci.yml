@@ -34,9 +34,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install eBPF toolchain
-        run: |
-          sudo apt-get update && \
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y clang llvm libclang-dev bpftool libelf-dev linux-tools-common linux-tools-generic linux-headers-$(uname -r)
+        run: bash scripts/install-ebpf-deps.sh --skip-check
 
       - name: Generate eBPF prebuilt objects (if BTF available)
         run: |

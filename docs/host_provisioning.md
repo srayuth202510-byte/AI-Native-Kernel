@@ -54,14 +54,11 @@ Dry run:
 Manual equivalent if you do not want to use the bootstrap script:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
-  clang \
-  llvm \
-  libclang-dev \
-  bpftool \
-  linux-headers-$(uname -r)
+./scripts/install-ebpf-deps.sh
 ```
+
+The installer resolves the correct `bpftool` provider for the host distro. On Ubuntu 24.04
+that may be `linux-tools-common` instead of a concrete `bpftool` package name.
 
 Then verify:
 

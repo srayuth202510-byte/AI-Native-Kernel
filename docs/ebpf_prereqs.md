@@ -55,9 +55,13 @@ The script mirrors the checks used by `crates/kernel-companion/build.rs` and als
 ## Common Ubuntu/Debian Packages
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y clang llvm bpftool linux-headers-$(uname -r)
+./scripts/install-ebpf-deps.sh
 ```
+
+If you need the manual equivalent, install `clang`, `llvm`, `libclang-dev`, `libelf-dev`,
+matching `linux-headers-$(uname -r)`, and whichever installable package on your distro
+provides `bpftool`. On Ubuntu 24.04 this may be a provider such as `linux-tools-common`
+rather than a concrete `bpftool` package.
 
 ## Runtime Notes
 

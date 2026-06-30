@@ -2,22 +2,30 @@
 set -euo pipefail
 
 KERNEL_RELEASE="$(uname -r)"
-PACKAGES=(
+BASE_PACKAGES=(
     "clang"
     "llvm"
     "libclang-dev"
-    "bpftool"
-    "linux-headers-${KERNEL_RELEASE}"
+    "libelf-dev"
 )
+RESOLVED_PACKAGES=()
 
 DRY_RUN=0
 RUN_CHECK=1
+
+package_hint() {
+    if [[ "${#RESOLVED_PACKAGES[@]}" -gt 0 ]]; then
+        printf '%s\n' "${RESOLVED_PACKAGES[*]}"
+    else
+        printf '%s\n' "${BASE_PACKAGES[*]} <bpftool-provider> linux-headers-${KERNEL_RELEASE}"
+    fi
+}
 
 print_manual_install_guidance() {
     cat <<EOF >&2
 Manual remediation:
   1. Provide these tools from the host OS or a dedicated build environment:
-     ${PACKAGES[*]}
+     $(package_hint)
   2. Ensure the running kernel headers match: ${KERNEL_RELEASE}
   3. Re-run: scripts/check-ebpf-prereqs.sh
 EOF
@@ -35,7 +43,7 @@ outside this environment, for example:
   - a manually provisioned toolchain that exposes clang, llvm, and bpftool in PATH
 
 Required packages/tools:
-  ${PACKAGES[*]}
+  $(package_hint)
 
 After provisioning them, re-run:
   scripts/check-ebpf-prereqs.sh
@@ -55,8 +63,60 @@ Options:
   -h, --help   Show this help text
 
 Packages:
-  ${PACKAGES[*]}
+  $(package_hint)
 EOF
+}
+
+resolve_bpftool_package() {
+    local provider=""
+
+    if ! command -v apt-cache >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if apt-cache show bpftool >/dev/null 2>&1; then
+        printf 'bpftool\n'
+        return 0
+    fi
+
+    provider="$(
+        apt-cache policy bpftool 2>/dev/null |
+            awk '
+                /^[[:space:]]+[[:alnum:]][[:alnum:]+.-]*[[:space:]]+[[:digit:]]/ {
+                    print $1
+                    exit
+                }
+            '
+    )"
+    if [[ -n "$provider" ]]; then
+        printf '%s\n' "$provider"
+        return 0
+    fi
+
+    for provider in linux-tools-common linux-lowlatency-tools-common; do
+        if apt-cache show "$provider" >/dev/null 2>&1; then
+            printf '%s\n' "$provider"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+build_packages() {
+    local bpftool_package=""
+
+    RESOLVED_PACKAGES=("${BASE_PACKAGES[@]}")
+
+    if bpftool_package="$(resolve_bpftool_package)"; then
+        RESOLVED_PACKAGES+=("$bpftool_package")
+    else
+        echo "Unable to resolve an installable package that provides bpftool" >&2
+        print_manual_install_guidance
+        exit 1
+    fi
+
+    RESOLVED_PACKAGES+=("linux-headers-${KERNEL_RELEASE}")
 }
 
 while [[ $# -gt 0 ]]; do
@@ -102,6 +162,8 @@ if [[ "$DISTRO_ID" != "ubuntu" && "$DISTRO_ID" != "debian" && "$DISTRO_ID" != ub
     exit 1
 fi
 
+build_packages
+
 if [[ "$(id -u)" -eq 0 ]]; then
     SUDO=()
 elif command -v sudo >/dev/null 2>&1; then
@@ -114,12 +176,12 @@ else
 fi
 
 APT_UPDATE_CMD=("${SUDO[@]}" apt-get update)
-APT_INSTALL_CMD=("${SUDO[@]}" apt-get install -y "${PACKAGES[@]}")
+APT_INSTALL_CMD=("${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y "${RESOLVED_PACKAGES[@]}")
 
 echo "==> AI-Native Kernel real eBPF dependency installer"
 echo "    Distribution : ${PRETTY_NAME:-unknown}"
 echo "    Kernel        : ${KERNEL_RELEASE}"
-echo "    Packages      : ${PACKAGES[*]}"
+echo "    Packages      : ${RESOLVED_PACKAGES[*]}"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
     echo
