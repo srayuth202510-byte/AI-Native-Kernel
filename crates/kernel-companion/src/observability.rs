@@ -1,50 +1,33 @@
+use opentelemetry::KeyValue;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use prometheus::{IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry};
-use std::io::Write;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tracing::field::{Field, Visit};
-use tracing::level_filters::LevelFilter;
-use tracing::metadata::Metadata;
-use tracing::span::{Attributes, Id, Record};
-use tracing::subscriber::{Interest, SetGlobalDefaultError};
-use tracing::{Event, Subscriber};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 static KERNEL_METRICS: OnceLock<Arc<KernelMetrics>> = OnceLock::new();
 static TRACING_INIT: OnceLock<()> = OnceLock::new();
+static OTEL_PROVIDER: OnceLock<Mutex<Option<SdkTracerProvider>>> = OnceLock::new();
 
 const KNOWN_EBPF_MODES: [&str; 2] = ["real", "simulation"];
 
 #[derive(Debug)]
-/// โครงสร้างข้อมูล `KernelMetrics` ใช้สำหรับเก็บสถานะและการตั้งค่า
-/// โครงสร้างข้อมูล `KernelMetrics` ใช้สำหรับเก็บสถานะและการตั้งค่า
 pub struct KernelMetrics {
-    /// ข้อมูล `lsm_policy_decisions_total` สำหรับการกำหนดค่าหรือสถานะภายใน
-    /// ข้อมูล `lsm_policy_decisions_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub lsm_policy_decisions_total: IntCounterVec,
-    /// ข้อมูล `lsm_blocked_syscalls` สำหรับการกำหนดค่าหรือสถานะภายใน
-    /// ข้อมูล `lsm_blocked_syscalls` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub lsm_blocked_syscalls: IntGauge,
-    /// ข้อมูล `ebpf_attach_attempts_total` สำหรับการกำหนดค่าหรือสถานะภายใน
-    /// ข้อมูล `ebpf_attach_attempts_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub ebpf_attach_attempts_total: IntCounterVec,
-    /// ข้อมูล `ebpf_active_mode` สำหรับการกำหนดค่าหรือสถานะภายใน
-    /// ข้อมูล `ebpf_active_mode` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub ebpf_active_mode: IntGaugeVec,
-    /// ข้อมูล `syscall_events_total` สำหรับการกำหนดค่าหรือสถานะภายใน
-    /// ข้อมูล `syscall_events_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub syscall_events_total: IntCounterVec,
-    /// ข้อมูล `syscall_event_drops_total` สำหรับการกำหนดค่าหรือสถานะภายใน
-    /// ข้อมูล `syscall_event_drops_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub syscall_event_drops_total: IntCounterVec,
-    /// ข้อมูล `cache_invalidations_total` สำหรับการกำหนดค่าหรือสถานะภายใน
-    /// ข้อมูล `cache_invalidations_total` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub cache_invalidations_total: IntCounterVec,
 }
 
 impl KernelMetrics {
-    /// ฟังก์ชัน `register` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `register` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn register(registry: &Registry) -> Result<Arc<Self>, prometheus::Error> {
         let lsm_policy_decisions_total = IntCounterVec::new(
             Opts::new(
@@ -118,30 +101,22 @@ impl KernelMetrics {
         }))
     }
 
-    /// ฟังก์ชัน `record_lsm_decision` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `record_lsm_decision` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_lsm_decision(&self, decision: &str, reason: &str) {
         self.lsm_policy_decisions_total
             .with_label_values(&[decision, reason])
             .inc();
     }
 
-    /// ฟังก์ชัน `set_blocked_syscalls` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `set_blocked_syscalls` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn set_blocked_syscalls(&self, count: usize) {
         self.lsm_blocked_syscalls.set(count as i64);
     }
 
-    /// ฟังก์ชัน `record_attach_attempt` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `record_attach_attempt` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_attach_attempt(&self, component: &str, result: &str) {
         self.ebpf_attach_attempts_total
             .with_label_values(&[component, result])
             .inc();
     }
 
-    /// ฟังก์ชัน `set_active_mode` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `set_active_mode` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn set_active_mode(&self, component: &str, mode: &str) {
         for known_mode in KNOWN_EBPF_MODES {
             self.ebpf_active_mode
@@ -150,24 +125,18 @@ impl KernelMetrics {
         }
     }
 
-    /// ฟังก์ชัน `record_syscall_event` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `record_syscall_event` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_syscall_event(&self, decision: &str, syscall: &str) {
         self.syscall_events_total
             .with_label_values(&[decision, syscall])
             .inc();
     }
 
-    /// ฟังก์ชัน `record_syscall_drop` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `record_syscall_drop` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_syscall_drop(&self, reason: &str) {
         self.syscall_event_drops_total
             .with_label_values(&[reason])
             .inc();
     }
 
-    /// ฟังก์ชัน `record_cache_invalidation` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `record_cache_invalidation` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn record_cache_invalidation(&self, scope: &str) {
         self.cache_invalidations_total
             .with_label_values(&[scope])
@@ -176,8 +145,6 @@ impl KernelMetrics {
 }
 
 #[must_use]
-/// ฟังก์ชัน `kernel_metrics` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-/// ฟังก์ชัน `kernel_metrics` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
 pub fn kernel_metrics() -> Arc<KernelMetrics> {
     Arc::clone(KERNEL_METRICS.get_or_init(|| {
         KernelMetrics::register(prometheus::default_registry())
@@ -185,149 +152,77 @@ pub fn kernel_metrics() -> Arc<KernelMetrics> {
     }))
 }
 
-/// ฟังก์ชัน `init_tracing` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-/// ฟังก์ชัน `init_tracing` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-pub fn init_tracing(level: &str) -> Result<(), SetGlobalDefaultError> {
+#[derive(Debug, Clone)]
+pub struct TracingConfig {
+    pub log_level: String,
+    pub otel_endpoint: String,
+    pub otel_service_name: String,
+    pub otel_export_timeout_ms: u64,
+}
+
+pub fn init_tracing(config: &TracingConfig) -> Result<(), Box<dyn std::error::Error>> {
     if TRACING_INIT.get().is_some() {
         return Ok(());
     }
 
-    let subscriber = SimpleSubscriber::new(parse_level(level));
-    match tracing::subscriber::set_global_default(subscriber) {
-        Ok(()) => {
-            let _ = TRACING_INIT.set(());
-            Ok(())
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+        .parse_lossy(&config.log_level);
+
+    let json_layer = tracing_subscriber::fmt::layer()
+        .json()
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true)
+        .with_current_span(true)
+        .with_span_list(true);
+
+    let otel_layer = if !config.otel_endpoint.is_empty() {
+        let timeout = std::time::Duration::from_millis(config.otel_export_timeout_ms);
+        let span_exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .with_endpoint(&config.otel_endpoint)
+            .with_timeout(timeout)
+            .build()?;
+        let tracer_provider = SdkTracerProvider::builder()
+            .with_resource(
+                Resource::builder()
+                    .with_attribute(KeyValue::new(
+                        "service.name",
+                        config.otel_service_name.clone(),
+                    ))
+                    .build(),
+            )
+            .with_batch_exporter(span_exporter)
+            .build();
+        opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+        let _ = OTEL_PROVIDER
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .expect("OTel provider lock")
+            .replace(tracer_provider);
+        Some(tracing_opentelemetry::layer())
+    } else {
+        None
+    };
+
+    let subscriber = tracing_subscriber::Registry::default()
+        .with(env_filter)
+        .with(json_layer)
+        .with(otel_layer);
+
+    subscriber.try_init()?;
+    let _ = TRACING_INIT.set(());
+    Ok(())
+}
+
+pub fn shutdown_tracing() {
+    if let Some(guard) = OTEL_PROVIDER.get() {
+        if let Some(provider) = guard.lock().expect("OTel provider lock").take() {
+            if let Err(e) = provider.shutdown() {
+                eprintln!("OTel tracer provider shutdown warning: {e:?}");
+            }
         }
-        Err(err) => {
-            let _ = TRACING_INIT.set(());
-            Err(err)
-        }
-    }
-}
-
-fn parse_level(level: &str) -> LevelFilter {
-    match level.to_ascii_lowercase().as_str() {
-        "trace" => LevelFilter::TRACE,
-        "debug" => LevelFilter::DEBUG,
-        "warn" => LevelFilter::WARN,
-        "error" => LevelFilter::ERROR,
-        _ => LevelFilter::INFO,
-    }
-}
-
-struct SimpleSubscriber {
-    max_level: LevelFilter,
-    next_span_id: AtomicU64,
-}
-
-impl SimpleSubscriber {
-    fn new(max_level: LevelFilter) -> Self {
-        Self {
-            max_level,
-            next_span_id: AtomicU64::new(1),
-        }
-    }
-}
-
-impl Subscriber for SimpleSubscriber {
-    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        self.max_level >= LevelFilter::from_level(*metadata.level())
-    }
-
-    fn new_span(&self, _span: &Attributes<'_>) -> Id {
-        Id::from_u64(self.next_span_id.fetch_add(1, Ordering::Relaxed))
-    }
-
-    fn record(&self, _span: &Id, _values: &Record<'_>) {}
-
-    fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
-
-    fn event(&self, event: &Event<'_>) {
-        let metadata = event.metadata();
-        if !self.enabled(metadata) {
-            return;
-        }
-
-        let mut visitor = EventVisitor::default();
-        event.record(&mut visitor);
-
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        let mut stderr = std::io::stderr().lock();
-        let _ = writeln!(
-            stderr,
-            "[{timestamp}] {} {}{}",
-            metadata.level(),
-            metadata.target(),
-            visitor.render_suffix(),
-        );
-    }
-
-    fn enter(&self, _span: &Id) {}
-
-    fn exit(&self, _span: &Id) {}
-
-    fn clone_span(&self, id: &Id) -> Id {
-        id.clone()
-    }
-
-    fn try_close(&self, _id: Id) -> bool {
-        true
-    }
-
-    fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
-        if self.enabled(metadata) {
-            Interest::always()
-        } else {
-            Interest::never()
-        }
-    }
-
-    fn max_level_hint(&self) -> Option<LevelFilter> {
-        Some(self.max_level)
-    }
-}
-
-#[derive(Default)]
-struct EventVisitor {
-    fields: Vec<String>,
-}
-
-impl EventVisitor {
-    fn push_field(&mut self, field: &Field, value: String) {
-        self.fields.push(format!("{}={value}", field.name()));
-    }
-
-    fn render_suffix(&self) -> String {
-        if self.fields.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", self.fields.join(" "))
-        }
-    }
-}
-
-impl Visit for EventVisitor {
-    fn record_str(&mut self, field: &Field, value: &str) {
-        self.push_field(field, value.to_string());
-    }
-
-    fn record_bool(&mut self, field: &Field, value: bool) {
-        self.push_field(field, value.to_string());
-    }
-
-    fn record_i64(&mut self, field: &Field, value: i64) {
-        self.push_field(field, value.to_string());
-    }
-
-    fn record_u64(&mut self, field: &Field, value: u64) {
-        self.push_field(field, value.to_string());
-    }
-
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        self.push_field(field, format!("{value:?}"));
     }
 }
 

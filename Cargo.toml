@@ -24,8 +24,11 @@ flume = "0.11"
 dashmap = "5.5"
 parking_lot = "0.12"
 prometheus = "0.14"
-opentelemetry = "0.21"
-opentelemetry-sdk = "0.21"
+opentelemetry = { version = "0.32", features = ["trace"] }
+opentelemetry_sdk = { version = "0.32", features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "trace"] }
+tracing-opentelemetry = "0.33"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter", "registry"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anymap = "1.0"

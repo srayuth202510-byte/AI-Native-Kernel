@@ -78,6 +78,12 @@ rate_threshold = 100
 deny_threshold = 5
 kill_threshold = 15
 
+[observability]
+otel_endpoint = ""
+otel_service_name = "ank-kernel-companion"
+otel_export_timeout_ms = 10000
+json_log_output = "stderr"
+
 [ebpf]
 enable_fallback = false
 tracepoint_program = "sys_enter_tp"

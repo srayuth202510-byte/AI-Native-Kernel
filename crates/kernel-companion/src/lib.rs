@@ -6,7 +6,7 @@
 use crate::cognitive::CognitiveControlPlane;
 use crate::config::Config;
 use crate::intent_bridge::IntentBridge;
-use crate::observability::kernel_metrics;
+use crate::observability::{kernel_metrics, shutdown_tracing};
 use crate::retry_telemetry::{RetryAndTelemetryManager, RetryConfig, TelemetryTTLConfig};
 use agent_scheduler::{AgentScheduler, DistributedRoutingPolicy, RemoteNodeState};
 use capability_security::CapabilitySecurityManager;
@@ -1020,6 +1020,7 @@ impl KernelCompanion {
             attachment.detach();
         }
         *self.attachment.lock() = None;
+        shutdown_tracing();
         info!("KernelCompanion shutdown เสร็จสมบูรณ์");
     }
 

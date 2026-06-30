@@ -3,7 +3,7 @@
 use clap::Parser;
 use kernel_companion::KernelCompanion;
 use kernel_companion::config::Config;
-use kernel_companion::observability::init_tracing;
+use kernel_companion::observability::{TracingConfig, init_tracing, shutdown_tracing};
 use std::path::PathBuf;
 
 /// AI-Native Kernel Companion Daemon
@@ -107,7 +107,15 @@ async fn main() -> anyhow::Result<()> {
         config.ebpf.enable_fallback = false;
     }
 
-    let _ = init_tracing(&config.general.log_level);
+    let tracing_config = TracingConfig {
+        log_level: config.general.log_level.clone(),
+        otel_endpoint: config.observability.otel_endpoint.clone(),
+        otel_service_name: config.observability.otel_service_name.clone(),
+        otel_export_timeout_ms: config.observability.otel_export_timeout_ms,
+    };
+    if let Err(e) = init_tracing(&tracing_config) {
+        eprintln!("Warning: failed to init tracing: {e}");
+    }
 
     println!(
         "AI-Native Kernel Companion Daemon starting... (log: {})",
@@ -115,5 +123,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let companion = KernelCompanion::with_config(&config);
-    companion.run().await
+    let result = companion.run().await;
+    shutdown_tracing();
+    result
 }

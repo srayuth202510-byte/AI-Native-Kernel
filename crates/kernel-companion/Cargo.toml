@@ -31,6 +31,11 @@ prometheus = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 nix = { version = "0.31.3", features = ["socket", "user"] }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

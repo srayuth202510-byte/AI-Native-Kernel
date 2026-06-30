@@ -52,6 +52,9 @@ pub struct Config {
     #[serde(default)]
     /// ข้อมูล `retry_telemetry` สำหรับการกำหนดค่าการทำ retry/backoff และการตรวจตราแบบมีการหมดอายุ (TTL)
     pub retry_telemetry: RetryTelemetryConfig,
+    #[serde(default)]
+    /// ข้อมูล `observability` สำหรับ tracing/OpenTelemetry
+    pub observability: ObservabilityConfig,
 }
 
 impl Config {
@@ -283,6 +286,17 @@ impl Config {
                 self.retry_telemetry.telemetry_publish_interval_ms = n;
             }
         }
+        if let Ok(v) = std::env::var("ANK_OTEL_ENDPOINT") {
+            self.observability.otel_endpoint = v;
+        }
+        if let Ok(v) = std::env::var("ANK_OTEL_SERVICE_NAME") {
+            self.observability.otel_service_name = v;
+        }
+        if let Ok(v) = std::env::var("ANK_OTEL_EXPORT_TIMEOUT_MS") {
+            if let Ok(n) = v.parse() {
+                self.observability.otel_export_timeout_ms = n;
+            }
+        }
         self
     }
 }
@@ -393,6 +407,42 @@ impl Default for RetryTelemetryConfig {
             telemetry_publish_interval_ms: 2_000,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservabilityConfig {
+    #[serde(default = "default_otel_endpoint")]
+    pub otel_endpoint: String,
+    #[serde(default = "default_otel_service_name")]
+    pub otel_service_name: String,
+    #[serde(default = "default_otel_export_timeout_ms")]
+    pub otel_export_timeout_ms: u64,
+    #[serde(default = "default_json_log_output")]
+    pub json_log_output: String,
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            otel_endpoint: default_otel_endpoint(),
+            otel_service_name: default_otel_service_name(),
+            otel_export_timeout_ms: default_otel_export_timeout_ms(),
+            json_log_output: default_json_log_output(),
+        }
+    }
+}
+
+fn default_otel_endpoint() -> String {
+    String::new()
+}
+fn default_otel_service_name() -> String {
+    "ank-kernel-companion".to_string()
+}
+fn default_otel_export_timeout_ms() -> u64 {
+    10_000
+}
+fn default_json_log_output() -> String {
+    "stderr".to_string()
 }
 
 impl Default for KernelCompanionConfig {
