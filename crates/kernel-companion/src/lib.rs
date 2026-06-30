@@ -950,121 +950,102 @@ impl KernelCompanion {
 
                                 self.sfs_task = Some(tokio::spawn(async move {
                                     info!("SFS Command Processor task started.");
-                                    loop {
-                                        match sfs_sub.receive().await {
-                                            Some(intent) => {
-                                                if intent.intent_type == IntentType::Command {
-                                                    let bus = Arc::clone(&sfs_intent_bus);
-                                                    let sfs_ref = Arc::clone(&sfs_arc);
-                                                    tokio::spawn(async move {
-                                                        match intent.payload.as_str() {
-                                                            "write-file" => {
-                                                                if let (Some(path), Some(content)) = (
-                                                                    intent.metadata.get("path"),
-                                                                    intent.metadata.get("content"),
-                                                                ) {
-                                                                    match sfs_ref
-                                                                        .write_file(path, content)
-                                                                        .await
-                                                                    {
-                                                                        Ok(()) => {
-                                                                            let _ = bus.publish(Intent::new(
-                                                                                uuid::Uuid::new_v4().to_string(),
-                                                                                IntentType::Event,
-                                                                                format!("Successfully wrote file {path}"),
-                                                                                intent_bus::IntentPriority::Medium,
-                                                                                "sfs-processor",
-                                                                            )).await;
-                                                                        }
-                                                                        Err(e) => {
-                                                                            warn!(
-                                                                                "SFS write error: {e}"
-                                                                            );
-                                                                        }
-                                                                    }
+                                    while let Some(intent) = sfs_sub.receive().await {
+                                        if intent.intent_type == IntentType::Command {
+                                            let bus = Arc::clone(&sfs_intent_bus);
+                                            let sfs_ref = Arc::clone(&sfs_arc);
+                                            tokio::spawn(async move {
+                                                match intent.payload.as_str() {
+                                                    "write-file" => {
+                                                        if let (Some(path), Some(content)) = (
+                                                            intent.metadata.get("path"),
+                                                            intent.metadata.get("content"),
+                                                        ) {
+                                                            match sfs_ref
+                                                                .write_file(path, content)
+                                                                .await
+                                                            {
+                                                                Ok(()) => {
+                                                                    let _ = bus.publish(Intent::new(
+                                                                        uuid::Uuid::new_v4().to_string(),
+                                                                        IntentType::Event,
+                                                                        format!("Successfully wrote file {path}"),
+                                                                        intent_bus::IntentPriority::Medium,
+                                                                        "sfs-processor",
+                                                                    )).await;
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!("SFS write error: {e}");
                                                                 }
                                                             }
-                                                            "read-file" => {
-                                                                if let Some(path) =
-                                                                    intent.metadata.get("path")
-                                                                {
-                                                                    match sfs_ref
-                                                                        .read_file(path)
-                                                                        .await
-                                                                    {
-                                                                        Ok(content) => {
-                                                                            let _ = bus.publish(Intent::new(
-                                                                                uuid::Uuid::new_v4().to_string(),
-                                                                                IntentType::Event,
-                                                                                format!("File content: {content}"),
-                                                                                intent_bus::IntentPriority::Medium,
-                                                                                "sfs-processor",
-                                                                            )).await;
-                                                                        }
-                                                                        Err(e) => {
-                                                                            warn!(
-                                                                                "SFS read error: {e}"
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            "search-file" => {
-                                                                if let Some(query) =
-                                                                    intent.metadata.get("query")
-                                                                {
-                                                                    match sfs_ref
-                                                                        .search_paths(query, 5)
-                                                                        .await
-                                                                    {
-                                                                        Ok(results) => {
-                                                                            let _ = bus.publish(Intent::new(
-                                                                                uuid::Uuid::new_v4().to_string(),
-                                                                                IntentType::Event,
-                                                                                format!("Search results: {:?}", results),
-                                                                                intent_bus::IntentPriority::Medium,
-                                                                                "sfs-processor",
-                                                                            )).await;
-                                                                        }
-                                                                        Err(e) => {
-                                                                            warn!(
-                                                                                "SFS search error: {e}"
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            "delete-file" => {
-                                                                if let Some(path) =
-                                                                    intent.metadata.get("path")
-                                                                {
-                                                                    match sfs_ref
-                                                                        .delete_file(path)
-                                                                        .await
-                                                                    {
-                                                                        Ok(()) => {
-                                                                            let _ = bus.publish(Intent::new(
-                                                                                uuid::Uuid::new_v4().to_string(),
-                                                                                IntentType::Event,
-                                                                                format!("Successfully deleted file {path}"),
-                                                                                intent_bus::IntentPriority::Medium,
-                                                                                "sfs-processor",
-                                                                            )).await;
-                                                                        }
-                                                                        Err(e) => {
-                                                                            warn!(
-                                                                                "SFS delete error: {e}"
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            _ => {}
                                                         }
-                                                    });
+                                                    }
+                                                    "read-file" => {
+                                                        if let Some(path) =
+                                                            intent.metadata.get("path")
+                                                        {
+                                                            match sfs_ref.read_file(path).await {
+                                                                Ok(content) => {
+                                                                    let _ = bus.publish(Intent::new(
+                                                                        uuid::Uuid::new_v4().to_string(),
+                                                                        IntentType::Event,
+                                                                        format!("File content: {content}"),
+                                                                        intent_bus::IntentPriority::Medium,
+                                                                        "sfs-processor",
+                                                                    )).await;
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!("SFS read error: {e}");
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    "search-file" => {
+                                                        if let Some(query) =
+                                                            intent.metadata.get("query")
+                                                        {
+                                                            match sfs_ref
+                                                                .search_paths(query, 5)
+                                                                .await
+                                                            {
+                                                                Ok(results) => {
+                                                                    let _ = bus.publish(Intent::new(
+                                                                        uuid::Uuid::new_v4().to_string(),
+                                                                        IntentType::Event,
+                                                                        format!("Search results: {:?}", results),
+                                                                        intent_bus::IntentPriority::Medium,
+                                                                        "sfs-processor",
+                                                                    )).await;
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!("SFS search error: {e}");
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    "delete-file" => {
+                                                        if let Some(path) =
+                                                            intent.metadata.get("path")
+                                                        {
+                                                            match sfs_ref.delete_file(path).await {
+                                                                Ok(()) => {
+                                                                    let _ = bus.publish(Intent::new(
+                                                                        uuid::Uuid::new_v4().to_string(),
+                                                                        IntentType::Event,
+                                                                        format!("Successfully deleted file {path}"),
+                                                                        intent_bus::IntentPriority::Medium,
+                                                                        "sfs-processor",
+                                                                    )).await;
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!("SFS delete error: {e}");
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    _ => {}
                                                 }
-                                            }
-                                            None => break,
+                                            });
                                         }
                                     }
                                 }));

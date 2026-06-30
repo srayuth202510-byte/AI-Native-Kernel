@@ -44,7 +44,7 @@ detect_libclang_path() {
         if [[ -z "$candidate" ]]; then
             continue
         fi
-        if [[ -e "$candidate/libclang.so" || -e "$candidate/libclang.so.1" || -e "$candidate/libclang.dylib" ]]; then
+        if [[ -e "$candidate/libclang.so" || -e "$candidate/libclang.so.1" || -e "$candidate/libclang.dylib" || -n "$(find "$candidate" -maxdepth 1 -name "libclang-*.so*" 2>/dev/null)" ]]; then
             printf '%s\n' "$candidate"
             return 0
         fi
