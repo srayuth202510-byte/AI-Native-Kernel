@@ -88,7 +88,10 @@ impl LlamaCppEngine {
             endpoint_url: endpoint_url.into(),
             client,
             request_timeout: Duration::from_secs(30),
-            fallback_mock: true,
+            fallback_mock: std::env::var("ANK_COMPUTE_MOCK_FALLBACK")
+                .ok()
+                .and_then(|val| val.parse::<bool>().ok())
+                .unwrap_or(true),
         }
     }
 
@@ -255,7 +258,10 @@ impl TensorRtLlmEngine {
         Self {
             endpoint: endpoint.into(),
             client,
-            fallback_mock: true,
+            fallback_mock: std::env::var("ANK_COMPUTE_MOCK_FALLBACK")
+                .ok()
+                .and_then(|val| val.parse::<bool>().ok())
+                .unwrap_or(true),
         }
     }
 

@@ -130,7 +130,10 @@ impl CloudAiEngine {
             client,
             request_timeout: Duration::from_secs(60),
             retry_config: RetryConfig::default(),
-            fallback_mock: true,
+            fallback_mock: std::env::var("ANK_COMPUTE_MOCK_FALLBACK")
+                .ok()
+                .and_then(|val| val.parse::<bool>().ok())
+                .unwrap_or(true),
         }
     }
 

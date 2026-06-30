@@ -50,6 +50,7 @@ p2p_bootstrap_nodes = []
 warm_store_path = "/tmp/ank-warm-store"
 
 [compute_scheduler]
+# To run without mock fallbacks for compute engines, set env ANK_COMPUTE_MOCK_FALLBACK=false
 default_mode = "throughput"
 adaptive_alpha = 0.1
 weight_latency = 0.8
