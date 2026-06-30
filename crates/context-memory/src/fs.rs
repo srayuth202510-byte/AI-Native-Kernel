@@ -348,7 +348,6 @@ mod tests {
     // ── Integration tests (require Qdrant) ─────────────────────────
 
     #[tokio::test]
-    #[ignore = "Requires a running Qdrant instance; override with QDRANT_URL/QDRANT_HOST/QDRANT_PORT"]
     async fn test_semantic_file_system_operations() -> Result<()> {
         if !check_qdrant_online().await {
             println!(

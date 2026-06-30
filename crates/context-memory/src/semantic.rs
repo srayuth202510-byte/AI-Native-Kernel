@@ -206,7 +206,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires a running Qdrant instance; override with QDRANT_URL/QDRANT_HOST/QDRANT_PORT"]
     async fn test_qdrant_semantic_store() -> Result<()> {
         if !check_qdrant_online().await {
             println!(
@@ -251,7 +250,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires a running Qdrant instance; override with QDRANT_URL/QDRANT_HOST/QDRANT_PORT"]
     async fn test_qdrant_semantic_store_multiple_points() -> Result<()> {
         if !check_qdrant_online().await {
             println!(
@@ -319,7 +317,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires a running Qdrant instance; override with QDRANT_URL/QDRANT_HOST/QDRANT_PORT"]
     async fn test_qdrant_semantic_store_empty_search() -> Result<()> {
         if !check_qdrant_online().await {
             println!(

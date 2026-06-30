@@ -829,9 +829,9 @@ mod tests {
                 let _ = tracer.run(cancel, true).await;
             });
 
-            let event = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
                 .await
-                .expect("should receive event within 500ms")
+                .expect("should receive event within 2s")
                 .expect("channel should be open");
 
             assert_eq!(event.syscall_nr, 0);

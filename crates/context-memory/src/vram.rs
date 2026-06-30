@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, instrument, warn};
 
 /// โครงสร้างแทนข้อมูล KV Cache ของโมเดล AI (เช่น LLM)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -30,7 +33,7 @@ impl KvCachePage {
             num_heads,
             head_dim,
             element_size_bytes,
-            data: vec![0xABu8; size], // simulated initial values
+            data: vec![0xABu8; size],
         }
     }
 
@@ -40,74 +43,179 @@ impl KvCachePage {
     }
 }
 
-/// พื้นที่เก็บข้อมูลกราฟิกจำลอง (VRAM Store) สำหรับ GPU/NPU context pages
-#[derive(Debug, Clone)]
+/// สถิติการใช้งาน VRAM Store ( getCounts)
+#[derive(Debug, Default)]
+pub struct VramMetrics {
+    pub inserts: AtomicU64,
+    pub gets: AtomicU64,
+    pub hits: AtomicU64,
+    pub misses: AtomicU64,
+    pub evictions: AtomicU64,
+    pub removes: AtomicU64,
+}
+
+impl VramMetrics {
+    #[must_use]
+    pub fn snapshot(&self) -> VramMetricsSnapshot {
+        VramMetricsSnapshot {
+            inserts: self.inserts.load(Ordering::Relaxed),
+            gets: self.gets.load(Ordering::Relaxed),
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
+            removes: self.removes.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Snapshot ของสถิติ (Copy-friendly)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VramMetricsSnapshot {
+    pub inserts: u64,
+    pub gets: u64,
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub removes: u64,
+}
+
+impl VramMetricsSnapshot {
+    #[must_use]
+    pub fn hit_rate(&self) -> f64 {
+        if self.gets == 0 {
+            0.0
+        } else {
+            self.hits as f64 / self.gets as f64
+        }
+    }
+}
+
+/// Callback ที่เรียกเมื่อมีการถอดถอนข้อมูลจาก VRAM
+/// ใช้สำหรับย้ายข้อมูลไปยัง Hot Tier (RAM) ก่อนสูญหาย
+pub type OnEvictCallback = Arc<dyn Fn(&str, &[u8]) + Send + Sync>;
+
+/// พื้นที่เก็บข้อมูล VRAM สำหรับ GPU/NPU context pages
+/// ใช้ LRU eviction แบบ VecDeque (O(1) front removal)
+#[derive(Clone)]
 pub struct VramStore {
-    /// ข้อมูลที่จัดเก็บใน VRAM จำลอง
     buffers: HashMap<String, Vec<u8>>,
-    /// ขนาดความจุ VRAM สูงสุดในหน่วยไบต์
     total_capacity: usize,
-    /// ขนาด VRAM ที่ถูกใช้ไปในปัจจุบัน (ไบต์)
     allocated_bytes: usize,
-    /// ลำดับการใช้งานล่าสุด (LRU) สำหรับถอดถอนข้อมูลเมื่อเต็ม
-    access_order: Vec<String>,
+    /// LRU access order: back = most recent, front = least recent
+    access_order: VecDeque<String>,
+    metrics: Arc<VramMetrics>,
+    on_evict: Option<OnEvictCallback>,
+}
+
+impl std::fmt::Debug for VramStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VramStore")
+            .field("total_capacity", &self.total_capacity)
+            .field("allocated_bytes", &self.allocated_bytes)
+            .field("entries", &self.buffers.len())
+            .field("metrics", &self.metrics.snapshot())
+            .finish()
+    }
 }
 
 impl VramStore {
-    /// สร้างอินสแตนซ์ VramStore ใหม่พร้อมขนาดความจุสูงสุด
+    /// สร้าง VramStore ใหม่พร้อมขนาดความจุสูงสุด
     #[must_use]
     pub fn new(capacity_bytes: usize) -> Self {
         Self {
             buffers: HashMap::new(),
             total_capacity: capacity_bytes,
             allocated_bytes: 0,
-            access_order: Vec::new(),
+            access_order: VecDeque::new(),
+            metrics: Arc::new(VramMetrics::default()),
+            on_evict: None,
         }
     }
 
+    /// สร้าง VramStore พร้อม callback สำหรับย้ายข้อมูลเมื่อถูกถอดถอน
+    #[must_use]
+    pub fn with_evict_callback(capacity_bytes: usize, on_evict: OnEvictCallback) -> Self {
+        Self {
+            buffers: HashMap::new(),
+            total_capacity: capacity_bytes,
+            allocated_bytes: 0,
+            access_order: VecDeque::new(),
+            metrics: Arc::new(VramMetrics::default()),
+            on_evict: Some(on_evict),
+        }
+    }
+
+    /// คืน reference ไปยัง metrics
+    #[must_use]
+    pub fn metrics(&self) -> &Arc<VramMetrics> {
+        &self.metrics
+    }
+
     /// ตรวจสอบว่ามีข้อมูลคีย์นี้อยู่ใน VRAM หรือไม่
+    #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
         self.buffers.contains_key(key)
     }
 
     /// ดึงข้อมูลจาก VRAM พร้อมอัปเดตสถานะ LRU
+    #[instrument(skip(self), fields(key = %key))]
     pub fn get(&mut self, key: &str) -> Option<Vec<u8>> {
+        self.metrics.gets.fetch_add(1, Ordering::Relaxed);
+
         if self.buffers.contains_key(key) {
-            self.update_access(key);
+            self.metrics.hits.fetch_add(1, Ordering::Relaxed);
+            self.touch(key);
+            debug!(key = key, "VRAM cache hit");
             self.buffers.get(key).cloned()
         } else {
+            self.metrics.misses.fetch_add(1, Ordering::Relaxed);
+            debug!(key = key, "VRAM cache miss");
             None
         }
     }
 
     /// บันทึกข้อมูลบริบทลง VRAM
-    /// หาก VRAM เต็ม จะทำการถอดถอน (Evict) ข้อมูลเก่าที่สุดออก และคืนค่าข้อมูลที่ถูกถอดถอนออกไป
-    pub fn insert(&mut self, key: String, value: Vec<u8>) -> Option<(String, Vec<u8>)> {
+    /// หาก VRAM เต็ม จะทำการถอดถอน (Evict) ข้อมูล LRU หลายตัวจนกว่าจะมีเนื้อที่เพียงพอ
+    /// คืนค่ารายการข้อมูลที่ถูกถอดถอนทั้งหมด
+    #[instrument(skip(self, value), fields(key = %key, value_len = value.len()))]
+    pub fn insert(&mut self, key: String, value: Vec<u8>) -> Vec<(String, Vec<u8>)> {
         let value_len = value.len();
+        let mut evicted = Vec::new();
 
-        // หากคีย์เดิมมีอยู่ ให้หักลบขนาดเดิมออกก่อน
+        // หักลบขนาดเดิมออกหากคีย์มีอยู่แล้ว
         if let Some(old_val) = self.buffers.remove(&key) {
             self.allocated_bytes = self.allocated_bytes.saturating_sub(old_val.len());
             self.access_order.retain(|k| k != &key);
         }
 
-        let mut evicted = None;
-
-        // วนลูปถอดถอนข้อมูลแบบ LRU จนกว่าจะมีเนื้อที่เพียงพอ
+        // ถอดถอน LRU หลายตัวจนกว่าจะมีเนื้อที่เพียงพอ
         while self.allocated_bytes + value_len > self.total_capacity
             && !self.access_order.is_empty()
         {
-            let oldest_key = self.access_order.remove(0);
+            let oldest_key = self.access_order.pop_front().unwrap();
             if let Some(oldest_val) = self.buffers.remove(&oldest_key) {
                 self.allocated_bytes = self.allocated_bytes.saturating_sub(oldest_val.len());
-                evicted = Some((oldest_key, oldest_val));
-                break; // สำหรับบริบทจำลอง ถอนตัวเดียวออกเพื่อให้มีเนื้อที่
+                self.metrics.evictions.fetch_add(1, Ordering::Relaxed);
+
+                // เรียก callback เพื่อย้ายข้อมูลไป Hot Tier
+                if let Some(ref cb) = self.on_evict {
+                    cb(&oldest_key, &oldest_val);
+                }
+
+                debug!(
+                    evicted_key = %oldest_key,
+                    evicted_size = oldest_val.len(),
+                    remaining_capacity = self.total_capacity - self.allocated_bytes,
+                    "VRAM evicted LRU entry"
+                );
+                evicted.push((oldest_key, oldest_val));
             }
         }
 
         self.allocated_bytes += value_len;
         self.buffers.insert(key.clone(), value);
-        self.access_order.push(key);
+        self.access_order.push_back(key);
+        self.metrics.inserts.fetch_add(1, Ordering::Relaxed);
 
         evicted
     }
@@ -117,6 +225,7 @@ impl VramStore {
         if let Some(val) = self.buffers.remove(key) {
             self.allocated_bytes = self.allocated_bytes.saturating_sub(val.len());
             self.access_order.retain(|k| k != key);
+            self.metrics.removes.fetch_add(1, Ordering::Relaxed);
             Some(val)
         } else {
             None
@@ -124,18 +233,173 @@ impl VramStore {
     }
 
     /// คืนค่าขนาดพื้นที่จัดเก็บรวม
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.total_capacity
     }
 
     /// คืนค่าขนาดพื้นที่ใช้งานปัจจุบัน
+    #[must_use]
     pub fn allocated_bytes(&self) -> usize {
         self.allocated_bytes
     }
 
-    /// อัปเดตสถานะ LRU ให้แก่คีย์ที่เพิ่งเรียกใช้
-    fn update_access(&mut self, key: &str) {
+    /// คืนค่าพื้นที่ว่างคงเหลือ
+    #[must_use]
+    pub fn free_bytes(&self) -> usize {
+        self.total_capacity.saturating_sub(self.allocated_bytes)
+    }
+
+    /// จำนวน entries ที่จัดเก็บอยู่
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.buffers.len()
+    }
+
+    /// ตรวจสอบว่า VRAM ว่างหรือไม่
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.buffers.is_empty()
+    }
+
+    /// คืนรายชื่อคีย์ทั้งหมดใน VRAM (ไม่เรียงลำดับ)
+    #[must_use]
+    pub fn keys(&self) -> Vec<&str> {
+        self.buffers.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// ล้างข้อมูลทั้งหมดออกจาก VRAM
+    pub fn clear(&mut self) {
+        self.buffers.clear();
+        self.access_order.clear();
+        self.allocated_bytes = 0;
+    }
+
+    /// อัปเดตสถานะ LRU: ย้าย key ไปท้าย VecDeque (most recent)
+    fn touch(&mut self, key: &str) {
         self.access_order.retain(|k| k != key);
-        self.access_order.push(key.to_string());
+        self.access_order.push_back(key.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn vram_insert_and_get() {
+        let mut vram = VramStore::new(1024);
+        vram.insert("ctx-1".into(), vec![1, 2, 3, 4]);
+        assert_eq!(vram.get("ctx-1"), Some(vec![1, 2, 3, 4]));
+        assert_eq!(vram.allocated_bytes(), 4);
+    }
+
+    #[test]
+    fn vram_evicts_lru_when_full() {
+        let mut vram = VramStore::new(8);
+        vram.insert("a".into(), vec![0; 4]);
+        vram.insert("b".into(), vec![0; 4]);
+        // VRAM 8 bytes = 100% full
+        assert_eq!(vram.allocated_bytes(), 8);
+
+        // Insert "c" (4 bytes) → must evict LRU ("a")
+        let evicted = vram.insert("c".into(), vec![0; 4]);
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].0, "a");
+        assert_eq!(vram.allocated_bytes(), 8);
+        assert!(vram.get("a").is_none());
+        assert!(vram.get("b").is_some());
+        assert!(vram.get("c").is_some());
+    }
+
+    #[test]
+    fn vram_batch_eviction() {
+        // 5 bytes capacity, insert 3+3 → must evict 2 entries
+        let mut vram = VramStore::new(5);
+        vram.insert("a".into(), vec![0; 2]);
+        vram.insert("b".into(), vec![0; 2]);
+        // 4 bytes used, insert 2 more → need 6 total, evict 2 LRU
+        let evicted = vram.insert("c".into(), vec![0; 2]);
+        assert!(!evicted.is_empty());
+        assert_eq!(vram.allocated_bytes(), 4);
+    }
+
+    #[test]
+    fn vram_lru_access_order() {
+        let mut vram = VramStore::new(8);
+        vram.insert("a".into(), vec![0; 4]);
+        vram.insert("b".into(), vec![0; 4]);
+        // Access "a" → "a" becomes most recent
+        vram.get("a");
+        // Insert "c" → should evict "b" (least recent)
+        let evicted = vram.insert("c".into(), vec![0; 4]);
+        assert_eq!(evicted[0].0, "b");
+        assert!(vram.get("a").is_some());
+        assert!(vram.get("b").is_none());
+    }
+
+    #[test]
+    fn vram_remove_returns_value() {
+        let mut vram = VramStore::new(1024);
+        vram.insert("x".into(), vec![10, 20]);
+        let removed = vram.remove("x");
+        assert_eq!(removed, Some(vec![10, 20]));
+        assert_eq!(vram.allocated_bytes(), 0);
+    }
+
+    #[test]
+    fn vram_metrics_tracking() {
+        let mut vram = VramStore::new(8);
+        vram.insert("a".into(), vec![0; 4]);
+        vram.get("a");
+        vram.get("a");
+        vram.get("missing");
+
+        let m = vram.metrics().snapshot();
+        assert_eq!(m.inserts, 1);
+        assert_eq!(m.gets, 3);
+        assert_eq!(m.hits, 2);
+        assert_eq!(m.misses, 1);
+        assert!((m.hit_rate() - 2.0 / 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vram_evict_callback_called() {
+        let evicted_keys = Arc::new(AtomicUsize::new(0));
+        let evicted_keys_clone = evicted_keys.clone();
+
+        let mut vram = VramStore::with_evict_callback(
+            8,
+            Arc::new(move |_key: &str, _val: &[u8]| {
+                evicted_keys_clone.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+
+        vram.insert("a".into(), vec![0; 4]);
+        vram.insert("b".into(), vec![0; 4]);
+        vram.insert("c".into(), vec![0; 4]); // evicts "a"
+
+        assert_eq!(evicted_keys.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn vram_overwrite_same_key() {
+        let mut vram = VramStore::new(8);
+        vram.insert("a".into(), vec![1, 2]);
+        vram.insert("a".into(), vec![3, 4, 5, 6]);
+        assert_eq!(vram.get("a"), Some(vec![3, 4, 5, 6]));
+        assert_eq!(vram.allocated_bytes(), 4);
+    }
+
+    #[test]
+    fn vram_clear_resets_state() {
+        let mut vram = VramStore::new(1024);
+        vram.insert("a".into(), vec![0; 100]);
+        vram.insert("b".into(), vec![0; 200]);
+        vram.clear();
+        assert_eq!(vram.len(), 0);
+        assert_eq!(vram.allocated_bytes(), 0);
+        assert!(vram.is_empty());
     }
 }

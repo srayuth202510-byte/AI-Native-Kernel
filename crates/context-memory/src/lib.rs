@@ -220,7 +220,7 @@ impl ContextMemoryManager {
         let evicted = self.vram.write().insert(key.to_string(), value);
 
         // หาก VRAM เต็มจนเกิดการถอดถอน (Evict) ข้อมูลเดิมออกมา ให้คัดถ่ายข้อมูลนั้นลง RAM
-        if let Some((evicted_key, evicted_value)) = evicted {
+        for (evicted_key, evicted_value) in evicted {
             warn!(tier = "ram", key = %evicted_key, "VRAM เต็ม — คัดถ่ายข้อมูลเก่าลง RAM");
             self.put(evicted_key, evicted_value);
         }
@@ -260,7 +260,7 @@ impl ContextMemoryManager {
 
         // หากมีการถอดถอนหน้า VRAM เดิมออกมา ให้ย้ายกลับลง RAM (Hot Tier)
         let mut evicted_page = None;
-        if let Some((evicted_key, evicted_value)) = evicted {
+        for (evicted_key, evicted_value) in evicted {
             let page: KvCachePage =
                 serde_json::from_slice(&evicted_value).map_err(|_| ContextError::NotFound)?;
             warn!(

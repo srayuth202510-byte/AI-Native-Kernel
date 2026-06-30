@@ -199,6 +199,11 @@ mod tests {
 
     #[test]
     fn test_load_llama_lib() {
+        // Skip unless explicitly enabled — dlopen may abort on missing libs
+        if std::env::var("LLAMA_TEST").is_err() {
+            println!("Skipping llama.cpp test (set LLAMA_TEST=1 to enable)");
+            return;
+        }
         match LlamaBackend::init() {
             Ok(backend) => {
                 let model_params = backend.get_default_model_params();
@@ -209,10 +214,7 @@ mod tests {
                 );
             }
             Err(e) => {
-                println!(
-                    "Llama.cpp load failed (expected if library not installed): {}",
-                    e
-                );
+                println!("Llama.cpp load failed: {e}");
             }
         }
     }

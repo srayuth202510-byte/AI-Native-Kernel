@@ -139,8 +139,14 @@ mod tests {
 
         let (res1, res2) = tokio::join!(t1, t2);
 
-        assert_eq!(res1.unwrap().unwrap(), "[TensorRT-LLM Output]: Prompt 1");
-        assert_eq!(res2.unwrap().unwrap(), "[TensorRT-LLM Output]: Prompt 2");
+        assert_eq!(
+            res1.unwrap().unwrap(),
+            "[TensorRT-LLM mock] tokens_limit=10: Prompt 1..."
+        );
+        assert_eq!(
+            res2.unwrap().unwrap(),
+            "[TensorRT-LLM mock] tokens_limit=10: Prompt 2..."
+        );
     }
 
     #[tokio::test]
@@ -154,7 +160,7 @@ mod tests {
         let res = batch_manager.submit("Single", 10).await.unwrap();
         let elapsed = start.elapsed();
 
-        assert_eq!(res, "[Llama.cpp Output]: Single");
+        assert_eq!(res, "[llama.cpp mock] tokens_limit=10: Single...");
         // Should have waited at least ~200ms (timeout) + 150ms (llama engine latency)
         assert!(elapsed >= Duration::from_millis(200));
     }
