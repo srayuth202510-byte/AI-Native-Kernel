@@ -509,6 +509,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
+ "fastrand",
  "futures",
  "ndarray",
  "parking_lot",

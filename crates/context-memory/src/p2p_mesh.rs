@@ -1,3 +1,4 @@
+use crate::swim::FailureDetector;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -106,10 +107,7 @@ pub struct P2PMeshManager {
     records: Arc<RwLock<HashMap<String, RecordSyncPayload>>>,
     pending_fetches: PendingFetchMap,
     telemetries: Arc<RwLock<HashMap<String, NodeTelemetry>>>,
-}
-
-fn is_alive(node: &NodeInfo) -> bool {
-    now_millis().saturating_sub(node.last_seen_millis) < 60_000
+    pub failure_detector: FailureDetector,
 }
 
 impl P2PMeshManager {
@@ -136,6 +134,8 @@ impl P2PMeshManager {
 
         let (tx, rx) = mpsc::channel(1000);
 
+        let failure_detector = FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None));
+
         Self {
             local_node,
             known_nodes: Arc::new(RwLock::new(HashMap::new())),
@@ -146,14 +146,24 @@ impl P2PMeshManager {
             records: Arc::new(RwLock::new(HashMap::new())),
             pending_fetches: Arc::new(RwLock::new(HashMap::new())),
             telemetries: Arc::new(RwLock::new(HashMap::new())),
+            failure_detector,
         }
     }
 
     pub async fn add_node(&self, node: NodeInfo) {
+        let is_stale = node.last_seen_millis + 60_000 < now_millis();
+        if is_stale {
+            self.failure_detector
+                .suspect(&node.id, "stale_last_seen")
+                .await;
+        } else {
+            self.failure_detector.register(&node.id).await;
+        }
         self.known_nodes.write().await.insert(node.id.clone(), node);
     }
 
     pub async fn remove_node(&self, node_id: &str) {
+        self.failure_detector.mark_dead(node_id).await;
         self.known_nodes.write().await.remove(node_id);
         self.peers.write().await.remove(node_id);
     }
@@ -163,19 +173,17 @@ impl P2PMeshManager {
     }
 
     pub async fn is_connected(&self, node_id: &str) -> bool {
-        self.known_nodes
-            .read()
-            .await
-            .get(node_id)
-            .is_some_and(is_alive)
+        self.failure_detector.get_status(node_id).await == crate::swim::NodeStatus::Alive
+            && self.known_nodes.read().await.contains_key(node_id)
     }
 
     pub async fn get_alive_peers(&self) -> Vec<NodeInfo> {
+        let alive = self.failure_detector.alive_nodes().await;
         self.known_nodes
             .read()
             .await
             .values()
-            .filter(|n| is_alive(n))
+            .filter(|n| alive.contains(&n.id))
             .cloned()
             .collect()
     }
@@ -256,6 +264,18 @@ impl P2PMeshManager {
             sleep(interval).await;
             if let Err(e) = self.gossip_neighbors().await {
                 debug!(error = %e, "P2P: gossip error");
+            }
+        }
+    }
+
+    /// SWIM failure detector background loop
+    pub async fn start_failure_detector_loop(self: Arc<Self>) {
+        loop {
+            sleep(Duration::from_secs(5)).await;
+            let dead = self.failure_detector.ping_round().await;
+            for node_id in &dead {
+                warn!(node_id, "P2P: SWIM marked node as dead");
+                self.remove_node(node_id).await;
             }
         }
     }
@@ -419,9 +439,12 @@ struct SharedState {
     telemetries: Arc<RwLock<HashMap<String, NodeTelemetry>>>,
     local_id: String,
     local_addr: SocketAddr,
+    failure_detector: FailureDetector,
 }
 
 async fn on_message(line: &str, node_id: &str, state: &SharedState) {
+    state.failure_detector.record_ack(node_id).await;
+
     if let Ok(msg) = serde_json::from_str::<P2PMessage>(line.trim()) {
         // Enforce Zero-Trust: reject messages from nodes with trust score < 50
         let sender_trust = state
@@ -649,6 +672,7 @@ async fn handle_connection(
         telemetries: Arc::clone(&mgr.telemetries),
         local_id: mgr.local_node.id.clone(),
         local_addr: mgr.local_node.addr,
+        failure_detector: mgr.failure_detector.clone(),
     };
 
     if is_inbound {
@@ -687,6 +711,7 @@ async fn handle_connection(
                 },
             );
         }
+        state.failure_detector.record_ack(&hs.from).await;
         info!(node_id = %hs.from, %peer_addr, "P2P: registered via inbound handshake");
 
         // 2. ส่ง handshake response (with timeout)
@@ -721,15 +746,30 @@ async fn handle_connection(
             loop {
                 buf.clear();
                 match timeout(RW_TIMEOUT, reader.read_line(&mut buf)).await {
-                    Ok(Ok(0)) | Ok(Err(_)) => break,
+                    Ok(Ok(0)) | Ok(Err(_)) => {
+                        read_state
+                            .failure_detector
+                            .suspect(&node_id, "inbound_eof")
+                            .await;
+                        break;
+                    }
                     Ok(Ok(_)) => on_message(&buf, &node_id, &read_state).await,
                     Err(_) => {
                         warn!("P2P: inbound read timeout, closing connection");
+                        read_state
+                            .failure_detector
+                            .suspect(&node_id, "inbound_timeout")
+                            .await;
                         break;
                     }
                 }
             }
-            peers.write().await.remove(&node_id);
+            {
+                let mut peers = peers.write().await;
+                peers.remove(&node_id);
+                drop(peers);
+            }
+            read_state.failure_detector.mark_dead(&node_id).await;
         });
 
         let write_task = tokio::spawn(async move {
@@ -801,7 +841,8 @@ async fn handle_connection(
                 },
             );
         }
-        info!(node_id = %hs_resp.from, %peer_addr, "P2P: outbound handshake complete");
+        state.failure_detector.record_ack(&hs_resp.from).await;
+        info!(node_id = %hs_resp.from, %peer_addr, "P2P: registered via outbound handshake");
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         state.peers.write().await.insert(hs_resp.from.clone(), tx);
@@ -815,15 +856,30 @@ async fn handle_connection(
             loop {
                 buf.clear();
                 match timeout(RW_TIMEOUT, reader.read_line(&mut buf)).await {
-                    Ok(Ok(0)) | Ok(Err(_)) => break,
+                    Ok(Ok(0)) | Ok(Err(_)) => {
+                        read_state
+                            .failure_detector
+                            .suspect(&node_id, "outbound_eof")
+                            .await;
+                        break;
+                    }
                     Ok(Ok(_)) => on_message(&buf, &node_id, &read_state).await,
                     Err(_) => {
                         warn!("P2P: outbound read timeout, closing connection");
+                        read_state
+                            .failure_detector
+                            .suspect(&node_id, "outbound_timeout")
+                            .await;
                         break;
                     }
                 }
             }
-            peers.write().await.remove(&node_id);
+            {
+                let mut peers = peers.write().await;
+                peers.remove(&node_id);
+                drop(peers);
+            }
+            read_state.failure_detector.mark_dead(&node_id).await;
         });
 
         let write_task = tokio::spawn(async move {
@@ -889,17 +945,18 @@ mod tests {
 
     #[tokio::test]
     async fn is_alive_recent_returns_true() {
-        let node = make_node("alive", 9001);
-        assert!(is_alive(&node));
+        let m = P2PMeshManager::new(test_addr(0));
+        m.add_node(make_node("alive", 9001)).await;
+        assert!(m.is_connected("alive").await);
     }
 
     #[tokio::test]
     async fn is_alive_stale_returns_false() {
-        let node = NodeInfo {
-            last_seen_millis: now_millis() - 120_000, // 2 min ago
-            ..make_node("stale", 9002)
-        };
-        assert!(!is_alive(&node));
+        let m = P2PMeshManager::new(test_addr(0));
+        m.add_node(make_node("stale", 9002)).await;
+        // mark as suspect (simulate failure)
+        m.failure_detector.suspect("stale", "test").await;
+        assert!(!m.is_connected("stale").await);
     }
 
     #[tokio::test]
@@ -989,8 +1046,10 @@ mod tests {
             telemetries: Arc::new(RwLock::new(HashMap::new())),
             local_id: "local".to_string(),
             local_addr: test_addr(9059),
+            failure_detector: FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None)),
         };
         let node = make_node("target", 9060);
+        state.failure_detector.register("target").await;
         known_nodes
             .write()
             .await
@@ -1030,6 +1089,7 @@ mod tests {
             telemetries: Arc::new(RwLock::new(HashMap::new())),
             local_id: "local".to_string(),
             local_addr: test_addr(9069),
+            failure_detector: FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None)),
         };
         known_nodes
             .write()
@@ -1299,6 +1359,7 @@ mod tests {
             telemetries: Arc::clone(&telemetries),
             local_id: "local".to_string(),
             local_addr: test_addr(9098),
+            failure_detector: FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None)),
         };
         let telemetry = NodeTelemetry {
             node_id: "node-telemetry".to_string(),
@@ -1352,6 +1413,7 @@ mod tests {
             telemetries: Arc::new(RwLock::new(HashMap::new())),
             local_id: "local".to_string(),
             local_addr: test_addr(9099),
+            failure_detector: FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None)),
         };
 
         // Setup nodes with different trust scores
