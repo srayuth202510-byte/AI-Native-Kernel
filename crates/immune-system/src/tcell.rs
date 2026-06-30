@@ -63,6 +63,8 @@ pub struct ProcessStats {
     pub anomaly_score: f64,
     /// ประวัติการเรียก syscall ล่าสุด 5 รายการ
     pub syscall_history: VecDeque<String>,
+    /// จำนวนวินาทีติดต่อกันที่ตรวจพบความผิดปกติ (Consecutive violation windows)
+    pub consecutive_violations: u32,
 }
 
 impl Default for ProcessStats {
@@ -74,6 +76,7 @@ impl Default for ProcessStats {
             last_syscall: None,
             anomaly_score: 0.0,
             syscall_history: VecDeque::with_capacity(5),
+            consecutive_violations: 0,
         }
     }
 }
@@ -92,6 +95,12 @@ pub struct TCellAgent {
     quarantined: Arc<RwLock<HashMap<u32, Instant>>>,
     /// สถานะเปิด/ปิดการใช้งาน Immunological Jitter (ใช้ปิดในการทดสอบเพื่อผลลัพธ์ที่แน่นอน)
     jitter_enabled: AtomicBool,
+    /// รายชื่อโปรเซสที่ได้รับการยกเว้นจากการ Kill (Exempted processes)
+    exempt_processes: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// จำนวนวินาทีติดต่อกันที่ต้องตรวจพบความผิดปกติก่อนตัดสินใจ Kill
+    violation_window_limit: AtomicU32,
+    /// ปรับสัดส่วนการตรวจจับ (Sensitivity factor) ราย PID
+    pid_sensitivity_factors: Arc<RwLock<HashMap<u32, f64>>>,
 }
 
 impl TCellAgent {
@@ -113,6 +122,22 @@ impl TCellAgent {
             kill_threshold: AtomicU32::new(kill_threshold),
             quarantined: Arc::new(RwLock::new(HashMap::new())),
             jitter_enabled: AtomicBool::new(true),
+            exempt_processes: Arc::new(RwLock::new(
+                vec![
+                    "systemd".to_string(),
+                    "init".to_string(),
+                    "kernel-companion".to_string(),
+                    "ank-companion".to_string(),
+                    "cargo".to_string(),
+                    "rustc".to_string(),
+                    "bash".to_string(),
+                    "sshd".to_string(),
+                ]
+                .into_iter()
+                .collect(),
+            )),
+            violation_window_limit: AtomicU32::new(3),
+            pid_sensitivity_factors: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -144,19 +169,29 @@ impl TCellAgent {
         let base_deny = self.deny_threshold.load(Ordering::Relaxed);
         let base_kill = self.kill_threshold.load(Ordering::Relaxed);
 
-        let (rate_limit, deny_limit, kill_limit) = if self.jitter_enabled.load(Ordering::Relaxed) {
-            let jitter = get_jitter_percentage();
-            let rate = if base_rate > 0 {
-                ((base_rate as f64) * (1.0 + jitter)).round() as u64
+        let (mut rate_limit, mut deny_limit, mut kill_limit) =
+            if self.jitter_enabled.load(Ordering::Relaxed) {
+                let jitter = get_jitter_percentage();
+                let rate = if base_rate > 0 {
+                    ((base_rate as f64) * (1.0 + jitter)).round() as u64
+                } else {
+                    0
+                };
+                let deny = ((base_deny as f64) * (1.0 + jitter)).round().max(1.0) as u32;
+                let kill = ((base_kill as f64) * (1.0 + jitter)).round().max(1.0) as u32;
+                (rate, deny, kill)
             } else {
-                0
+                (base_rate, base_deny, base_kill)
             };
-            let deny = ((base_deny as f64) * (1.0 + jitter)).round().max(1.0) as u32;
-            let kill = ((base_kill as f64) * (1.0 + jitter)).round().max(1.0) as u32;
-            (rate, deny, kill)
-        } else {
-            (base_rate, base_deny, base_kill)
+
+        // Apply dynamic sensitivity factor for this PID (Blast Radius Minimization)
+        let sensitivity = {
+            let factors = self.pid_sensitivity_factors.read().await;
+            factors.get(&pid).copied().unwrap_or(1.0)
         };
+        rate_limit = (rate_limit as f64 * sensitivity).round() as u64;
+        deny_limit = (deny_limit as f64 * sensitivity).round().max(1.0) as u32;
+        kill_limit = (kill_limit as f64 * sensitivity).round().max(1.0) as u32;
 
         let mut stats = self.stats.write().await;
         let entry = stats.entry(pid).or_default();
@@ -165,6 +200,16 @@ impl TCellAgent {
         let elapsed = now.duration_since(entry.window_start);
 
         if elapsed >= Duration::from_secs(1) {
+            // Check if previous window constituted a violation
+            let prev_violating = entry.deny_count >= deny_limit as u64
+                || (rate_limit > 0 && entry.syscall_count >= rate_limit * 2)
+                || entry.anomaly_score >= kill_limit as f64;
+
+            if prev_violating {
+                entry.consecutive_violations += 1;
+            } else {
+                entry.consecutive_violations = 0;
+            }
             entry.syscall_count = 0;
             entry.window_start = now;
         }
@@ -204,16 +249,41 @@ impl TCellAgent {
 
         entry.anomaly_score = score;
 
-        // ตัดสินใจระดับภัยคุกคามโดยอ้างอิงจากเกณฑ์ (Hard limits) และ Anomaly Score
-        if entry.deny_count >= deny_limit as u64
+        // ตัดสินใจระดับภัยคุกคามโดยอ้างอิงจากเกณฑ์ (Hard limits), Consecutive Violations และ Anomaly Score
+        let current_violating = entry.deny_count >= deny_limit as u64
             || (rate_limit > 0 && entry.syscall_count >= rate_limit * 2)
-            || score >= kill_limit as f64
-        {
+            || score >= kill_limit as f64;
+
+        let total_violations = entry.consecutive_violations + if current_violating { 1 } else { 0 };
+        let violation_limit = self.violation_window_limit.load(Ordering::Relaxed);
+
+        if total_violations >= violation_limit {
+            // Check if process is exempted from being terminated (Blast Radius Minimization)
+            let is_exempt = {
+                let name_opt = get_process_comm(pid);
+                let exempt = self.exempt_processes.read().await;
+                if let Some(ref name) = name_opt {
+                    exempt.contains(name)
+                } else {
+                    false
+                }
+            };
+
+            if is_exempt {
+                warn!(
+                    pid,
+                    process_name = ?get_process_comm(pid),
+                    "T-Cell: critical threat detected, but process is EXEMPTED from killing. Downgrading to WARN."
+                );
+                return ThreatDecision::Warn;
+            }
+
             warn!(
                 pid,
                 score = ?score,
                 deny_count = entry.deny_count,
                 syscall_count = entry.syscall_count,
+                consecutive_violations = total_violations,
                 "T-Cell: critical threat detected — Action: KILL"
             );
             return ThreatDecision::Kill;
@@ -291,6 +361,30 @@ impl TCellAgent {
     pub async fn get_stats(&self, pid: u32) -> Option<ProcessStats> {
         self.stats.read().await.get(&pid).cloned()
     }
+
+    /// เพิ่มรายชื่อโปรเซสที่ได้รับการยกเว้นจากการ Kill (Exempt from Kill)
+    pub async fn add_exempt_process(&self, name: impl Into<String>) {
+        self.exempt_processes.write().await.insert(name.into());
+    }
+
+    /// กำหนดเกณฑ์จำนวนวินาทีติดต่อกันในการเกิดความผิดปกติก่อนสั่ง Kill
+    pub fn set_violation_window_limit(&self, limit: u32) {
+        self.violation_window_limit.store(limit, Ordering::Relaxed);
+    }
+
+    /// กำหนดค่า Sensitivity Factor สำหรับ PID เจาะจง
+    pub async fn set_pid_sensitivity_factor(&self, pid: u32, factor: f64) {
+        self.pid_sensitivity_factors
+            .write()
+            .await
+            .insert(pid, factor);
+    }
+}
+
+fn get_process_comm(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{}/comm", pid))
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 /// ตรวจสอบรูปแบบ syscall sequence ย้อนหลังเพื่อดูความน่าจะเป็นในการโจมตีระบบ
@@ -342,6 +436,7 @@ mod tests {
     fn make_tcell() -> TCellAgent {
         let t = TCellAgent::new(100, 5);
         t.set_jitter_enabled(false);
+        t.set_violation_window_limit(1);
         t
     }
 
@@ -384,9 +479,9 @@ mod tests {
         t.update_thresholds(10, 2, 15);
         // rate threshold is now 10. 10 * 2 = 20 is critical limit.
         for _ in 0..20 {
-            let _ = t.observe_syscall(1, "read", false).await;
+            let _ = t.observe_syscall(999, "read", false).await;
         }
-        let d = t.observe_syscall(1, "read", false).await;
+        let d = t.observe_syscall(999, "read", false).await;
         assert_eq!(d, ThreatDecision::Kill);
     }
 
@@ -435,5 +530,92 @@ mod tests {
 
         let decision = t.observe_syscall(1, "read", false).await;
         assert_eq!(decision, ThreatDecision::Safe);
+    }
+
+    #[tokio::test]
+    async fn test_consecutive_violations_required_for_kill() {
+        let t = TCellAgent::new(10, 2);
+        t.set_jitter_enabled(false);
+        t.set_violation_window_limit(3);
+
+        // 1st window violation
+        for _ in 0..21 {
+            let _ = t.observe_syscall(101, "read", false).await;
+        }
+        let decision1 = t.observe_syscall(101, "read", false).await;
+        assert_ne!(decision1, ThreatDecision::Kill);
+
+        // Advance window
+        {
+            let mut stats = t.stats.write().await;
+            if let Some(entry) = stats.get_mut(&101) {
+                entry.window_start -= Duration::from_secs(2);
+            }
+        }
+
+        // 2nd window violation
+        for _ in 0..21 {
+            let _ = t.observe_syscall(101, "read", false).await;
+        }
+        let decision2 = t.observe_syscall(101, "read", false).await;
+        assert_ne!(decision2, ThreatDecision::Kill);
+
+        // Advance window again
+        {
+            let mut stats = t.stats.write().await;
+            if let Some(entry) = stats.get_mut(&101) {
+                entry.window_start -= Duration::from_secs(2);
+            }
+        }
+
+        // 3rd window violation -> should trigger KILL
+        for _ in 0..21 {
+            let _ = t.observe_syscall(101, "read", false).await;
+        }
+        let decision3 = t.observe_syscall(101, "read", false).await;
+        assert_eq!(decision3, ThreatDecision::Kill);
+    }
+
+    #[tokio::test]
+    async fn test_system_process_exemption() {
+        let t = TCellAgent::new(10, 2);
+        t.set_jitter_enabled(false);
+        t.set_violation_window_limit(1);
+
+        let own_pid = std::process::id();
+        if let Some(own_name) = get_process_comm(own_pid) {
+            t.add_exempt_process(own_name).await;
+        }
+
+        // Generate enough violations to trigger Kill
+        for _ in 0..25 {
+            let _ = t.observe_syscall(own_pid, "read", false).await;
+        }
+        let decision = t.observe_syscall(own_pid, "read", false).await;
+
+        // Should be downgraded to Warn instead of Kill because our process is exempted!
+        assert_eq!(decision, ThreatDecision::Warn);
+    }
+
+    #[tokio::test]
+    async fn test_pid_sensitivity_factor() {
+        let t = TCellAgent::new(10, 2);
+        t.set_jitter_enabled(false);
+        t.set_violation_window_limit(1);
+
+        // Set sensitivity factor to 2.0 (double threshold)
+        t.set_pid_sensitivity_factor(200, 2.0).await;
+
+        for _ in 0..30 {
+            let _ = t.observe_syscall(200, "read", false).await;
+        }
+        let decision1 = t.observe_syscall(200, "read", false).await;
+        assert_ne!(decision1, ThreatDecision::Kill);
+
+        for _ in 0..10 {
+            let _ = t.observe_syscall(200, "read", false).await;
+        }
+        let decision2 = t.observe_syscall(200, "read", false).await;
+        assert_eq!(decision2, ThreatDecision::Kill);
     }
 }

@@ -468,6 +468,7 @@ impl KernelCompanion {
             }));
 
             let tcell = Arc::clone(&self.tcell);
+            let capability_security = Arc::clone(&self.capability_security);
             let intent_bus_for_tcell = Arc::clone(&self.intent_bus);
             let audit_logger = AuditLogger::new(std::path::PathBuf::from(
                 &self.config.capability_security.audit_log_path,
@@ -477,6 +478,15 @@ impl KernelCompanion {
                 loop {
                     tokio::select! {
                         Some(event) = event_rx.recv() => {
+                            // Dynamic sensitivity tuning for Blast Radius Minimization:
+                            // If the process has a valid capability token, we scale down its sensitivity (factor 1.5)
+                            // to avoid false positive kills on legitimate agents under heavy load.
+                            if capability_security.has_valid_token_for_pid(event.pid) {
+                                tcell.set_pid_sensitivity_factor(event.pid, 1.5).await;
+                            } else {
+                                tcell.set_pid_sensitivity_factor(event.pid, 1.0).await;
+                            }
+
                             let denied = matches!(event.decision, PolicyDecision::Deny);
                             let decision = tcell.observe_syscall(event.pid, &event.syscall_name, denied).await;
 
