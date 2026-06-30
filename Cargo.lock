@@ -492,6 +492,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "criterion",
+ "fastrand",
  "nvml-wrapper",
  "parking_lot",
  "reqwest",

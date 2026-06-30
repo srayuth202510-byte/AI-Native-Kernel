@@ -5,6 +5,8 @@ pub mod vram_manager;
 
 /// โมดูลจัดการคิวและการมัดรวมงานเพื่อส่งเข้า GPU (Batching Manager)
 pub mod batching;
+/// โมดูลสื่อสารกับ Cloud Inference API (OpenAI-compatible)
+pub mod cloud;
 /// โมดูลคำนวณต้นทุน/คะแนนของทรัพยากรประมวลผล
 pub mod cost;
 /// โมดูลเชื่อมต่อ Inference Engine ภายนอก (Llama.cpp, TensorRT-LLM)

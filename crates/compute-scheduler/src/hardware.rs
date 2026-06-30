@@ -9,6 +9,10 @@ use tokio::task;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
+const CLOUD_LATENCY_MS: f64 = 200.0;
+const CLOUD_POWER_WATTS: f64 = 0.0;
+const CLOUD_COST_UNITS: f64 = 500.0;
+
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Probe the system to discover available compute targets and their actual capabilities.
@@ -120,7 +124,12 @@ impl HardwareProber {
             debug!("No actual GPU found during hardware scan.");
         }
 
-        // 3. NPU Profiling — ตรวจสอบหลาย path + vendor-specific profiles
+        // 3. Cloud probing via env-configured endpoint
+        if let Some(profile) = Self::probe_cloud().await {
+            profiles.push((ComputeTarget::Cloud, profile));
+        }
+
+        // 4. NPU Profiling — ตรวจสอบหลาย path + vendor-specific profiles
         let npu_devices = Self::probe_npu_devices().await;
         for (path, vendor) in &npu_devices {
             debug!(
@@ -147,6 +156,42 @@ impl HardwareProber {
         }
 
         profiles
+    }
+
+    /// Probe cloud endpoint from environment variables.
+    /// Checks CLOUD_ENDPOINT_URL, CLOUD_API_KEY, CLOUD_MODEL.
+    async fn probe_cloud() -> Option<ComputeProfile> {
+        let endpoint = std::env::var("CLOUD_ENDPOINT_URL").ok()?;
+        let _api_key = std::env::var("CLOUD_API_KEY").ok()?;
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .ok()?;
+
+        let url = format!("{}/v1/chat/completions", endpoint);
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() || resp.status().is_client_error() => {
+                info!(
+                    endpoint = %endpoint,
+                    "HardwareProber: cloud endpoint reachable"
+                );
+                Some(ComputeProfile {
+                    latency_ms: CLOUD_LATENCY_MS,
+                    power_watts: CLOUD_POWER_WATTS,
+                    cost_units: CLOUD_COST_UNITS,
+                })
+            }
+            Ok(resp) => {
+                debug!(
+                    endpoint = %endpoint,
+                    status = %resp.status(),
+                    "HardwareProber: cloud endpoint unreachable"
+                );
+                None
+            }
+            Err(_) => None,
+        }
     }
 
     /// ตรวจสอบ NPU devices จากหลาย paths + ระบุ vendor
