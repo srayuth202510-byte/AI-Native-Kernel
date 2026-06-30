@@ -29,6 +29,8 @@ if [[ -n "${CLANG_BIN:-}" ]]; then
 fi
 
 BPFTOOL_CANDIDATES=(
+    /usr/lib/linux-tools-${KERNEL_RELEASE}/bpftool
+    /usr/lib/linux-tools/${KERNEL_RELEASE}/bpftool
     bpftool
     /usr/sbin/bpftool
     /usr/local/bin/bpftool

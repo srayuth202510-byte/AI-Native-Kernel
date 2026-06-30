@@ -1,14 +1,30 @@
 #!/bin/sh
 
-ROOT=/home/lokis/Documents/AI-Native-Kernel
+if [ -n "${BASH_SOURCE:-}" ]; then
+    TOOLCHAIN_SOURCE="${BASH_SOURCE[0]}"
+else
+    TOOLCHAIN_SOURCE="$0"
+fi
 
-export PATH="$ROOT/.tools/rust-1.96.0/bin:$ROOT/.tools/zig-x86_64-linux-0.16.0:$PATH"
-export CARGO_HOME="$ROOT/.cargo-home"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$TOOLCHAIN_SOURCE")" && pwd)"
+ROOT="$(dirname "$SCRIPT_DIR")"
+
+if [ -d "$ROOT/.tools/rust-1.96.0/bin" ]; then
+    export PATH="$ROOT/.tools/rust-1.96.0/bin:$PATH"
+fi
+if [ -d "$ROOT/.tools/zig-x86_64-linux-0.16.0" ]; then
+    export PATH="$ROOT/.tools/zig-x86_64-linux-0.16.0:$PATH"
+fi
+if [ -d "$ROOT/.cargo-home" ] || mkdir -p "$ROOT/.cargo-home" 2>/dev/null; then
+    export CARGO_HOME="$ROOT/.cargo-home"
+fi
 export CC="$ROOT/scripts/zig-cc.sh"
 export AR="$ROOT/scripts/zig-ar.sh"
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$ROOT/scripts/zig-cc.sh"
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_AR="$ROOT/scripts/zig-ar.sh"
-export GIT_EXEC_PATH="/snap/codex/34/usr/lib/git-core"
+if [ -d "/snap/codex/34/usr/lib/git-core" ]; then
+    export GIT_EXEC_PATH="/snap/codex/34/usr/lib/git-core"
+fi
 
 detect_libclang_path() {
     for candidate in \

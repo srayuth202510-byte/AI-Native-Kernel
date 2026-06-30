@@ -110,6 +110,7 @@ resolve_bpftool_package() {
 
 build_packages() {
     local bpftool_package=""
+    local kernel_tools_package=""
 
     RESOLVED_PACKAGES=("${BASE_PACKAGES[@]}")
 
@@ -119,6 +120,11 @@ build_packages() {
         echo "Unable to resolve an installable package that provides bpftool" >&2
         print_manual_install_guidance
         exit 1
+    fi
+
+    kernel_tools_package="linux-tools-${KERNEL_RELEASE}"
+    if apt-cache show "$kernel_tools_package" >/dev/null 2>&1; then
+        RESOLVED_PACKAGES+=("$kernel_tools_package")
     fi
 
     RESOLVED_PACKAGES+=("linux-headers-${KERNEL_RELEASE}")
