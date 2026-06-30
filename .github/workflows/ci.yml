@@ -49,7 +49,16 @@ jobs:
       - name: Run CI validation suite
         run: bash scripts/run-ci-validations.sh
 
+      - name: Upload CI validation summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-validation-summary
+          path: target/ci-validation-summary.md
+          if-no-files-found: warn
+
       - name: Verify prebuilt objects present
+        if: always()
         run: |
           echo "BPF objects in prebuilt-bpf/:"
           ls -la crates/kernel-companion/prebuilt-bpf/

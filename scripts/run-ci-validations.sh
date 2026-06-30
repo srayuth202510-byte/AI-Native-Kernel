@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+SUMMARY_PATH="$PROJECT_ROOT/target/ci-validation-summary.md"
 
 if [[ -f "$SCRIPT_DIR/use-local-toolchain.sh" ]]; then
     # shellcheck disable=SC1091
@@ -10,34 +11,94 @@ if [[ -f "$SCRIPT_DIR/use-local-toolchain.sh" ]]; then
 fi
 
 cd "$PROJECT_ROOT"
+mkdir -p "$(dirname "$SUMMARY_PATH")"
 
-echo "==> CI validation: formatting"
-cargo fmt --all -- --check
+declare -a STAGE_NAMES=()
+declare -a STAGE_STATUS=()
+declare -a STAGE_CODES=()
+declare -a STAGE_SECONDS=()
 
-echo
-echo "==> CI validation: clippy"
-cargo clippy --all-targets --all-features -- -D warnings
+FAIL_COUNT=0
 
-echo
-echo "==> CI validation: workspace + Qdrant-backed tests"
-bash "$SCRIPT_DIR/run-all-tests.sh"
+run_stage() {
+    local stage_name="$1"
+    shift
 
-echo
-echo "==> CI validation: P2P mesh slice"
-bash "$SCRIPT_DIR/run-p2p-tests.sh"
+    echo "==> CI validation: ${stage_name}"
 
-echo
-echo "==> CI validation: eBPF prerequisite check"
-bash "$SCRIPT_DIR/check-ebpf-prereqs.sh"
+    local started_at
+    started_at="$(date +%s)"
 
-echo
-echo "==> CI validation: rocksdb warm prereq check"
-bash "$SCRIPT_DIR/check-rocksdb-bench-prereqs.sh"
+    set +e
+    "$@"
+    local exit_code=$?
+    set -e
 
-echo
-echo "==> CI validation: rocksdb warm benchmark compile"
-cargo bench -p context-memory --bench rocksdb_bench --features rocksdb-warm --no-run
+    local finished_at
+    finished_at="$(date +%s)"
+    local elapsed=$((finished_at - started_at))
 
-echo
-echo "==> CI validation: release build"
-cargo build --release
+    STAGE_NAMES+=("$stage_name")
+    STAGE_CODES+=("$exit_code")
+    STAGE_SECONDS+=("$elapsed")
+
+    if [[ "$exit_code" -eq 0 ]]; then
+        STAGE_STATUS+=("PASS")
+    else
+        STAGE_STATUS+=("FAIL")
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    echo
+}
+
+write_summary() {
+    local overall_exit_code="$1"
+    local overall_status="PASS"
+
+    if [[ "$FAIL_COUNT" -gt 0 || "$overall_exit_code" -ne 0 ]]; then
+        overall_status="FAIL"
+    fi
+
+    {
+        echo "# CI Validation Summary"
+        echo
+        echo "- Overall: ${overall_status}"
+        echo "- Failed stages: ${FAIL_COUNT}"
+        echo
+        echo "| Stage | Status | Exit Code | Duration (s) |"
+        echo "| --- | --- | ---: | ---: |"
+
+        local i
+        for i in "${!STAGE_NAMES[@]}"; do
+            echo "| ${STAGE_NAMES[$i]} | ${STAGE_STATUS[$i]} | ${STAGE_CODES[$i]} | ${STAGE_SECONDS[$i]} |"
+        done
+    } >"$SUMMARY_PATH"
+
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        cat "$SUMMARY_PATH" >>"$GITHUB_STEP_SUMMARY"
+    fi
+}
+
+finalize() {
+    local overall_exit_code="${1:-0}"
+    write_summary "$overall_exit_code"
+}
+
+trap 'status=$?; finalize "$status"; exit "$status"' EXIT
+
+run_stage "formatting" cargo fmt --all -- --check
+run_stage "clippy" cargo clippy --all-targets --all-features -- -D warnings
+run_stage "workspace + Qdrant-backed tests" bash "$SCRIPT_DIR/run-all-tests.sh"
+run_stage "P2P mesh slice" bash "$SCRIPT_DIR/run-p2p-tests.sh"
+run_stage "eBPF prerequisite check" bash "$SCRIPT_DIR/check-ebpf-prereqs.sh"
+run_stage "rocksdb warm prereq check" bash "$SCRIPT_DIR/check-rocksdb-bench-prereqs.sh"
+run_stage "rocksdb warm benchmark compile" cargo bench -p context-memory --bench rocksdb_bench --features rocksdb-warm --no-run
+run_stage "release build" cargo build --release
+
+if [[ "$FAIL_COUNT" -gt 0 ]]; then
+    echo "CI validation completed with ${FAIL_COUNT} failing stage(s)." >&2
+    exit 1
+fi
+
+echo "CI validation completed successfully."

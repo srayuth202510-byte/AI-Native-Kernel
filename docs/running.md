@@ -26,6 +26,8 @@ Quick check:
 bash ./scripts/run-ci-validations.sh
 ```
 
+`scripts/run-ci-validations.sh` writes a summary report to `target/ci-validation-summary.md`.
+
 If you are running inside Ubuntu Core or another restricted environment, use
 [host_provisioning.md](host_provisioning.md) for external host setup.
 
