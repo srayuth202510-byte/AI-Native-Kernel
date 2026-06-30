@@ -25,6 +25,9 @@ Quick check:
 ./scripts/run.sh validate-ebpf     # Privileged host validation for real attach
 ```
 
+If you are running inside Ubuntu Core or another restricted environment, use
+[host_provisioning.md](host_provisioning.md) for external host setup.
+
 ---
 
 ## Building
