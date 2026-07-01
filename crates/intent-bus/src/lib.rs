@@ -1,5 +1,7 @@
 #![deny(unsafe_code)]
 
+pub mod query_cache;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -109,7 +111,7 @@ impl Intent {
 }
 
 /// `IntentType` กำหนดประเภทของเจตจำนง เพื่อจัดสรรให้กับโมดูลประมวลผลที่เหมาะสม
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IntentType {
     /// เจตจำนงในรูปแบบภาษาธรรมชาติ (เช่น ข้อความดิบจากผู้ใช้)
     NaturalLanguage,

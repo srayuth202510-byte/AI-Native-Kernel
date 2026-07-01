@@ -52,6 +52,12 @@ sfs_enabled = false
 sfs_root_path = "/tmp/ank-sfs"
 qdrant_url = "http://localhost:6334"
 
+# Semantic Query Cache — แคชผลลัพธ์จากข้อคำถามภาษาธรรมชาติ
+query_cache_enabled = true
+query_cache_capacity = 4096
+query_cache_ttl_ms = 300000
+query_cache_similarity_threshold = 0.85
+
 [compute_scheduler]
 # To run without mock fallbacks for compute engines, set env ANK_COMPUTE_MOCK_FALLBACK=false
 default_mode = "throughput"

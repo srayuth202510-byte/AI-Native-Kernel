@@ -13,6 +13,8 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+lru = "0.12"
+sha2 = "0.10"
 
 [dev-dependencies]
 criterion = { workspace = true }

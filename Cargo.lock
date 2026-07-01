@@ -1364,7 +1364,9 @@ name = "intent-bus"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "lru",
  "serde",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

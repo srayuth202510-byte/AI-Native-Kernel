@@ -3,8 +3,12 @@
 //! ระบบจำแนกความต้องการภาษาธรรมชาติอย่างง่าย (Lightweight Intent Classifier)
 //! ใช้ cosine similarity บน djb2 word-hash embeddings เพื่อค้นหาความต้องการที่ใกล้เคียงที่สุด
 
+use intent_bus::query_cache::{CacheEntry, QueryCacheKey, SemanticQueryCache};
 use intent_bus::{Intent, IntentPriority, IntentType};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+use tracing::debug;
 
 /// เวกเตอร์แทนความหมายจำลอง (128 dimensions)
 const VECTOR_SIZE: usize = 128;
@@ -176,6 +180,66 @@ pub fn parse_natural_language_intent(intent: &Intent) -> Option<Intent> {
     }
 
     None
+}
+
+/// จำแนก Intent ภาษาธรรมชาติด้วย Query Cache
+///
+/// ตรวจสอบ cache ก่อน ถ้าพบ cache hit จะคืนผลลัพธ์ที่ cache ไว้
+/// ถ้าไม่พบ จะเรียก `parse_natural_language_intent` แล้วเก็บผลลัพธ์ลง cache
+///
+/// # Arguments
+/// * `intent` - NaturalLanguage intent ที่ต้องการจำแนก
+/// * `cache` - Semantic Query Cache
+/// * `response_data` - ข้อมูลผลลัพธ์ (ถ้ามี) สำหรับเก็บใน cache
+///
+/// # Returns
+/// `Some(Intent)` Command intent ที่จำแนกแล้ว หรือ `None` ถ้าไม่สามารถจำแนกได้
+pub async fn classify_with_cache(
+    intent: &Intent,
+    cache: &SemanticQueryCache,
+    response_data: Option<Vec<u8>>,
+) -> Option<Intent> {
+    if intent.intent_type != IntentType::NaturalLanguage {
+        return None;
+    }
+
+    let cache_key = QueryCacheKey::new(&intent.payload, intent.intent_type);
+
+    // 1. ตรวจสอบ cache (exact match)
+    if let Some(entry) = cache.get(&cache_key).await {
+        debug!(
+            query = %intent.payload,
+            hits = entry.hits(),
+            "query cache hit (exact)"
+        );
+        return Some(entry.parsed_intent.clone());
+    }
+
+    // 2. ตรวจสอบ cache แบบ similarity (near-miss)
+    if let Some((entry, score)) = cache.get_similar(&intent.payload, intent.intent_type).await {
+        debug!(
+            query = %intent.payload,
+            score = score,
+            hits = entry.hits(),
+            "query cache hit (similar)"
+        );
+        return Some(entry.parsed_intent.clone());
+    }
+
+    // 3. Cache miss — จำแนก intent ด้วย NLP
+    let parsed = parse_natural_language_intent(intent)?;
+
+    // 4. เก็บผลลัพธ์ลง cache
+    let entry = CacheEntry {
+        parsed_intent: parsed.clone(),
+        response_data: response_data.unwrap_or_default(),
+        created_at: Instant::now(),
+        hit_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    };
+    cache.put(cache_key, entry).await;
+
+    debug!(query = %intent.payload, "query cache miss — parsed and cached");
+    Some(parsed)
 }
 
 #[cfg(test)]
