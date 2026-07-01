@@ -329,8 +329,9 @@ async fn check_socket_permissions(socket: &mut tokio::net::UnixStream) -> Result
     let uid = Uid::from_raw(creds.uid());
     let gid = Gid::from_raw(creds.gid());
 
-    // ตรวจสอบว่าผู้ใช้ที่ถูกเชื่อมต่อคือ root (UID 0) - การควบคุมความปลอดภัยหลัก
-    if !uid.is_root() {
+    // ตรวจสอบว่าผู้ใช้ที่ถูกเชื่อมต่อคือ root (UID 0) หรือผู้ใช้ปัจจุบันที่รัน daemon
+    let current_uid = Uid::current();
+    if !uid.is_root() && uid != current_uid {
         warn!(
             "Non-root user attempting UDS authentication: uid={}, gid={}",
             uid, gid

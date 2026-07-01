@@ -457,7 +457,12 @@ impl Default for KernelCompanionConfig {
 }
 
 fn default_uds_socket() -> String {
-    "/tmp/ank-companion.sock".to_string()
+    let uid = nix::unistd::Uid::current();
+    if uid.is_root() {
+        "/tmp/ank-companion.sock".to_string()
+    } else {
+        format!("/tmp/ank-companion-{}.sock", uid)
+    }
 }
 fn default_intent_bus_cap() -> usize {
     1024
