@@ -509,6 +509,51 @@ impl GpuMemoryPool {
             .sum()
     }
 
+    /// รวบรวม block IDs ของ agent ที่ระบุ (block ID ขึ้นต้นด้วย prefix)
+    #[must_use]
+    pub fn block_ids_for_agent(&self, agent_id: &str) -> Vec<String> {
+        self.blocks
+            .read()
+            .keys()
+            .filter(|k| k.starts_with(agent_id))
+            .cloned()
+            .collect()
+    }
+
+    /// ตรวจสอบว่าบล็อกอยู่ในสถานะ Allocated หรือไม่
+    #[must_use]
+    pub fn is_allocated(&self, block_id: &str) -> bool {
+        self.blocks
+            .read()
+            .get(block_id)
+            .is_some_and(|b| b.state == BlockState::Allocated)
+    }
+
+    /// จำนวน VRAM ที่ใช้โดย Allocated blocks ของ agent ที่ระบุ
+    #[must_use]
+    pub fn used_bytes_for_agent(&self, agent_id: &str) -> usize {
+        let blocks = self.blocks.read();
+        blocks
+            .values()
+            .filter(|b| b.state == BlockState::Allocated && b.id.starts_with(agent_id))
+            .map(|b| b.requested_size)
+            .sum()
+    }
+
+    /// คืนรายชื่อ agent prefixes ที่มี block อยู่ใน pool
+    #[must_use]
+    pub fn all_agent_prefixes(&self) -> Vec<String> {
+        let blocks = self.blocks.read();
+        let mut prefixes: Vec<String> = blocks
+            .keys()
+            .map(|k| k.split('-').next().unwrap_or(k).to_string())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        prefixes.sort();
+        prefixes
+    }
+
     // ── Real GPU Allocation via FFI ───────────────────────────────────
 
     /// จัดสรรหน่วยความจำ CUDA (FFI — libcuda.so)

@@ -88,7 +88,13 @@ pub fn memcpy_dtoh(dst: &mut [u8], src_ptr: u64) -> Result<(), String> {
             .get(b"cuMemcpyDtoH")
             .map_err(|e| format!("symbol cuMemcpyDtoH not found: {e}"))?
     };
-    let ret = unsafe { func(dst.as_mut_ptr() as *mut std::ffi::c_void, src_ptr, dst.len()) };
+    let ret = unsafe {
+        func(
+            dst.as_mut_ptr() as *mut std::ffi::c_void,
+            src_ptr,
+            dst.len(),
+        )
+    };
     if ret == CUDA_SUCCESS {
         Ok(())
     } else {

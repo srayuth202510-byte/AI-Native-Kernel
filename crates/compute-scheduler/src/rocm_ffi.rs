@@ -87,12 +87,21 @@ pub fn is_available() -> bool {
 /// คืน `String` หากไม่สามารถโหลด HIP library หรือ hipMemcpy ล้มเหลว
 pub fn memcpy(dst: u64, src: u64, size: usize, kind: i32) -> Result<(), String> {
     let ctx = get_hip_ctx()?;
-    let func: Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, usize, i32) -> u32> = unsafe {
+    let func: Symbol<
+        unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, usize, i32) -> u32,
+    > = unsafe {
         ctx.lib
             .get(b"hipMemcpy")
             .map_err(|e| format!("symbol hipMemcpy not found: {e}"))?
     };
-    let ret = unsafe { func(dst as *mut std::ffi::c_void, src as *const std::ffi::c_void, size, kind) };
+    let ret = unsafe {
+        func(
+            dst as *mut std::ffi::c_void,
+            src as *const std::ffi::c_void,
+            size,
+            kind,
+        )
+    };
     if ret == HIP_SUCCESS {
         Ok(())
     } else {
@@ -130,7 +139,13 @@ pub fn memcpy_dtoh(dst: &mut [u8], src_ptr: u64) -> Result<(), String> {
             .get(b"hipMemcpyDtoH")
             .map_err(|e| format!("symbol hipMemcpyDtoH not found: {e}"))?
     };
-    let ret = unsafe { func(dst.as_mut_ptr() as *mut std::ffi::c_void, src_ptr, dst.len()) };
+    let ret = unsafe {
+        func(
+            dst.as_mut_ptr() as *mut std::ffi::c_void,
+            src_ptr,
+            dst.len(),
+        )
+    };
     if ret == HIP_SUCCESS {
         Ok(())
     } else {

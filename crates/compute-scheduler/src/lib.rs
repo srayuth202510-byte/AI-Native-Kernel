@@ -7,6 +7,8 @@ pub mod vram_manager;
 pub mod budget;
 /// โมดูล CUDA Driver API FFI (cuMemAlloc/cuMemFree) สำหรับ NVIDIA GPU
 pub mod cuda_ffi;
+/// โมดูล GPU OOM killer — priority-based preemption เมื่อ VRAM เต็ม
+pub mod gpu_oom;
 /// โมดูลจัดการ GPU memory pool สำหรับ CUDA/ROCm abstraction
 pub mod gpu_pool;
 /// โมดูลเชื่อมต่อ Apple MPS (Metal Performance Shaders) ผ่าน llama.cpp

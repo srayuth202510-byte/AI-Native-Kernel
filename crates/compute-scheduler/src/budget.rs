@@ -268,6 +268,12 @@ impl GpuBudgetController {
         let budgets = self.budgets.read();
         budgets.values().map(|b| b.used_bytes).sum()
     }
+
+    /// รายชื่อ agent IDs ทั้งหมดที่ลงทะเบียน
+    #[must_use]
+    pub fn agent_ids(&self) -> Vec<String> {
+        self.budgets.read().keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]
