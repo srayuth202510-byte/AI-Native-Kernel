@@ -7,6 +7,7 @@ This runbook provisions a host that can run:
 
 - `./scripts/run.sh validate-ebpf`
 - `./scripts/run.sh validate-warm-bench`
+- `./scripts/run-full-validation-suite.sh`
 - `.github/workflows/ebpf-validation.yml`
 
 ## Current Constraint
@@ -47,6 +48,18 @@ To provision and immediately execute the validation workflows:
 ./scripts/bootstrap-validation-host.sh --run-validations
 ```
 
+To run the full host-side suite in one command on a prepared host:
+
+```bash
+./scripts/run-full-validation-suite.sh
+```
+
+If the host still needs Debian/Ubuntu dependencies installed first:
+
+```bash
+./scripts/run-full-validation-suite.sh --install-deps
+```
+
 Dry run:
 
 ```bash
@@ -74,6 +87,7 @@ If both pass, run:
 ```bash
 ./scripts/run.sh validate-ebpf
 ./scripts/run.sh validate-warm-bench
+./scripts/run-full-validation-suite.sh
 ```
 
 If you want to use GitHub Actions for the privileged path, register this host as a
@@ -135,6 +149,12 @@ the workflow elevates only the real attach step.
 
 - `./scripts/check-rocksdb-bench-prereqs.sh` reports no failures
 - `./scripts/run.sh validate-warm-bench` reaches the benchmark run instead of failing in `bindgen`
+
+The full host-side suite is ready when:
+
+- `./scripts/run-full-validation-suite.sh` completes without failures
+- `scripts/run-ci-validations.sh` ends with `Overall: PASS` or `PASS (with warnings)` only for expected non-blocking checks
+- privileged eBPF attach tests and workspace benches complete on the same host
 
 ## Known Blockers on This Workspace
 
