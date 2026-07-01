@@ -27,8 +27,9 @@ For full validation, the host must provide:
 - `clang`
 - `llvm`
 - `libclang`
+- `libbpf` headers
 - `bpftool`
-- matching `linux-headers-$(uname -r)`
+- matching `linux-headers-$(uname -r)` or another source of `bpf/bpf_helpers.h` such as `libbpf-dev`
 - `/sys/kernel/btf/vmlinux`
 - privilege to attach eBPF/LSM programs
 
@@ -138,6 +139,7 @@ At the time of writing, this environment is missing:
 - `clang`
 - `bpftool`
 - `libclang`
+- `libbpf` headers
 - privileged eBPF attach capabilities
 
 That means code changes alone will not complete the remaining host validation work from

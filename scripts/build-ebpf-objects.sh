@@ -7,11 +7,35 @@ CRATE_DIR="$PROJECT_ROOT/crates/kernel-companion"
 OUT_DIR="$CRATE_DIR/target/bpf"
 
 VMLINUX_BTF="/sys/kernel/btf/vmlinux"
-BPF_INCLUDE_DIR="/usr/src/linux-headers-$(uname -r)/tools/bpf/resolve_btfids/libbpf/include"
-BPF_HELPERS_H="$BPF_INCLUDE_DIR/bpf/bpf_helpers.h"
-
 CLANG_BIN="${CLANG_BIN:-clang}"
 BPFTOOL_BIN="${BPFTOOL_BIN:-bpftool}"
+BPF_INCLUDE_DIR="${BPF_INCLUDE_DIR:-}"
+
+resolve_bpf_include_dir() {
+    local kernel_release
+    kernel_release="$(uname -r)"
+    local candidates=(
+        "$BPF_INCLUDE_DIR"
+        "/usr/src/linux-headers-${kernel_release}/tools/bpf/resolve_btfids/libbpf/include"
+        "/usr/src/linux-headers-${kernel_release}/tools/lib/bpf"
+        "/usr/include"
+        "/usr/local/include"
+        "/opt/homebrew/include"
+    )
+    local candidate
+
+    for candidate in "${candidates[@]}"; do
+        if [[ -z "$candidate" ]]; then
+            continue
+        fi
+        if [[ -f "${candidate}/bpf/bpf_helpers.h" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
 
 # Resolve clang — if missing, fall back to prebuilt objects
 if [[ "$CLANG_BIN" == /* ]]; then
@@ -44,8 +68,8 @@ if [[ ! -f "$VMLINUX_BTF" ]]; then
     exit 0
 fi
 
-if [[ ! -f "$BPF_HELPERS_H" ]]; then
-    echo "Missing BPF helper headers: $BPF_HELPERS_H — using prebuilt objects" >&2
+if ! BPF_INCLUDE_DIR="$(resolve_bpf_include_dir)"; then
+    echo "Missing BPF helper headers — using prebuilt objects" >&2
     exit 0
 fi
 

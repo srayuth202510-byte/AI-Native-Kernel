@@ -6,8 +6,6 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 KERNEL_RELEASE="$(uname -r)"
 VMLINUX_BTF="/sys/kernel/btf/vmlinux"
-BPF_INCLUDE_DIR="/usr/src/linux-headers-${KERNEL_RELEASE}/tools/bpf/resolve_btfids/libbpf/include"
-BPF_HELPERS_H="${BPF_INCLUDE_DIR}/bpf/bpf_helpers.h"
 LSM_LIST="/sys/kernel/security/lsm"
 
 BPF_SOURCES=(
@@ -46,6 +44,7 @@ TMP_DIR=""
 CLANG_BIN=""
 BPFTOOL_BIN=""
 LIBCLANG_PATH=""
+BPF_INCLUDE_DIR=""
 
 cleanup() {
     if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
@@ -102,6 +101,30 @@ resolve_command() {
     return 1
 }
 
+resolve_bpf_include_dir() {
+    local candidates=(
+        "${BPF_INCLUDE_DIR:-}"
+        "/usr/src/linux-headers-${KERNEL_RELEASE}/tools/bpf/resolve_btfids/libbpf/include"
+        "/usr/src/linux-headers-${KERNEL_RELEASE}/tools/lib/bpf"
+        "/usr/include"
+        "/usr/local/include"
+        "/opt/homebrew/include"
+    )
+    local candidate
+
+    for candidate in "${candidates[@]}"; do
+        if [[ -z "$candidate" ]]; then
+            continue
+        fi
+        if [[ -f "${candidate}/bpf/bpf_helpers.h" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 check_command() {
     local cmd="$1"
     local label="$2"
@@ -110,6 +133,14 @@ check_command() {
         pass "$label: $resolved_path"
     else
         fail "$label missing from PATH: $cmd"
+    fi
+}
+
+check_bpf_helpers_header() {
+    if [[ -n "$BPF_INCLUDE_DIR" ]]; then
+        pass "BPF helper headers: ${BPF_INCLUDE_DIR}/bpf/bpf_helpers.h"
+    else
+        fail "BPF helper headers missing from standard include paths"
     fi
 }
 
@@ -171,8 +202,8 @@ compile_smoke_test() {
         fail "compile smoke test skipped because $VMLINUX_BTF is missing"
         return
     fi
-    if [[ ! -f "$BPF_HELPERS_H" ]]; then
-        fail "compile smoke test skipped because $BPF_HELPERS_H is missing"
+    if [[ -z "$BPF_INCLUDE_DIR" ]]; then
+        fail "compile smoke test skipped because BPF helper headers are missing"
         return
     fi
     if [[ -z "$CLANG_BIN" ]]; then
@@ -250,8 +281,14 @@ else
     fail "bpftool missing from PATH: ${BPFTOOL_CANDIDATES[*]}"
 fi
 
+if BPF_INCLUDE_DIR="$(resolve_bpf_include_dir)"; then
+    :
+else
+    BPF_INCLUDE_DIR=""
+fi
+
 check_file "$VMLINUX_BTF" "kernel BTF"
-check_file "$BPF_HELPERS_H" "libbpf helper headers"
+check_bpf_helpers_header
 check_libclang
 check_clang_bpf_target
 check_lsm_state
@@ -273,9 +310,10 @@ Real eBPF mode is not ready yet.
 Suggested next steps:
   1. Install matching linux headers for: $KERNEL_RELEASE
   2. Install clang/llvm with BPF target support
-  3. Install bpftool
-  4. Ensure /sys/kernel/btf/vmlinux is available
-  5. Re-run: scripts/check-ebpf-prereqs.sh
+  3. Install libbpf headers (for example: libbpf-dev) or export BPF_INCLUDE_DIR
+  4. Install bpftool
+  5. Ensure /sys/kernel/btf/vmlinux is available
+  6. Re-run: scripts/check-ebpf-prereqs.sh
 EOF
     exit 1
 fi

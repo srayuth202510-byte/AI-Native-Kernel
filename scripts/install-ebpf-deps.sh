@@ -6,6 +6,7 @@ BASE_PACKAGES=(
     "clang"
     "llvm"
     "libclang-dev"
+    "libbpf-dev"
     "libelf-dev"
 )
 RESOLVED_PACKAGES=()

@@ -46,11 +46,9 @@ The script mirrors the checks used by `crates/kernel-companion/build.rs` and als
 ## Required Items
 
 1. Kernel BTF available at `/sys/kernel/btf/vmlinux`
-2. Matching Linux headers for the running kernel
-3. `bpf_helpers.h` under:
-   `/usr/src/linux-headers-$(uname -r)/tools/bpf/resolve_btfids/libbpf/include/bpf/bpf_helpers.h`
-4. `clang` with `--target=bpf` support
-5. `bpftool`
+2. `bpf/bpf_helpers.h` from either matching kernel headers or a host package such as `libbpf-dev`
+3. `clang` with `--target=bpf` support
+4. `bpftool`
 
 ## Common Ubuntu/Debian Packages
 
@@ -58,7 +56,7 @@ The script mirrors the checks used by `crates/kernel-companion/build.rs` and als
 ./scripts/install-ebpf-deps.sh
 ```
 
-If you need the manual equivalent, install `clang`, `llvm`, `libclang-dev`, `libelf-dev`,
+If you need the manual equivalent, install `clang`, `llvm`, `libclang-dev`, `libbpf-dev`, `libelf-dev`,
 matching `linux-headers-$(uname -r)`, and whichever installable package on your distro
 provides `bpftool`. On Ubuntu 24.04 this may be a provider such as `linux-tools-common`
 rather than a concrete `bpftool` package.

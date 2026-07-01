@@ -31,6 +31,29 @@ fn resolve_tool(env_var: &str, candidates: &[&str]) -> Option<String> {
     None
 }
 
+fn resolve_bpf_include_dir(kernel_release: &str) -> Option<String> {
+    let env_candidate = std::env::var("BPF_INCLUDE_DIR").ok();
+    let kernel_header_include =
+        format!("/usr/src/linux-headers-{kernel_release}/tools/bpf/resolve_btfids/libbpf/include");
+    let kernel_tools_include = format!("/usr/src/linux-headers-{kernel_release}/tools/lib/bpf");
+    let candidates = [
+        env_candidate.as_deref(),
+        Some(kernel_header_include.as_str()),
+        Some(kernel_tools_include.as_str()),
+        Some("/usr/include"),
+        Some("/usr/local/include"),
+        Some("/opt/homebrew/include"),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if Path::new(candidate).join("bpf/bpf_helpers.h").exists() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let bpf_out_dir = Path::new(&out_dir).join("bpf");
@@ -46,6 +69,7 @@ fn main() {
     }
     println!("cargo:rerun-if-env-changed=CLANG_BIN");
     println!("cargo:rerun-if-env-changed=BPFTOOL_BIN");
+    println!("cargo:rerun-if-env-changed=BPF_INCLUDE_DIR");
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
 
@@ -72,10 +96,7 @@ fn main() {
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
-    let bpf_inc = format!(
-        "/usr/src/linux-headers-{}/tools/bpf/resolve_btfids/libbpf/include",
-        kernel_release
-    );
+    let bpf_inc = resolve_bpf_include_dir(&kernel_release);
 
     let vmlinux_h = bpf_out_dir.join("vmlinux.h");
     let clang = resolve_tool(
@@ -96,12 +117,13 @@ fn main() {
     );
 
     let can_compile = Path::new("/sys/kernel/btf/vmlinux").exists()
-        && Path::new(&bpf_inc).join("bpf/bpf_helpers.h").exists()
+        && bpf_inc.is_some()
         && clang.is_some()
         && bpftool.is_some()
         && bpf_sources.iter().all(|s| Path::new(s).exists());
 
     if can_compile {
+        let bpf_inc = bpf_inc.expect("BPF include dir should be resolved");
         let clang = clang.expect("clang should be resolved");
         let bpftool = bpftool.expect("bpftool should be resolved");
 
@@ -182,6 +204,11 @@ fn main() {
         if bpftool.is_none() {
             println!("cargo:warning=bpftool not found in PATH");
         }
+        if bpf_inc.is_none() {
+            println!(
+                "cargo:warning=bpf/bpf_helpers.h not found; install libbpf-dev or set BPF_INCLUDE_DIR"
+            );
+        }
         print_bpf_disabled_instructions();
     }
 }
@@ -189,9 +216,7 @@ fn main() {
 fn print_bpf_disabled_instructions() {
     println!("cargo:warning=  To enable real eBPF tracing, ensure:");
     println!("cargo:warning=    1. Kernel BTF:  /sys/kernel/btf/vmlinux");
-    println!(
-        "cargo:warning=    2. BPF headers: /usr/src/linux-headers-$(uname -r)/.../bpf/bpf_helpers.h"
-    );
+    println!("cargo:warning=    2. BPF helper headers (linux headers or libbpf-dev)");
     println!("cargo:warning=    3. clang with BPF target support");
     println!("cargo:warning=    4. bpftool installed");
 }
