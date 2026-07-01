@@ -2,7 +2,7 @@
 
 This note tracks the current repository state as implemented and locally validated in this workspace, not only the target architecture described in `docs/ai_native_kernel_plan_v2.html`.
 
-Last verified: 2026-06-29
+Last verified: 2026-07-01
 
 ## Current Baseline
 
@@ -119,8 +119,11 @@ Last verified: 2026-06-29
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
+./scripts/run-all-tests.sh
+cargo bench --bench scheduler_bench --bench security_bench --bench compute_bench --bench memory_bench --bench intent_bus_bench --bench companion_bench -- --quick
+./scripts/run-warm-bench.sh
 ```
 <!-- VALIDATION_STATUS_END -->
 
@@ -129,6 +132,5 @@ cargo test --workspace
 Raise the bar from "validated host-side prototype" to "production-ready security baseline":
 
 1. re-run privileged eBPF/LSM validation on a host with kernel prerequisites and fallback disabled
-2. close the remaining timeout gaps on external I/O paths
-3. verify the CI-equivalent lint path with `cargo clippy --all-targets --all-features -- -D warnings`
-4. run the ignored Qdrant-backed tests against a reachable endpoint
+2. verify latency performance regularly against the benchmarks budget on production targets
+3. close the remaining timeout gaps on external I/O paths if any are newly added

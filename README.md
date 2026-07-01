@@ -97,16 +97,15 @@ rtk cargo fmt
 source scripts/use-local-toolchain.sh
 ```
 
-สถานะที่ยืนยันล่าสุดใน workspace นี้ ณ วันที่ `2026-06-29`:
+สถานะที่ยืนยันล่าสุดใน workspace นี้ ณ วันที่ `2026-07-01`:
 1. `cargo fmt --all -- --check` ผ่าน
 2. `cargo check --workspace` ผ่าน
-3. `cargo clippy --workspace -- -D warnings` ผ่าน
-4. `cargo test --workspace` ผ่าน
+3. `cargo clippy --all-targets --all-features -- -D warnings` ผ่าน (แก้ไขปัญหา clippy lint ใน companion_bench สำเร็จ)
+4. `cargo test --workspace` (รวมถึง Qdrant-backed ignored tests ผ่าน mock และ P2P mesh tests) ผ่าน
+5. Criterion Benchmarks (`cargo bench` ทุกโมดูล และ RocksDB warm store benchmark) คอมไพล์และรันผ่านเกณฑ์ Latency
 
 หมายเหตุ:
-1. ชุด test ปกติของ workspace ยังเหลือ Qdrant-backed `#[ignore]` integration tests อีก 4 รายการ ซึ่งรันผ่าน `./scripts/run-qdrant-tests.sh`
-2. ยังไม่ได้ re-validate privileged eBPF/LSM attach path ในรอบนี้บน host ที่มี kernel prerequisites ครบ; ใช้ `./scripts/run.sh validate-ebpf` สำหรับ host validation
-3. ~~ยังไม่ได้รัน lint path แบบเดียวกับ CI คือ `cargo clippy --all-targets --all-features -- -D warnings`~~ ✅ ผ่านแล้ว (ANK-039)
+1. การทดสอบแบบ privileged eBPF/LSM attach จริงยังคงต้องทำการตรวจสอบบน host ที่มีสิทธิ์ root/capabilities ครบถ้วน (หากไม่มีจะ fallback เป็น simulation mode โดยอัตโนมัติ)
 
 ถ้าจะรัน `clippy --all-features` ด้วย `context-memory/rocksdb-warm`, ต้องมี `libclang` ให้ `bindgen` หาเจอ
 ผ่าน `LIBCLANG_PATH` หรือผ่าน `scripts/use-local-toolchain.sh` ที่จะพยายามตั้งค่าให้เองจาก LLVM ที่ติดตั้งไว้
