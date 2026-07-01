@@ -3,6 +3,15 @@ pub mod llama;
 pub mod onnx;
 pub mod vram_manager;
 
+/// โมดูลจัดการงบประมาณ VRAM แบบ per-agent (GpuBudgetController)
+pub mod budget;
+/// โมดูลจัดการ GPU memory pool สำหรับ CUDA/ROCm abstraction
+pub mod gpu_pool;
+/// โมดูลเชื่อมต่อ Apple MPS (Metal Performance Shaders) ผ่าน llama.cpp
+pub mod mps;
+/// โมดูลเชื่อมต่อ vLLM (subprocess engine สำหรับ NVIDIA + AMD ROCm)
+pub mod vllm;
+
 /// โมดูลจัดการคิวและการมัดรวมงานเพื่อส่งเข้า GPU (Batching Manager)
 pub mod batching;
 /// โมดูลสื่อสารกับ Cloud Inference API (OpenAI-compatible)
@@ -57,6 +66,10 @@ pub enum InferenceRuntime {
     OnnxRuntime,
     /// TensorRT-LLM - เหมาะกับ GPU ประสิทธิภาพสูง
     TensorRtLlm,
+    /// vLLM - รองรับ NVIDIA GPU + AMD ROCm 6+ (subprocess)
+    Vllm,
+    /// Apple MPS (Metal Performance Shaders) - Apple Silicon GPU
+    Mps,
 }
 
 impl InferenceRuntime {
@@ -67,6 +80,8 @@ impl InferenceRuntime {
             Self::LlamaCpp => tokens as f64 * 0.5,
             Self::OnnxRuntime => tokens as f64 * 0.3,
             Self::TensorRtLlm => tokens as f64 * 0.08,
+            Self::Vllm => tokens as f64 * 0.06, // vLLM continuous batching = efficient
+            Self::Mps => tokens as f64 * 0.12,  // Apple MPS ≈ Mac latency
         }
     }
 }

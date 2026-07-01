@@ -16,7 +16,10 @@ pub mod warm;
 use crate::cold::ColdStore;
 use crate::hot::HotStore;
 use crate::p2p_mesh::P2PMeshManager;
-use crate::vram::VramStore;
+pub use crate::vram::{
+    DeviceMemoryBlock, KvCachePage, TensorDevice, TensorDtype, TensorMetadata, TensorStore,
+    VramMetrics, VramMetricsSnapshot, VramStore,
+};
 use crate::warm::WarmStore;
 pub use fs::{SemanticFile, SemanticFileSystem};
 pub use indexer::{
@@ -28,7 +31,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
 use tracing::{debug, instrument, warn};
-pub use vram::KvCachePage;
 
 /// ข้อผิดพลาดที่เกี่ยวข้องกับระบบจัดการหน่วยความจำบริบท
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -239,8 +241,7 @@ impl ContextMemoryManager {
     /// คืน `ContextError::NotFound` หากไม่พบข้อมูลใน VRAM Store
     #[instrument(skip(self), fields(key = %key))]
     pub fn page_to_ram(&self, key: &str) -> Result<()> {
-        let vram_value = self.vram.write().remove(key);
-        if let Some(value) = vram_value {
+        if let Some((value, _meta)) = self.vram.write().remove(key) {
             debug!(tier = "vram->ram", "คัดถ่ายข้อมูลบริบทจาก VRAM ลง RAM");
             self.put(key.to_string(), value);
             Ok(())
@@ -285,8 +286,7 @@ impl ContextMemoryManager {
     #[instrument(skip(self), fields(sequence_id = %sequence_id))]
     pub fn page_kv_to_ram(&self, sequence_id: &str) -> Result<KvCachePage> {
         let key = format!("kv_seq_{}", sequence_id);
-        let vram_value = self.vram.write().remove(&key);
-        if let Some(value) = vram_value {
+        if let Some((value, _meta)) = self.vram.write().remove(&key) {
             let page: KvCachePage =
                 serde_json::from_slice(&value).map_err(|_| ContextError::NotFound)?;
             debug!(tier = "vram->ram", sequence_id = %sequence_id, "ดึงหน้า KV Cache กลับลง RAM");

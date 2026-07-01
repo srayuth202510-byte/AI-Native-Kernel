@@ -71,6 +71,31 @@ weight_latency = 0.8
 weight_power = 0.1
 weight_cost = 0.1
 
+# GPU Memory Pool — จัดสรรหน่วยความจำ GPU (CUDA/ROCm)
+gpu_pool_enabled = false
+gpu_pool_platform = "cuda"               # "cuda" หรือ "rocm"
+gpu_pool_capacity_mb = 8192              # ขนาด pool ใน MB
+gpu_pool_real_mode = false               # true = ใช้ CUDA/ROCm FFI จริง
+
+# GPU Budget Controller — งบประมาณ VRAM ต่อ Agent
+gpu_budget_enabled = true
+gpu_budget_default_mb = 1024             # ค่างบประมาณเริ่มต้นต่อ agent (MB)
+gpu_budget_system_capacity_mb = 8192     # VRAM รวมของระบบ (MB)
+
+# vLLM Engine — subprocess สำหรับ NVIDIA + AMD ROCm
+vllm_enabled = false
+vllm_endpoint = "http://127.0.0.1:8000"
+vllm_model = "Qwen/Qwen2.5-7B-Instruct"
+vllm_tensor_parallel_size = 1
+vllm_gpu_memory_utilization = 0.85
+vllm_max_model_len = 4096
+vllm_dtype = "auto"
+vllm_binary = "vllm"                    # path/command สำหรับ vLLM
+
+# MPS Engine — Apple Silicon GPU (Metal Performance Shaders)
+mps_enabled = false
+mps_endpoint = "http://127.0.0.1:8080"  # llama.cpp HTTP endpoint
+
 [capability_security]
 audit_log_path = "/tmp/ank-audit.log"
 max_issue_rate = 100

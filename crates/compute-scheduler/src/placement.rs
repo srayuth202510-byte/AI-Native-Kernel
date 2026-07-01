@@ -93,15 +93,19 @@ impl PlacementPolicy {
             },
             ComputeTarget::Gpu => match workload {
                 WorkloadClass::KernelLogic => None,
+                WorkloadClass::LargeLlm => Some(InferenceRuntime::Vllm),
                 _ => Some(InferenceRuntime::TensorRtLlm),
             },
             ComputeTarget::Npu => match workload {
                 WorkloadClass::KernelLogic => None,
-                WorkloadClass::SmallLlm => Some(InferenceRuntime::LlamaCpp),
+                WorkloadClass::SmallLlm | WorkloadClass::LargeLlm => {
+                    Some(InferenceRuntime::LlamaCpp)
+                }
                 _ => Some(InferenceRuntime::OnnxRuntime),
             },
             ComputeTarget::Cloud => match workload {
                 WorkloadClass::KernelLogic => None,
+                WorkloadClass::LargeLlm => Some(InferenceRuntime::Vllm),
                 _ => Some(InferenceRuntime::LlamaCpp),
             },
         }
@@ -226,6 +230,10 @@ mod tests {
         );
         assert_eq!(
             PlacementPolicy::select_runtime(ComputeTarget::Gpu, WorkloadClass::LargeLlm),
+            Some(InferenceRuntime::Vllm)
+        );
+        assert_eq!(
+            PlacementPolicy::select_runtime(ComputeTarget::Gpu, WorkloadClass::SmallLlm),
             Some(InferenceRuntime::TensorRtLlm)
         );
         assert_eq!(
@@ -235,6 +243,10 @@ mod tests {
         assert_eq!(
             PlacementPolicy::select_runtime(ComputeTarget::Cpu, WorkloadClass::KernelLogic),
             None
+        );
+        assert_eq!(
+            PlacementPolicy::select_runtime(ComputeTarget::Cloud, WorkloadClass::LargeLlm),
+            Some(InferenceRuntime::Vllm)
         );
     }
 
@@ -257,9 +269,13 @@ mod tests {
         let llama = InferenceRuntime::LlamaCpp;
         let onnx = InferenceRuntime::OnnxRuntime;
         let trt = InferenceRuntime::TensorRtLlm;
+        let vllm = InferenceRuntime::Vllm;
+        let mps = InferenceRuntime::Mps;
 
         assert_eq!(llama.execute_mock_inference(100), 50.0);
         assert_eq!(onnx.execute_mock_inference(100), 30.0);
         assert_eq!(trt.execute_mock_inference(100), 8.0);
+        assert_eq!(vllm.execute_mock_inference(100), 6.0);
+        assert_eq!(mps.execute_mock_inference(100), 12.0);
     }
 }
