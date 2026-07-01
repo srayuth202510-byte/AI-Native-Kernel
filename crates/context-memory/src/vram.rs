@@ -62,7 +62,7 @@ impl TensorDevice {
 }
 
 /// ข้อมูลเมตาของ Tensor สำหรับติดตามขนาดและตำแหน่งที่ตั้ง
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TensorMetadata {
     /// ขนาดแต่ละมิติของ tensor (shape)
     pub shape: Vec<usize>,

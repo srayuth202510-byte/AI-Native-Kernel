@@ -139,9 +139,11 @@ impl HardwareProber {
             );
             let npu_profile = match vendor {
                 NpuVendor::IntelGaudi => NpuProfile::intel_gaudi3(),
+                NpuVendor::IntelOpenvino => NpuProfile::intel_openvino_npu(),
                 NpuVendor::GoogleTpu => NpuProfile::google_tpu_v5e(),
                 NpuVendor::AppleSilicon => NpuProfile::apple_m4_ne(),
                 NpuVendor::QualcommHexagon => NpuProfile::qualcomm_hexagon(),
+                NpuVendor::QualcommQnn => NpuProfile::qualcomm_qnn_npu(),
                 NpuVendor::AmdXdna => NpuProfile::amd_xdna2(),
                 NpuVendor::Generic => NpuProfile::generic(),
             };
@@ -248,6 +250,18 @@ impl HardwareProber {
             }
         }
 
+        // Intel OpenVINO NPU — env var override for integrated NPU on Lunar Lake
+        // Sysfs-based detection is handled by detect_npu_vendor() in the generic probe above
+        if std::env::var("OPENVINO_NPU").as_deref() == Ok("1") {
+            devices.push(("/dev/accel0".into(), NpuVendor::IntelOpenvino));
+        }
+
+        // Qualcomm QNN NPU — env var override for Snapdragon X Elite
+        // Sysfs-based detection (vendor 0x17cb) is handled by detect_npu_vendor()
+        if std::env::var("QNN_NPU").as_deref() == Ok("1") {
+            devices.push(("/dev/npu0".into(), NpuVendor::QualcommQnn));
+        }
+
         devices
     }
 
@@ -314,10 +328,18 @@ impl HardwareProber {
             if let Ok(Ok(Some(vendor_id))) = result {
                 let vendor_id = vendor_id.trim();
                 match vendor_id {
-                    "0x8086" | "0x8087" => return NpuVendor::IntelGaudi,
+                    "0x8086" | "0x8087" => {
+                        // Intel: could be Gaudi or integrated NPU
+                        // Default to Gaudi; env var overrides to OpenVINO NPU
+                        if std::env::var("INTEL_NPU_TYPE").as_deref() == Ok("openvino") {
+                            return NpuVendor::IntelOpenvino;
+                        }
+                        return NpuVendor::IntelGaudi;
+                    }
                     "0x1022" => return NpuVendor::AmdXdna,
                     "0x10de" => return NpuVendor::Generic,
                     "0x103c" => return NpuVendor::QualcommHexagon,
+                    "0x17cb" => return NpuVendor::QualcommQnn,
                     _ => {}
                 }
             }

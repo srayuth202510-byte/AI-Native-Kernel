@@ -70,6 +70,103 @@ impl NpuRuntime for IntelGaudiRuntime {
     }
 }
 
+// ---- Intel OpenVINO NPU Runtime (Lunar Lake / Arrow Lake) ----
+
+/// Intel OpenVINO NPU Runtime — สำหรับ Intel Meteor Lake / Lunar Lake / Arrow Lake NPU
+pub struct IntelOpenvinoNpuRuntime {
+    profile: NpuProfile,
+}
+
+impl IntelOpenvinoNpuRuntime {
+    pub fn new() -> Self {
+        Self {
+            profile: NpuProfile::intel_openvino_npu(),
+        }
+    }
+}
+
+impl Default for IntelOpenvinoNpuRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl NpuRuntime for IntelOpenvinoNpuRuntime {
+    fn vendor(&self) -> NpuVendor {
+        NpuVendor::IntelOpenvino
+    }
+
+    fn name(&self) -> &str {
+        "intel_openvino_npu"
+    }
+
+    fn profile(&self) -> NpuProfile {
+        self.profile
+    }
+
+    async fn is_available(&self) -> bool {
+        // Check for Intel NPU via sysfs or kernel module
+        #[cfg(target_os = "linux")]
+        {
+            // Intel NPU shows up as /dev/accel/accel0 with Intel vendor
+            let npu_path = "/dev/accel/accel0";
+            if let Ok(Ok(_)) = timeout(NPU_PROBE_TIMEOUT, tokio::fs::metadata(npu_path)).await {
+                // Verify Intel vendor
+                let vendor_path = "/sys/class/accel/accel0/device/vendor";
+                if let Ok(Ok(content)) =
+                    timeout(NPU_PROBE_TIMEOUT, tokio::fs::read_to_string(vendor_path)).await
+                {
+                    if content.trim() == "0x8086" {
+                        debug!("Intel OpenVINO NPU detected");
+                        return true;
+                    }
+                }
+            }
+            // Also check for Intel VPU module
+            let module_path = "/sys/module/intel_vpu";
+            if let Ok(Ok(meta)) = timeout(NPU_PROBE_TIMEOUT, tokio::fs::metadata(module_path)).await
+            {
+                if meta.is_dir() {
+                    debug!("Intel VPU kernel module loaded");
+                    return true;
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // macOS/Windows — check env var for testing
+            if std::env::var("OPENVINO_NPU").as_deref() == Ok("1") {
+                return true;
+            }
+        }
+        false
+    }
+
+    async fn execute_inference(&self, tokens: usize) -> f64 {
+        // Integrated NPU: moderate performance, very power efficient
+        let base_ms = self.profile.base_latency_ms;
+        let batch_factor = (tokens as f64 / 300.0).max(1.0);
+        base_ms * batch_factor * 0.01
+    }
+
+    async fn load_model(&self, model_path: &str) -> Result<(), String> {
+        info!(
+            model = model_path,
+            "Intel OpenVINO NPU: loading model via OpenVINO API"
+        );
+        // In real implementation: call OpenVINO Runtime C API
+        // ov::Core core;
+        // auto compiled = core.compile_model(model_path, "NPU");
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        info!("Intel OpenVINO NPU: shutting down");
+        Ok(())
+    }
+}
+
 // ---- Google TPU Runtime ----
 
 pub struct TpuRuntime {
@@ -271,6 +368,90 @@ impl NpuRuntime for HexagonRuntime {
     }
 }
 
+// ---- Qualcomm QNN/HTP NPU Runtime (Snapdragon X Elite) ----
+
+/// Qualcomm QNN/HTP NPU Runtime — สำหรับ Snapdragon X Elite NPU
+pub struct QualcommQnnRuntime {
+    profile: NpuProfile,
+}
+
+impl QualcommQnnRuntime {
+    pub fn new() -> Self {
+        Self {
+            profile: NpuProfile::qualcomm_qnn_npu(),
+        }
+    }
+}
+
+impl Default for QualcommQnnRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl NpuRuntime for QualcommQnnRuntime {
+    fn vendor(&self) -> NpuVendor {
+        NpuVendor::QualcommQnn
+    }
+
+    fn name(&self) -> &str {
+        "qualcomm_qnn_htp"
+    }
+
+    fn profile(&self) -> NpuProfile {
+        self.profile
+    }
+
+    async fn is_available(&self) -> bool {
+        // Check for Qualcomm NPU device
+        let qnn_paths = ["/dev/accel0", "/sys/class/accel/accel0"];
+        for path in &qnn_paths {
+            if let Ok(Ok(_)) = timeout(NPU_PROBE_TIMEOUT, tokio::fs::metadata(path)).await {
+                // Verify Qualcomm vendor
+                let vendor_path = "/sys/class/accel/accel0/device/vendor";
+                if let Ok(Ok(content)) =
+                    timeout(NPU_PROBE_TIMEOUT, tokio::fs::read_to_string(vendor_path)).await
+                {
+                    if content.trim() == "0x17cb" {
+                        debug!("Qualcomm QNN NPU detected");
+                        return true;
+                    }
+                }
+                debug!("Qualcomm QNN NPU device found at {}", path);
+                return true;
+            }
+        }
+        // Check env var for testing/CI
+        if std::env::var("QNN_NPU").as_deref() == Ok("1") {
+            return true;
+        }
+        false
+    }
+
+    async fn execute_inference(&self, tokens: usize) -> f64 {
+        // Snapdragon X Elite NPU: ~45 TOPS, efficient for on-device AI
+        let base_ms = self.profile.base_latency_ms;
+        let batch_factor = (tokens as f64 / 350.0).max(1.0);
+        base_ms * batch_factor * 0.01
+    }
+
+    async fn load_model(&self, model_path: &str) -> Result<(), String> {
+        info!(
+            model = model_path,
+            "Qualcomm QNN: loading model via QNN HTP backend"
+        );
+        // In real implementation: call QNN HTP C API
+        // QnnHtpDevice_Open(), QnnBackend_ValidateInit()
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        info!("Qualcomm QNN NPU: shutting down");
+        Ok(())
+    }
+}
+
 // ---- AMD XDNA Runtime ----
 
 pub struct XdnaRuntime {
@@ -353,9 +534,11 @@ impl NpuRuntime for XdnaRuntime {
 pub fn create_npu_runtime(vendor: NpuVendor) -> Box<dyn NpuRuntime> {
     match vendor {
         NpuVendor::IntelGaudi => Box::new(IntelGaudiRuntime::new()),
+        NpuVendor::IntelOpenvino => Box::new(IntelOpenvinoNpuRuntime::new()),
         NpuVendor::GoogleTpu => Box::new(TpuRuntime::new()),
         NpuVendor::AppleSilicon => Box::new(AppleNpuRuntime::new()),
         NpuVendor::QualcommHexagon => Box::new(HexagonRuntime::new()),
+        NpuVendor::QualcommQnn => Box::new(QualcommQnnRuntime::new()),
         NpuVendor::AmdXdna => Box::new(XdnaRuntime::new()),
         NpuVendor::Generic => {
             warn!("Generic NPU vendor — no vendor-specific runtime available");
@@ -422,6 +605,10 @@ mod tests {
         let gaudi = NpuProfile::intel_gaudi3();
         assert!(gaudi.tops > 1000.0, "Gaudi 3 should have >1000 TOPS");
 
+        let openvino = NpuProfile::intel_openvino_npu();
+        assert!(openvino.tops > 10.0, "OpenVINO NPU should have >10 TOPS");
+        assert!(openvino.power_watts < 20.0, "OpenVINO NPU should be <20W");
+
         let tpu = NpuProfile::google_tpu_v5e();
         assert!(tpu.power_watts < 50.0, "TPU v5e should be <50W");
 
@@ -431,6 +618,10 @@ mod tests {
         let hexagon = NpuProfile::qualcomm_hexagon();
         assert!(hexagon.power_watts < 20.0, "Hexagon should be <20W");
 
+        let qnn = NpuProfile::qualcomm_qnn_npu();
+        assert!(qnn.tops > 30.0, "QNN NPU should have >30 TOPS");
+        assert!(qnn.power_watts < 25.0, "QNN NPU should be <25W");
+
         let xdna = NpuProfile::amd_xdna2();
         assert!(xdna.tops > 40.0, "XDNA 2 should have >40 TOPS");
     }
@@ -439,9 +630,11 @@ mod tests {
     async fn test_create_runtimes() {
         let vendors = [
             NpuVendor::IntelGaudi,
+            NpuVendor::IntelOpenvino,
             NpuVendor::GoogleTpu,
             NpuVendor::AppleSilicon,
             NpuVendor::QualcommHexagon,
+            NpuVendor::QualcommQnn,
             NpuVendor::AmdXdna,
             NpuVendor::Generic,
         ];

@@ -38,6 +38,9 @@ pub enum ContextError {
     /// ไม่พบหน้าบริบท (Context Page) ที่ต้องการในระบบเก็บข้อมูล
     #[error("context page not found")]
     NotFound,
+    /// VRAM Store เต็ม ไม่สามารถจัดสรรพื้นที่เพิ่มได้
+    #[error("VRAM store is full or above capacity")]
+    VramFull,
 }
 
 /// ผลลัพธ์แบบ Custom Result สำหรับ Context Memory
@@ -382,6 +385,113 @@ impl ContextMemoryManager {
         self.vram.read().allocated_bytes()
     }
 
+    // ── Tensor-Aware Paging ──────────────────────────────────────────────
+
+    /// ย้าย (Page) เทนเซอร์จาก RAM ไปยัง VRAM พร้อม metadata shape/dtype/device
+    ///
+    /// ค้นหาข้อมูลจาก Hot/Warm/Cold ก่อน ถ้าพบจะลบออกจาก tier นั้นและย้ายขึ้น VRAM
+    ///
+    /// # Errors
+    /// คืน `ContextError::NotFound` หากไม่พบ key ในทุกระดับ
+    /// คืน `ContextError::VramFull` หาก VRAM เต็มและไม่สามารถจัดสรรพื้นที่ได้
+    #[instrument(skip(self), fields(key = %key, shape = ?shape, dtype = ?dtype, device = ?device))]
+    pub fn page_tensor_to_vram(
+        &self,
+        key: &str,
+        shape: Vec<usize>,
+        dtype: TensorDtype,
+        device: TensorDevice,
+    ) -> Result<Option<TensorMetadata>> {
+        // ถ้าอยู่ใน VRAM อยู่แล้ว — อัปเดต metadata และคืน Ok
+        if self.vram.read().contains_key(key) {
+            if let Some(meta) = self.vram.write().get_metadata_mut(key) {
+                meta.shape = shape;
+                meta.dtype = dtype;
+                meta.device = device;
+                meta.size_bytes = meta.shape.iter().product::<usize>() * meta.dtype.size_bytes();
+            }
+            return Ok(None);
+        }
+
+        let value = self.get(key)?;
+
+        // ลบข้อมูลออกจากระดับอื่นเพื่อป้องกันความซ้ำซ้อน
+        self.hot.write().remove(key);
+        self.warm.write().remove(key);
+        self.cold.write().remove(key);
+
+        // สร้าง metadata และบันทึก
+        let meta = TensorMetadata::new(shape, dtype, device);
+        let evicted =
+            self.vram
+                .write()
+                .insert_with_metadata(key.to_string(), value, Some(meta.clone()));
+
+        // หาก VRAM เต็มจนเกิดการถอดถอน อีวิคต์ลง RAM
+        for (evicted_key, evicted_value) in evicted {
+            warn!(tier = "ram", key = %evicted_key, "VRAM tensor store เต็ม — คัดถ่ายลง RAM");
+            self.put(evicted_key, evicted_value);
+        }
+
+        Ok(None)
+    }
+
+    /// ดึงเทนเซอร์จาก VRAM กลับลงมายัง RAM
+    ///
+    /// # Errors
+    /// คืน `ContextError::NotFound` หากไม่พบ key ใน VRAM
+    pub fn page_tensor_to_ram(&self, key: &str) -> Result<(Vec<u8>, Option<TensorMetadata>)> {
+        if let Some((value, meta)) = self.vram.write().remove(key) {
+            debug!(tier = "vram->ram", key = %key, "คัดถ่ายเทนเซอร์จาก VRAM ลง RAM");
+            self.put(key.to_string(), value.clone());
+            Ok((value, meta))
+        } else {
+            warn!(key = %key, "ไม่พบเทนเซอร์ใน VRAM");
+            Err(ContextError::NotFound)
+        }
+    }
+
+    /// ดู metadata ของเทนเซอร์ใน VRAM (ไม่นับเป็นการ access)
+    #[must_use]
+    pub fn get_tensor_metadata(&self, key: &str) -> Option<TensorMetadata> {
+        self.vram.read().get_metadata(key).cloned()
+    }
+
+    /// ดูจำนวนครั้งที่มีการเรียกใช้เทนเซอร์ใน VRAM
+    #[must_use]
+    pub fn get_tensor_access_count(&self, key: &str) -> u64 {
+        self.vram
+            .read()
+            .get_metadata(key)
+            .map(|m| m.access_count)
+            .unwrap_or(0)
+    }
+
+    /// รายชื่อคีย์ทั้งหมดใน VRAM ที่มี tensor metadata
+    #[must_use]
+    pub fn list_tensor_keys(&self) -> Vec<String> {
+        self.vram
+            .read()
+            .keys()
+            .iter()
+            .filter(|k| self.vram.read().get_metadata(k).is_some())
+            .map(|k| k.to_string())
+            .collect()
+    }
+
+    /// อัปเดต device pointer สำหรับเทนเซอร์ใน VRAM
+    pub fn update_tensor_device_ptr(&self, key: &str, device_ptr: u64) {
+        if let Some(meta) = self.vram.write().get_metadata_mut(key) {
+            meta.device_ptr = Some(device_ptr);
+        }
+    }
+
+    /// ขนาด VRAM ที่ถูกใช้งานโดยเทนเซอร์ทั้งหมด (ไบต์)
+    #[must_use]
+    pub fn tensor_allocated_bytes(&self) -> usize {
+        self.vram.read().allocated_bytes()
+    }
+
     /// ลบข้อมูลบริบทที่หมดอายุ (> ttl) ออกจากทุก tiers (VRAM, Hot, Warm, Cold)
     /// คืนจำนวนข้อมูลที่ถูกลบ
     #[instrument(skip(self), fields(ttl_ms = ttl.as_millis() as u64))]
@@ -708,6 +818,134 @@ mod tests {
     fn page_to_ram_nonexistent_returns_not_found() {
         let memory = ContextMemoryManager::new();
         assert_eq!(memory.page_to_ram("ghost"), Err(ContextError::NotFound));
+    }
+
+    // ── Tensor-Aware Paging Tests ──────────────────────────────────────
+
+    #[test]
+    fn page_tensor_to_vram_and_get_metadata() {
+        let memory = ContextMemoryManager::with_vram_and_capacity(1024, 2, 2);
+        let data = vec![0u8; 64];
+        memory.put("w", data.clone());
+        assert_eq!(memory.tier_of("w"), Some("hot"));
+
+        memory
+            .page_tensor_to_vram("w", vec![4, 4, 4], TensorDtype::F32, TensorDevice::Cuda)
+            .unwrap();
+        assert_eq!(memory.tier_of("w"), Some("vram"));
+
+        let meta = memory.get_tensor_metadata("w").unwrap();
+        assert_eq!(meta.shape, vec![4, 4, 4]);
+        assert_eq!(meta.dtype, TensorDtype::F32);
+        assert_eq!(meta.device, TensorDevice::Cuda);
+        assert_eq!(meta.size_bytes, 4 * 4 * 4 * 4);
+    }
+
+    #[test]
+    fn page_tensor_to_ram_returns_data_and_metadata() {
+        let memory = ContextMemoryManager::with_vram_and_capacity(1024, 2, 2);
+        memory.put("t", vec![1, 2, 3, 4]);
+        memory
+            .page_tensor_to_vram("t", vec![4], TensorDtype::U8, TensorDevice::Cpu)
+            .unwrap();
+
+        let (data, meta) = memory.page_tensor_to_ram("t").unwrap();
+        assert_eq!(data, vec![1, 2, 3, 4]);
+        let meta = meta.unwrap();
+        assert_eq!(meta.shape, vec![4]);
+        assert_eq!(meta.dtype, TensorDtype::U8);
+        assert_eq!(memory.tier_of("t"), Some("hot"));
+    }
+
+    #[test]
+    fn tensor_access_count_increments_on_get() {
+        let memory = ContextMemoryManager::with_vram_and_capacity(1024, 2, 2);
+        memory.put("freq", vec![0; 32]);
+        memory
+            .page_tensor_to_vram("freq", vec![8, 4], TensorDtype::F32, TensorDevice::Cuda)
+            .unwrap();
+
+        // access 3 times via get
+        memory.get("freq").unwrap();
+        memory.get("freq").unwrap();
+        memory.get("freq").unwrap();
+
+        assert_eq!(memory.get_tensor_access_count("freq"), 3);
+    }
+
+    #[test]
+    fn list_tensor_keys_filters_only_tensors() {
+        let memory = ContextMemoryManager::with_vram_and_capacity(1024, 2, 2);
+        memory.put("plain", vec![0; 16]);
+        memory.put("tensor1", vec![0; 16]);
+        memory.put("tensor2", vec![0; 16]);
+
+        memory.page_to_vram("plain").unwrap();
+        memory
+            .page_tensor_to_vram("tensor1", vec![4], TensorDtype::F32, TensorDevice::Cuda)
+            .unwrap();
+        memory
+            .page_tensor_to_vram("tensor2", vec![4], TensorDtype::F16, TensorDevice::Rocm)
+            .unwrap();
+
+        let tensor_keys = memory.list_tensor_keys();
+        assert!(tensor_keys.contains(&"tensor1".to_string()));
+        assert!(tensor_keys.contains(&"tensor2".to_string()));
+        assert!(!tensor_keys.contains(&"plain".to_string())); // no metadata
+    }
+
+    #[test]
+    fn update_tensor_device_ptr_changes_metadata() {
+        let memory = ContextMemoryManager::with_vram_and_capacity(1024, 2, 2);
+        memory.put("ptr-test", vec![0; 64]);
+        memory
+            .page_tensor_to_vram("ptr-test", vec![4, 4], TensorDtype::F32, TensorDevice::Cuda)
+            .unwrap();
+
+        memory.update_tensor_device_ptr("ptr-test", 0xDEAD_BEEF);
+        let meta = memory.get_tensor_metadata("ptr-test").unwrap();
+        assert_eq!(meta.device_ptr, Some(0xDEAD_BEEF));
+    }
+
+    #[test]
+    fn page_tensor_nonexistent_returns_not_found() {
+        let memory = ContextMemoryManager::new();
+        let result =
+            memory.page_tensor_to_vram("ghost", vec![1], TensorDtype::F32, TensorDevice::Cuda);
+        assert_eq!(result, Err(ContextError::NotFound));
+    }
+
+    #[test]
+    fn page_tensor_eviction_preserves_data() {
+        // VRAM capacity = 80 bytes — holds only one 64-byte tensor at a time
+        let memory = ContextMemoryManager::with_vram_and_capacity(80, 10, 10);
+
+        let data = vec![0u8; 64];
+        memory.put("a", data.clone());
+        memory.put("b", data.clone());
+        memory.put("c", data.clone());
+
+        // Page "a": 1 entry, 64/80 bytes
+        memory
+            .page_tensor_to_vram("a", vec![4, 4, 4], TensorDtype::F32, TensorDevice::Cuda)
+            .unwrap();
+        assert_eq!(memory.tier_of("a"), Some("vram"));
+
+        // Page "b": evicts "a" from VRAM (128 > 80), "b" takes its place
+        memory
+            .page_tensor_to_vram("b", vec![4, 4, 4], TensorDtype::F32, TensorDevice::Cuda)
+            .unwrap();
+        assert_eq!(memory.tier_of("b"), Some("vram"));
+        assert_eq!(memory.tier_of("a"), Some("hot")); // evicted to RAM
+
+        // Page "c": evicts "b" from VRAM, "c" takes its place
+        memory
+            .page_tensor_to_vram("c", vec![4, 4, 4], TensorDtype::F32, TensorDevice::Cuda)
+            .unwrap();
+
+        assert_eq!(memory.tier_of("c"), Some("vram"));
+        assert_eq!(memory.tier_of("b"), Some("hot")); // evicted to RAM
+        assert_eq!(memory.tier_of("a"), Some("hot")); // still in RAM
     }
 
     #[test]

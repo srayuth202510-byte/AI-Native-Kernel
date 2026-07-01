@@ -93,12 +93,16 @@ impl InferenceRuntime {
 pub enum NpuVendor {
     /// Intel Gaudi 2/3 (Habana Labs) — edge AI accelerator
     IntelGaudi,
+    /// Intel OpenVINO NPU — Lunar Lake / Arrow Lake integrated NPU
+    IntelOpenvino,
     /// Google TPU v4/v5e — cloud/edge AI
     GoogleTpu,
     /// Apple Neural Engine (ANE) — M1/M2/M3/M4 integrated NPU
     AppleSilicon,
     /// Qualcomm Hexagon DSP — mobile/edge AI
     QualcommHexagon,
+    /// Qualcomm QNN/HTP — Snapdragon X Elite NPU
+    QualcommQnn,
     /// AMD XDNA / Ryzen AI — PC/workstation NPU
     AmdXdna,
     /// Unknown or generic NPU
@@ -111,9 +115,11 @@ impl NpuVendor {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::IntelGaudi => "intel_gaudi",
+            Self::IntelOpenvino => "intel_openvino",
             Self::GoogleTpu => "google_tpu",
             Self::AppleSilicon => "apple_silicon",
             Self::QualcommHexagon => "qualcomm_hexagon",
+            Self::QualcommQnn => "qualcomm_qnn",
             Self::AmdXdna => "amd_xdna",
             Self::Generic => "generic",
         }
@@ -202,6 +208,30 @@ impl NpuProfile {
             power_watts: 15.0,
             cost_units: 8.0,
             tops: 48.0,
+            memory_gb: 0.0, // shared
+        }
+    }
+
+    /// โปรไฟล์สำหรับ Intel OpenVINO NPU (Lunar Lake / Arrow Lake)
+    #[must_use]
+    pub fn intel_openvino_npu() -> Self {
+        Self {
+            base_latency_ms: 6.0,
+            power_watts: 15.0,
+            cost_units: 3.0, // integrated, low marginal cost
+            tops: 40.0,
+            memory_gb: 0.0, // shared system memory
+        }
+    }
+
+    /// โปรไฟล์สำหรับ Qualcomm QNN/HTP NPU (Snapdragon X Elite)
+    #[must_use]
+    pub fn qualcomm_qnn_npu() -> Self {
+        Self {
+            base_latency_ms: 7.0,
+            power_watts: 18.0,
+            cost_units: 4.0,
+            tops: 45.0,
             memory_gb: 0.0, // shared
         }
     }
