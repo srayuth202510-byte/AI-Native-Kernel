@@ -26,6 +26,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
 fastrand = "2.3.0"
+notify = "7"
+sha2 = "0.10"
 
 [dev-dependencies]
 criterion = { workspace = true }

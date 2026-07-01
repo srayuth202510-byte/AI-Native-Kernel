@@ -6,6 +6,7 @@
 pub mod cold;
 pub mod fs;
 pub mod hot;
+pub mod indexer;
 pub mod p2p_mesh;
 pub mod semantic;
 pub mod swim;
@@ -18,6 +19,9 @@ use crate::p2p_mesh::P2PMeshManager;
 use crate::vram::VramStore;
 use crate::warm::WarmStore;
 pub use fs::{SemanticFile, SemanticFileSystem};
+pub use indexer::{
+    FileChange, IncrementalIndexer, IndexManifestEntry, IndexerEvent, ManifestStore,
+};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;

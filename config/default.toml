@@ -58,6 +58,11 @@ query_cache_capacity = 4096
 query_cache_ttl_ms = 300000
 query_cache_similarity_threshold = 0.85
 
+# Incremental Semantic Indexing — ดัชนีไฟล์เชิงความหมายแบบเพิ่มขึ้น
+incremental_indexing_enabled = true
+incremental_index_batch_window_ms = 500
+incremental_index_max_batch_size = 50
+
 [compute_scheduler]
 # To run without mock fallbacks for compute engines, set env ANK_COMPUTE_MOCK_FALLBACK=false
 default_mode = "throughput"

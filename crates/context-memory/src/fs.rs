@@ -65,6 +65,29 @@ impl SemanticFileSystem {
         })
     }
 
+    /// เขียนไฟล์ลงดิสก์โดยไม่ sync index (สำหรับ IncrementalIndexer)
+    /// ไฟล์จะถูก index โดย background indexer เมื่อมี file change event
+    #[instrument(skip(self, content), fields(path = %relative_path))]
+    pub async fn write_file_async(&self, relative_path: &str, content: &str) -> Result<()> {
+        let file_path = self.base_dir.join(relative_path);
+
+        // 1. ตรวจสอบและสร้างโฟลเดอร์สำหรับไฟล์ย่อย
+        if let Some(parent) = file_path.parent() {
+            timeout(SFS_IO_TIMEOUT, tokio_fs::create_dir_all(parent))
+                .await
+                .context("SFS: parent directory creation timeout")?
+                .context("Failed to create parent directories for file")?;
+        }
+
+        // 2. เขียนไฟล์จริงลงดิสก์ (ไม่ index — ปล่อยให้ IncrementalIndexer จัดการ)
+        timeout(SFS_IO_TIMEOUT, tokio_fs::write(&file_path, content))
+            .await
+            .context("SFS: file write timeout")?
+            .context("Failed to write physical file content")?;
+
+        Ok(())
+    }
+
     /// เขียนไฟล์ลงดิสก์และส่งข้อมูล Embedding ไปเก็บใน Qdrant
     /// สำหรับไฟล์ขนาดใหญ่ (> MAX_SINGLE_EMBED_SIZE) จะแบ่งเป็น chunks หลายจุด
     #[instrument(skip(self, content), fields(path = %relative_path))]
