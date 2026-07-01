@@ -5,10 +5,14 @@ pub mod vram_manager;
 
 /// โมดูลจัดการงบประมาณ VRAM แบบ per-agent (GpuBudgetController)
 pub mod budget;
+/// โมดูล CUDA Driver API FFI (cuMemAlloc/cuMemFree) สำหรับ NVIDIA GPU
+pub mod cuda_ffi;
 /// โมดูลจัดการ GPU memory pool สำหรับ CUDA/ROCm abstraction
 pub mod gpu_pool;
 /// โมดูลเชื่อมต่อ Apple MPS (Metal Performance Shaders) ผ่าน llama.cpp
 pub mod mps;
+/// โมดูล ROCm HIP FFI (hipMalloc/hipFree) สำหรับ AMD GPU
+pub mod rocm_ffi;
 /// โมดูลเชื่อมต่อ vLLM (subprocess engine สำหรับ NVIDIA + AMD ROCm)
 pub mod vllm;
 

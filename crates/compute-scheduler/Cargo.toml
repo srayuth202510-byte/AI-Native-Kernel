@@ -20,6 +20,7 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 fastrand = "2.3.0"
+libloading = "0.8"
 
 [dev-dependencies]
 criterion = { workspace = true }

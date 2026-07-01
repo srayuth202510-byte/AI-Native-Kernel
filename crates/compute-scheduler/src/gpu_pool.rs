@@ -1,6 +1,7 @@
+use crate::{cuda_ffi, rocm_ffi};
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// แพลตฟอร์ม GPU (สำหรับแยก CUDA vs ROCm)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -274,30 +275,44 @@ impl GpuMemoryPool {
             .count()
     }
 
-    // ── FFI placeholders for real GPU allocation ──────────────────────────
+    // ── Real GPU Allocation via FFI ───────────────────────────────────
 
-    /// จัดสรรหน่วยความจำ CUDA (FFI — placeholder)
+    /// จัดสรรหน่วยความจำ CUDA (FFI — libcuda.so)
     fn cuda_alloc(size: usize) -> Result<*mut std::ffi::c_void, PoolError> {
-        let _ = size;
-        Err(PoolError::CudaError("CUDA FFI not yet linked".to_string()))
+        match cuda_ffi::mem_alloc(size) {
+            Ok(ptr) => Ok(ptr as *mut std::ffi::c_void),
+            Err(e) => {
+                warn!("cuda_alloc failed: {e}");
+                Err(PoolError::CudaError(e))
+            }
+        }
     }
 
-    /// ปลดปล่อยหน่วยความจำ CUDA (FFI — placeholder)
-    fn cuda_free(_ptr: *mut std::ffi::c_void) {
-        debug!("CUDA free called (stub)");
+    /// ปลดปล่อยหน่วยความจำ CUDA (FFI — libcuda.so)
+    fn cuda_free(ptr: *mut std::ffi::c_void) {
+        match cuda_ffi::mem_free(ptr as u64) {
+            Ok(()) => debug!("CUDA free success"),
+            Err(e) => warn!("cuda_free failed: {e}"),
+        }
     }
 
-    /// จัดสรรหน่วยความจำ ROCm (FFI — placeholder)
+    /// จัดสรรหน่วยความจำ ROCm (FFI — libamdhip64.so)
     fn rocm_alloc(size: usize) -> Result<*mut std::ffi::c_void, PoolError> {
-        let _ = size;
-        Err(PoolError::RocmError(
-            "ROCm HIP FFI not yet linked".to_string(),
-        ))
+        match rocm_ffi::mem_alloc(size) {
+            Ok(ptr) => Ok(ptr as *mut std::ffi::c_void),
+            Err(e) => {
+                warn!("rocm_alloc failed: {e}");
+                Err(PoolError::RocmError(e))
+            }
+        }
     }
 
-    /// ปลดปล่อยหน่วยความจำ ROCm (FFI — placeholder)
-    fn rocm_free(_ptr: *mut std::ffi::c_void) {
-        debug!("ROCm free called (stub)");
+    /// ปลดปล่อยหน่วยความจำ ROCm (FFI — libamdhip64.so)
+    fn rocm_free(ptr: *mut std::ffi::c_void) {
+        match rocm_ffi::mem_free(ptr as u64) {
+            Ok(()) => debug!("ROCm free success"),
+            Err(e) => warn!("rocm_free failed: {e}"),
+        }
     }
 }
 
@@ -378,5 +393,24 @@ mod tests {
         assert_eq!(pool.free_bytes(), 1024);
         pool.allocate("x".into(), 256).unwrap();
         assert_eq!(pool.free_bytes(), 768);
+    }
+
+    #[test]
+    fn pool_real_mode_fallback_on_missing_library() {
+        // When no real CUDA/ROCm library is installed, real_mode should
+        // return a proper PoolError instead of panicking.
+        let cuda_pool = GpuMemoryPool::new(GpuPlatform::Cuda, 1024 * 1024, true);
+        match cuda_pool.allocate("cuda-real".into(), 4096) {
+            Err(PoolError::CudaError(_)) => {} // expected on machines without CUDA
+            Ok(_) => {} // also OK if CUDA is actually installed
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+
+        let rocm_pool = GpuMemoryPool::new(GpuPlatform::Rocm, 1024 * 1024, true);
+        match rocm_pool.allocate("rocm-real".into(), 4096) {
+            Err(PoolError::RocmError(_)) => {} // expected on machines without ROCm
+            Ok(_) => {} // also OK if ROCm is actually installed
+            Err(e) => panic!("unexpected error: {e}"),
+        }
     }
 }

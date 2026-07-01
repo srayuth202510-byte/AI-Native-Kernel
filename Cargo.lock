@@ -500,6 +500,7 @@ dependencies = [
  "async-trait",
  "criterion",
  "fastrand",
+ "libloading",
  "nvml-wrapper",
  "parking_lot",
  "reqwest",
