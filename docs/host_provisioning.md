@@ -120,6 +120,10 @@ Then run:
 The warm benchmark does not need kernel privileges, but it does need `libclang` because
 `rocksdb-warm` builds through `bindgen`.
 
+For the GitHub Actions self-hosted runner path, the runner account does not need to be
+`root`, but it does need passwordless `sudo` for privileged validation commands because
+the workflow elevates only the real attach step.
+
 ## Expected Success State
 
 `validate-ebpf` is ready when:

@@ -50,7 +50,7 @@ jobs:
           bash scripts/check-ebpf-prereqs.sh | tee target/ebpf-prereqs.log
 
       - name: Run privileged eBPF validation
-        run: bash scripts/run.sh validate-ebpf | tee target/ebpf-validation.log
+        run: bash scripts/run-privileged.sh bash scripts/run.sh validate-ebpf | tee target/ebpf-validation.log
 
       - name: Write workflow summary
         if: always()
