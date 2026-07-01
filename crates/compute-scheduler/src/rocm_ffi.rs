@@ -79,6 +79,65 @@ pub fn is_available() -> bool {
     get_hip_ctx().is_ok()
 }
 
+/// คัดลอกข้อมูลระหว่าง host ↔ device ด้วย ROCm HIP API (hipMemcpy)
+///
+/// `kind`: 0 = HostToDevice, 1 = DeviceToHost, 2 = DeviceToDevice
+///
+/// # Errors
+/// คืน `String` หากไม่สามารถโหลด HIP library หรือ hipMemcpy ล้มเหลว
+pub fn memcpy(dst: u64, src: u64, size: usize, kind: i32) -> Result<(), String> {
+    let ctx = get_hip_ctx()?;
+    let func: Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, usize, i32) -> u32> = unsafe {
+        ctx.lib
+            .get(b"hipMemcpy")
+            .map_err(|e| format!("symbol hipMemcpy not found: {e}"))?
+    };
+    let ret = unsafe { func(dst as *mut std::ffi::c_void, src as *const std::ffi::c_void, size, kind) };
+    if ret == HIP_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("hipMemcpy failed with error code {ret}"))
+    }
+}
+
+/// คัดลอกข้อมูลจาก host → device (hipMemcpyHtoD wrapper)
+///
+/// # Errors
+/// คืน `String` หากไม่สามารถโหลด HIP library หรือ hipMemcpy ล้มเหลว
+pub fn memcpy_htod(dst_ptr: u64, src: &[u8]) -> Result<(), String> {
+    let ctx = get_hip_ctx()?;
+    let func: Symbol<unsafe extern "C" fn(u64, *const std::ffi::c_void, usize) -> u32> = unsafe {
+        ctx.lib
+            .get(b"hipMemcpyHtoD")
+            .map_err(|e| format!("symbol hipMemcpyHtoD not found: {e}"))?
+    };
+    let ret = unsafe { func(dst_ptr, src.as_ptr() as *const std::ffi::c_void, src.len()) };
+    if ret == HIP_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("hipMemcpyHtoD failed with error code {ret}"))
+    }
+}
+
+/// คัดลอกข้อมูลจาก device → host (hipMemcpyDtoH wrapper)
+///
+/// # Errors
+/// คืน `String` หากไม่สามารถโหลด HIP library หรือ hipMemcpy ล้มเหลว
+pub fn memcpy_dtoh(dst: &mut [u8], src_ptr: u64) -> Result<(), String> {
+    let ctx = get_hip_ctx()?;
+    let func: Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, u64, usize) -> u32> = unsafe {
+        ctx.lib
+            .get(b"hipMemcpyDtoH")
+            .map_err(|e| format!("symbol hipMemcpyDtoH not found: {e}"))?
+    };
+    let ret = unsafe { func(dst.as_mut_ptr() as *mut std::ffi::c_void, src_ptr, dst.len()) };
+    if ret == HIP_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("hipMemcpyDtoH failed with error code {ret}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

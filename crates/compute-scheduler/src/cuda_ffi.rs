@@ -77,6 +77,44 @@ pub fn is_available() -> bool {
     get_cuda_ctx().is_ok()
 }
 
+/// คัดลอกข้อมูลจาก GPU device → host (cuMemcpyDtoH)
+///
+/// # Errors
+/// คืน `String` หากไม่สามารถโหลด CUDA library หรือ cuMemcpyDtoH ล้มเหลว
+pub fn memcpy_dtoh(dst: &mut [u8], src_ptr: u64) -> Result<(), String> {
+    let ctx = get_cuda_ctx()?;
+    let func: Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, u64, usize) -> u32> = unsafe {
+        ctx.lib
+            .get(b"cuMemcpyDtoH")
+            .map_err(|e| format!("symbol cuMemcpyDtoH not found: {e}"))?
+    };
+    let ret = unsafe { func(dst.as_mut_ptr() as *mut std::ffi::c_void, src_ptr, dst.len()) };
+    if ret == CUDA_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("cuMemcpyDtoH failed with error code {ret}"))
+    }
+}
+
+/// คัดลอกข้อมูลจาก host → GPU device (cuMemcpyHtoD)
+///
+/// # Errors
+/// คืน `String` หากไม่สามารถโหลด CUDA library หรือ cuMemcpyHtoD ล้มเหลว
+pub fn memcpy_htod(dst_ptr: u64, src: &[u8]) -> Result<(), String> {
+    let ctx = get_cuda_ctx()?;
+    let func: Symbol<unsafe extern "C" fn(u64, *const std::ffi::c_void, usize) -> u32> = unsafe {
+        ctx.lib
+            .get(b"cuMemcpyHtoD")
+            .map_err(|e| format!("symbol cuMemcpyHtoD not found: {e}"))?
+    };
+    let ret = unsafe { func(dst_ptr, src.as_ptr() as *const std::ffi::c_void, src.len()) };
+    if ret == CUDA_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("cuMemcpyHtoD failed with error code {ret}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
