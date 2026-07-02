@@ -90,6 +90,13 @@ pub async fn start_uds_server(
                 accept_res = timeout(UDS_TIMEOUT, listener.accept()) => {
                     match accept_res {
                         Ok(Ok((mut socket, addr))) => {
+                            if let Some(ref auth) = authenticator {
+                                let cleaned = auth.cleanup_expired_sessions();
+                                if cleaned > 0 {
+                                    debug!("Cleaned up {} expired UDS sessions", cleaned);
+                                }
+                            }
+
                             let authenticated = match auth_manager.as_ref() {
                                 Some(_) => match check_socket_permissions(&mut socket).await {
                                     Ok(true) => true,
