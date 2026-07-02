@@ -65,4 +65,5 @@ rather than a concrete `bpftool` package.
 
 - Real attach often requires `root` or capabilities such as `CAP_BPF`, `CAP_SYS_ADMIN`, and `CAP_PERFMON`
 - LSM attach may still fail if the running kernel does not expose `bpf` in `/sys/kernel/security/lsm`
-- If prerequisites are missing, the project falls back to simulation mode by design
+- If prerequisites are missing, the project falls back to simulation mode by design. The daemon runs **automated pre-flight diagnostics** at startup to determine the recommended mode and prints actionable remediation logs if checks fail.
+- When capability security is active, command communication over UDS uses **Zero-Trust Token Authorization**. The client tools (`ank-cli` and `ank-tui`) automatically load session credentials from `$XDG_RUNTIME_DIR/ank/session.token` (or `/tmp/ank-session-{uid}.token` fallback) to complete the cryptographic `auth` handshake.
