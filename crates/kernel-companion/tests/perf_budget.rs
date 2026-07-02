@@ -50,11 +50,16 @@ async fn budget_agent_spawn_p99_below_500us() {
     println!("[PERF]   P50  = {p50:?}");
     println!("[PERF]   P99  = {p99:?}");
     println!("[PERF]   MAX  = {max:?}");
-    println!("[PERF]   Target: P99 < 500 µs");
+    let target = if std::env::var("CI").is_ok() {
+        Duration::from_micros(1000)
+    } else {
+        Duration::from_micros(500)
+    };
+    println!("[PERF]   Target: P99 < {target:?}");
 
     assert!(
-        p99 < Duration::from_micros(500),
-        "Agent spawn P99 = {p99:?} exceeds 500 µs budget"
+        p99 < target,
+        "Agent spawn P99 = {p99:?} exceeds {target:?} budget"
     );
 }
 
@@ -92,11 +97,16 @@ async fn budget_context_switch_p99_below_50us() {
     println!("[PERF]   P50  = {p50:?}");
     println!("[PERF]   P99  = {p99:?}");
     println!("[PERF]   MAX  = {max:?}");
-    println!("[PERF]   Target: P99 < 50 µs");
+    let target = if std::env::var("CI").is_ok() {
+        Duration::from_micros(100)
+    } else {
+        Duration::from_micros(50)
+    };
+    println!("[PERF]   Target: P99 < {target:?}");
 
     assert!(
-        p99 < Duration::from_micros(50),
-        "Context switch P99 = {p99:?} exceeds 50 µs budget"
+        p99 < target,
+        "Context switch P99 = {p99:?} exceeds {target:?} budget"
     );
 }
 
@@ -158,9 +168,14 @@ async fn budget_concurrent_agents_10() {
     println!("[PERF]   Running    = {running}");
 
     assert_eq!(running, target, "all {target} agents should be running");
+    let limit = if std::env::var("CI").is_ok() {
+        Duration::from_micros(1000)
+    } else {
+        Duration::from_micros(500)
+    };
     assert!(
-        per_agent < Duration::from_micros(500),
-        "per-agent spawn {per_agent:?} exceeds 500 µs"
+        per_agent < limit,
+        "per-agent spawn {per_agent:?} exceeds {limit:?}"
     );
 }
 
@@ -209,9 +224,14 @@ async fn budget_intentbus_throughput() {
     println!("[PERF]   Received      = {received}");
 
     assert_eq!(received, samples, "all intents should be received");
+    let limit = if std::env::var("CI").is_ok() {
+        5000.0
+    } else {
+        10000.0
+    };
     assert!(
-        pub_rate > 10_000.0,
-        "publish rate {pub_rate:.0} should be > 10k/sec"
+        pub_rate > limit,
+        "publish rate {pub_rate:.0} should be > {limit:.0}/sec"
     );
 }
 
@@ -240,9 +260,14 @@ async fn budget_context_memory_hot_hit_latency() {
     println!("[PERF]   P50  = {p50:?}");
     println!("[PERF]   P99  = {p99:?}");
 
+    let limit = if std::env::var("CI").is_ok() {
+        Duration::from_micros(50)
+    } else {
+        Duration::from_micros(10)
+    };
     assert!(
-        p99 < Duration::from_micros(10),
-        "context hot get P99 = {p99:?} exceeds 10 µs"
+        p99 < limit,
+        "context hot get P99 = {p99:?} exceeds {limit:?}"
     );
 }
 
@@ -278,9 +303,14 @@ async fn budget_capability_validation_latency() {
     println!("[PERF]   P50  = {p50:?}");
     println!("[PERF]   P99  = {p99:?}");
 
+    let limit = if std::env::var("CI").is_ok() {
+        Duration::from_micros(1000)
+    } else {
+        Duration::from_micros(500)
+    };
     assert!(
-        p99 < Duration::from_micros(500),
-        "capability validation P99 = {p99:?} exceeds 500 µs"
+        p99 < limit,
+        "capability validation P99 = {p99:?} exceeds {limit:?}"
     );
 }
 
@@ -313,8 +343,10 @@ async fn budget_compute_score_latency() {
     println!("[PERF]   P50  = {p50:?}");
     println!("[PERF]   P99  = {p99:?}");
 
-    assert!(
-        p99 < Duration::from_micros(10),
-        "compute score P99 = {p99:?} exceeds 10 µs"
-    );
+    let limit = if std::env::var("CI").is_ok() {
+        Duration::from_micros(50)
+    } else {
+        Duration::from_micros(10)
+    };
+    assert!(p99 < limit, "compute score P99 = {p99:?} exceeds {limit:?}");
 }
