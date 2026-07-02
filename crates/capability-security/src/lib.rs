@@ -4,6 +4,7 @@ pub mod audit;
 pub mod metrics;
 pub mod policy;
 pub mod token;
+pub mod uds_auth;
 
 pub use metrics::{SecurityMetrics, render_metrics};
 

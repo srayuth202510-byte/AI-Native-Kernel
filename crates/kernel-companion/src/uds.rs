@@ -71,6 +71,13 @@ pub async fn start_uds_server(
     let context_memory = context_memory.clone();
     let p2p_mesh = p2p_mesh.clone();
 
+    let authenticator = auth_manager.as_ref().map(|mgr| {
+        Arc::new(capability_security::uds_auth::UdsAuthenticator::new(
+            Arc::clone(mgr),
+            Duration::from_secs(300),
+        ))
+    });
+
     let task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -106,19 +113,104 @@ pub async fn start_uds_server(
                                 let compute_scheduler = compute_scheduler.clone();
                                 let context_memory = context_memory.clone();
                                 let p2p_mesh = p2p_mesh.clone();
+                                let authenticator = authenticator.clone();
 
-                            tokio::spawn(async move {
-                                let (reader, mut writer) = socket.split();
-                                let mut buf_reader = BufReader::new(reader);
-                                let mut line = String::new();
+                                let creds = getsockopt(&socket, PeerCredentials).ok();
+                                let (peer_uid, peer_pid) = match creds {
+                                    Some(c) => (c.uid(), c.pid() as u32),
+                                    None => (0, 0),
+                                };
 
-                                loop {
-                                    line.clear();
-                                    match timeout(UDS_TIMEOUT, buf_reader.read_line(&mut line)).await {
-                                        Ok(Ok(0)) => break, // EOF
-                                        Ok(Ok(_)) => {
-                                            if let Ok(intent) = serde_json::from_str::<Intent>(&line) {
-                                                debug!("Received intent via UDS: {:?}", intent.id);
+                                tokio::spawn(async move {
+                                    let (reader, mut writer) = socket.split();
+                                    let mut buf_reader = BufReader::new(reader);
+                                    let mut line = String::new();
+                                    let mut connection_session_id: Option<u64> = None;
+
+                                    loop {
+                                        line.clear();
+                                        match timeout(UDS_TIMEOUT, buf_reader.read_line(&mut line)).await {
+                                            Ok(Ok(0)) => break, // EOF
+                                            Ok(Ok(_)) => {
+                                                if let Ok(intent) = serde_json::from_str::<Intent>(&line) {
+                                                    debug!("Received intent via UDS: {:?}", intent.id);
+
+                                                    // ── Zero-Trust authorization check ──
+                                                    if let Some(ref auth) = authenticator {
+                                                        if intent.intent_type == IntentType::Command && intent.payload == "auth" {
+                                                            let token_id_opt = intent.metadata.get("token_id").and_then(|t| t.parse::<u64>().ok());
+                                                            let secret_hex_opt = intent.metadata.get("secret");
+
+                                                            let mut auth_success = false;
+                                                            let mut msg = String::from("Missing token_id or secret");
+                                                            let mut new_sess_id = 0;
+
+                                                            if let (Some(token_id), Some(secret_hex)) = (token_id_opt, secret_hex_opt) {
+                                                                if let Some(secret_bytes) = hex_to_bytes(secret_hex) {
+                                                                    match auth.authenticate(peer_uid, peer_pid, token_id, &secret_bytes).await {
+                                                                        Ok(session) => {
+                                                                            auth_success = true;
+                                                                            new_sess_id = session.session_id;
+                                                                            connection_session_id = Some(session.session_id);
+                                                                            msg = String::from("Authenticated successfully");
+                                                                        }
+                                                                        Err(e) => {
+                                                                            msg = e.to_string();
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    msg = String::from("Invalid secret hex format");
+                                                                }
+                                                            }
+
+                                                            let response = serde_json::json!({
+                                                                "success": auth_success,
+                                                                "session_id": new_sess_id,
+                                                                "message": msg,
+                                                            });
+                                                            let resp_json = format!("{}\n", response);
+                                                            let _ = timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes())).await;
+                                                            let _ = timeout(UDS_TIMEOUT, writer.flush()).await;
+                                                            continue;
+                                                        } else {
+                                                            let sess_id_opt = intent.metadata.get("session_id")
+                                                                .and_then(|s| s.parse::<u64>().ok())
+                                                                .or(connection_session_id);
+
+                                                            if let Some(sess_id) = sess_id_opt {
+                                                                let cmd_name = if intent.intent_type == IntentType::Command {
+                                                                    intent.payload.as_str()
+                                                                } else {
+                                                                    "spawn-agent"
+                                                                };
+
+                                                                match auth.authorize_command(sess_id, cmd_name) {
+                                                                    Ok(_) => {
+                                                                        // Authorized, proceed to execute
+                                                                    }
+                                                                    Err(e) => {
+                                                                        let response = serde_json::json!({
+                                                                            "success": false,
+                                                                            "message": format!("Unauthorized: {e}"),
+                                                                        });
+                                                                        let resp_json = format!("{}\n", response);
+                                                                        let _ = timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes())).await;
+                                                                        let _ = timeout(UDS_TIMEOUT, writer.flush()).await;
+                                                                        continue;
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                let response = serde_json::json!({
+                                                                    "success": false,
+                                                                    "message": "Unauthorized: Session token required. Perform 'auth' handshake first.",
+                                                                });
+                                                                let resp_json = format!("{}\n", response);
+                                                                let _ = timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes())).await;
+                                                                let _ = timeout(UDS_TIMEOUT, writer.flush()).await;
+                                                                continue;
+                                                            }
+                                                        }
+                                                    }
 
                                                 // ตรวจจับคำสั่งดึงข้อมูล หรือควบคุมความปลอดภัยของ CLI
                                                 if intent.intent_type == IntentType::Command {
@@ -344,6 +436,18 @@ async fn check_socket_permissions(socket: &mut tokio::net::UnixStream) -> Result
 
     info!("UDS authentication succeeded for uid={}, gid={}", uid, gid);
     Ok(true)
+}
+
+fn hex_to_bytes(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for i in 0..32 {
+        let byte_str = &hex[i * 2..i * 2 + 2];
+        bytes[i] = u8::from_str_radix(byte_str, 16).ok()?;
+    }
+    Some(bytes)
 }
 
 #[cfg(test)]

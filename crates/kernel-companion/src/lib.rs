@@ -27,6 +27,7 @@ use tokio::task;
 use tokio::task::JoinHandle;
 use tracing::{info, instrument, warn};
 
+pub mod capability_detect;
 pub mod cognitive;
 /// โมดูล `config` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `config` จัดการระบบย่อยที่เกี่ยวข้อง
@@ -302,10 +303,23 @@ impl KernelCompanion {
     pub async fn boot(&mut self) -> anyhow::Result<()> {
         info!("KernelCompanion กำลัง boot");
 
+        // ตรวจสอบความสามารถของระบบและ Kernel (Capability Pre-flight Checks)
+        let diags = capability_detect::KernelCapabilityDetector::diagnose();
+        capability_detect::KernelCapabilityDetector::log_diagnostics(&diags);
+        let recommended_mode = capability_detect::KernelCapabilityDetector::recommended_mode(
+            &capability_detect::KernelCapabilityDetector::detect(),
+        );
+        info!("Recommended Deployment Mode: {}", recommended_mode);
+
         // แนบ LSM Hook เข้ากับระบบ Kernel หากยังไม่ได้ดำเนินการ
         {
             let mut attachment_lock = self.attachment.lock();
             if attachment_lock.is_none() {
+                if recommended_mode.is_simulation() {
+                    warn!(
+                        "ระบบจะรันระบบความปลอดภัยในรูปแบบ Simulation Mode เนื่องจากข้อจำกัดของระบบ host"
+                    );
+                }
                 *attachment_lock = Some(attach_lsm_hooks(Arc::clone(&self.lsm_engine))?);
                 info!("LSM Hooks แนบสำเร็จ");
             }

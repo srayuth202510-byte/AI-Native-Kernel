@@ -168,6 +168,62 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("Failed to connect to UDS at {}", socket_path))?;
 
+    let mut session_id: Option<u64> = None;
+
+    if let Ok((token_id, secret)) = capability_security::uds_auth::load_token_file() {
+        let mut auth_intent = Intent::new(
+            uuid::Uuid::new_v4().to_string(),
+            IntentType::Command,
+            "auth",
+            IntentPriority::High,
+            "ank-cli",
+        );
+        auth_intent
+            .metadata
+            .insert("token_id".to_string(), token_id.to_string());
+
+        let mut secret_hex = String::with_capacity(64);
+        for &b in &secret {
+            secret_hex.push_str(&format!("{:02x}", b));
+        }
+        auth_intent
+            .metadata
+            .insert("secret".to_string(), secret_hex);
+
+        {
+            let auth_json = serde_json::to_string(&auth_intent)?;
+            stream.write_all(auth_json.as_bytes()).await?;
+            stream.write_all(b"\n").await?;
+            stream.flush().await?;
+
+            let mut buf_reader = BufReader::new(&mut stream);
+            let mut auth_response = String::new();
+            if buf_reader.read_line(&mut auth_response).await? > 0 {
+                if let Ok(json_resp) = serde_json::from_str::<serde_json::Value>(&auth_response) {
+                    if json_resp["success"].as_bool().unwrap_or(false) {
+                        session_id = json_resp["session_id"].as_u64();
+                    } else {
+                        let msg = json_resp["message"].as_str().unwrap_or("Unknown error");
+                        eprintln!("ข้อผิดพลาดการยืนยันตัวตน Zero-Trust: {}", msg);
+                        std::process::exit(1);
+                    }
+                } else {
+                    eprintln!("ล้มเหลวในการอ่านผลการตรวจสอบสิทธิ์");
+                    std::process::exit(1);
+                }
+            } else {
+                eprintln!("ไม่ได้รับการตอบกลับจากเซิร์ฟเวอร์ในขั้นตอนตรวจสอบสิทธิ์");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(sess_id) = session_id {
+        intent
+            .metadata
+            .insert("session_id".to_string(), sess_id.to_string());
+    }
+
     // แปลง Intent เป็น JSON และส่งไปทางซ็อกเก็ต
     let json = serde_json::to_string(&intent)?;
     stream.write_all(json.as_bytes()).await?;

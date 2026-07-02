@@ -78,13 +78,74 @@ async fn fetch_status() -> Result<DashboardData, String> {
         .await
         .map_err(|e| format!("Connection failed to UDS at {}: {}", socket_path, e))?;
 
-    let intent = Intent::new(
+    let mut session_id: Option<u64> = None;
+
+    if let Ok((token_id, secret)) = capability_security::uds_auth::load_token_file() {
+        let mut auth_intent = Intent::new(
+            uuid::Uuid::new_v4().to_string(),
+            IntentType::Command,
+            "auth",
+            IntentPriority::High,
+            "ank-tui",
+        );
+        auth_intent
+            .metadata
+            .insert("token_id".to_string(), token_id.to_string());
+
+        let mut secret_hex = String::with_capacity(64);
+        for &b in &secret {
+            secret_hex.push_str(&format!("{:02x}", b));
+        }
+        auth_intent
+            .metadata
+            .insert("secret".to_string(), secret_hex);
+
+        {
+            let auth_json = serde_json::to_string(&auth_intent).map_err(|e| e.to_string())?;
+            stream
+                .write_all(auth_json.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            stream.write_all(b"\n").await.map_err(|e| e.to_string())?;
+            stream.flush().await.map_err(|e| e.to_string())?;
+
+            let mut buf_reader = BufReader::new(&mut stream);
+            let mut auth_response = String::new();
+            if buf_reader
+                .read_line(&mut auth_response)
+                .await
+                .map_err(|e| e.to_string())?
+                > 0
+            {
+                if let Ok(json_resp) = serde_json::from_str::<serde_json::Value>(&auth_response) {
+                    if json_resp["success"].as_bool().unwrap_or(false) {
+                        session_id = json_resp["session_id"].as_u64();
+                    } else {
+                        let msg = json_resp["message"].as_str().unwrap_or("Unknown error");
+                        return Err(format!("Zero-Trust Authentication failed: {msg}"));
+                    }
+                } else {
+                    return Err("Failed to parse authentication response".to_string());
+                }
+            } else {
+                return Err("No response from server during authentication handshake".to_string());
+            }
+        }
+    }
+
+    let mut intent = Intent::new(
         "tui-status",
         IntentType::Command,
         "status",
         IntentPriority::High,
         "ank-tui",
     );
+
+    if let Some(sess_id) = session_id {
+        intent
+            .metadata
+            .insert("session_id".to_string(), sess_id.to_string());
+    }
 
     let json_str = serde_json::to_string(&intent).map_err(|e| e.to_string())?;
     stream
