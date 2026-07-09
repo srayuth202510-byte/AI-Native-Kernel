@@ -146,6 +146,7 @@ async fn int_lsm_fail_closed_updates_pid_allowlist_from_token_validation() {
     config.kernel_companion.uds_socket_path =
         format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
     config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    config.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
     let mut companion = kernel_companion::KernelCompanion::with_config(&config);
     companion.boot().await.expect("boot should succeed");
 
@@ -699,6 +700,7 @@ async fn int_nlp_to_compute_placement_pipeline() {
     config.kernel_companion.uds_socket_path =
         format!("/tmp/nlp-test-{}.sock", uuid::Uuid::new_v4());
     config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    config.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
 
     let mut companion = kernel_companion::KernelCompanion::with_config(&config);
     companion.boot().await.expect("boot should succeed");
@@ -763,6 +765,7 @@ async fn int_p2p_mesh_discovery_pipeline() {
     config_a.context_memory.p2p_enabled = true;
     config_a.context_memory.p2p_listen_addr = format!("127.0.0.1:{}", port_a);
     config_a.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    config_a.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
 
     let mut config_b = kernel_companion::config::Config::default();
     config_b.kernel_companion.uds_socket_path =
@@ -771,6 +774,7 @@ async fn int_p2p_mesh_discovery_pipeline() {
     config_b.context_memory.p2p_listen_addr = format!("127.0.0.1:{}", port_b);
     config_b.context_memory.p2p_bootstrap_nodes = vec![format!("127.0.0.1:{}", port_a)];
     config_b.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    config_b.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
 
     // Boot Node A
     let mut companion_a = kernel_companion::KernelCompanion::with_config(&config_a);
@@ -820,6 +824,7 @@ async fn int_lsm_token_revocation_and_expiration_propagation() {
     config.kernel_companion.uds_socket_path =
         format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
     config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    config.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
     let mut companion = kernel_companion::KernelCompanion::with_config(&config);
     companion.boot().await.expect("boot should succeed");
 
@@ -881,6 +886,7 @@ async fn int_polymorphic_agent_dna_and_lsm_mutation() {
     config.kernel_companion.uds_socket_path =
         format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
     config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    config.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
     let mut companion = kernel_companion::KernelCompanion::with_config(&config);
     companion.boot().await.expect("boot should succeed");
 

@@ -8,6 +8,24 @@ Use this before expecting `kernel-companion` to attach real tracepoints or LSM h
 ./scripts/check-ebpf-prereqs.sh
 ```
 
+## Privileged Attach Validation (fail-closed)
+
+Confirms the companion attaches **real** eBPF/LSM into the kernel with simulation
+fallback disabled — not just that the build prerequisites exist. It boots the
+daemon with `--no-bpf-fallback`, scrapes the metrics endpoint until both the
+syscall tracer and LSM hook report `ank_ebpf_active_mode{mode="real"} 1`, then
+shuts down and prints PASS/FAIL.
+
+```bash
+sudo ./scripts/validate-ebpf-attach.sh
+# options: --metrics-port N   --timeout SECS   --skip-prereqs   --binary PATH
+```
+
+Exit code `0` means real attach was validated. On a host without privileges or
+kernel prerequisites it exits non-zero — which is correct: with fallback
+disabled the daemon must refuse to run enforcement in userspace simulation
+(this applies to **both** the tracer and the LSM hook).
+
 For a full privileged validation pass on a host with the required kernel capabilities:
 
 ```bash

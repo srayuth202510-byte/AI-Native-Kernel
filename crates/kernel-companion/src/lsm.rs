@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 /// ข้อผิดพลาดของการควบคุม LSM (Linux Security Module)
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -445,19 +445,33 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
 
 /// ฟังก์ชันหลักสำหรับแนบ LSM Hook เข้ากับ Linux Kernel
 ///
-/// พยายามแนบ real LSM eBPF hooks ก่อน หากล้มเหลวจะ fallback เป็นโหมดจำลอง
-/// ในโหมดจำลอง `LsmPolicyEngine` ยังคงทำงานใน userspace สำหรับการตัดสินใจ
+/// พยายามแนบ real LSM eBPF hooks ก่อน หากล้มเหลว:
+/// - `enable_fallback == true`  → fallback เป็นโหมดจำลอง (userspace policy engine)
+/// - `enable_fallback == false` → fail closed (คืน error) เพื่อไม่ให้ production ที่สั่ง
+///   `--no-bpf-fallback` แอบรัน enforcement ใน userspace โดยไม่รู้ตัว
+///   (ต้องสอดคล้องกับ tracer path ที่เคารพ flag เดียวกัน)
 ///
 /// # Errors
 ///
-/// ส่งคืนข้อผิดพลาดหากทั้ง real mode และ simulation mode ล้มเหลว
+/// ส่งคืน `LsmError::AttachmentFailed` หาก real attach ล้มเหลวและ `enable_fallback == false`
 #[instrument(skip(engine))]
-pub fn attach_lsm_hooks(engine: Arc<LsmPolicyEngine>) -> Result<LsmAttachment> {
+pub fn attach_lsm_hooks(
+    engine: Arc<LsmPolicyEngine>,
+    enable_fallback: bool,
+) -> Result<LsmAttachment> {
     let metrics = kernel_metrics();
     match try_attach_real_lsm(&engine) {
         Ok(attachment) => {
             info!("LSM hooks: real eBPF mode — kernel-level enforcement active");
             Ok(attachment)
+        }
+        Err(e) if !enable_fallback => {
+            metrics.record_attach_attempt("lsm", "failed");
+            error!(
+                error = %e,
+                "LSM real eBPF attachment failed and fallback is disabled — refusing to run in userspace simulation"
+            );
+            Err(LsmError::AttachmentFailed.into())
         }
         Err(e) => {
             metrics.record_attach_attempt("lsm", "fallback");
@@ -528,6 +542,39 @@ mod tests {
         assert!(attachment.is_attached(), "ควรแนบสำเร็จตอนสร้าง");
         attachment.detach();
         assert!(!attachment.is_attached(), "ควรไม่แนบหลังจาก detach()");
+    }
+
+    #[test]
+    fn attach_fails_closed_when_fallback_disabled_without_privileges() {
+        // ในสภาพแวดล้อมทดสอบ (ไม่มี CAP_BPF) real attach จะล้มเหลวเสมอ
+        // enable_fallback = false ต้องคืน error ไม่ใช่แอบ degrade เป็น simulation
+        // (ถ้ารันบน host ที่ attach จริงได้ จะได้ Ok(real) ซึ่งก็ถูกต้องเช่นกัน)
+        let engine = Arc::new(LsmPolicyEngine::new());
+        match attach_lsm_hooks(engine, false) {
+            Err(e) => {
+                // fail-closed ตามคาดในเครื่องไม่มีสิทธิ์ — ต้องเป็น AttachmentFailed
+                assert!(
+                    matches!(
+                        e.downcast_ref::<LsmError>(),
+                        Some(LsmError::AttachmentFailed)
+                    ),
+                    "expected LsmError::AttachmentFailed, got: {e}"
+                );
+            }
+            Ok(attachment) => assert!(
+                attachment.is_real(),
+                "with fallback disabled, a returned attachment must be REAL, never simulation"
+            ),
+        }
+    }
+
+    #[test]
+    fn attach_falls_back_to_simulation_when_enabled() {
+        // enable_fallback = true → บนเครื่องไม่มีสิทธิ์ต้องได้ simulation attachment (Ok)
+        let engine = Arc::new(LsmPolicyEngine::new());
+        let attachment =
+            attach_lsm_hooks(engine, true).expect("fallback enabled must never error out");
+        assert!(attachment.is_attached());
     }
 
     #[test]
@@ -638,7 +685,8 @@ mod tests {
     #[test]
     fn validate_lsm_full_attachment_lifecycle() {
         let engine = Arc::new(LsmPolicyEngine::new());
-        let mut attachment = match attach_lsm_hooks(engine) {
+        // enable_fallback = true → บนเครื่องไม่มีสิทธิ์จะได้ simulation attachment (ไม่ error)
+        let mut attachment = match attach_lsm_hooks(engine, true) {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("SKIP validate_lsm_full_attachment_lifecycle: {e}");

@@ -320,7 +320,10 @@ impl KernelCompanion {
                         "ระบบจะรันระบบความปลอดภัยในรูปแบบ Simulation Mode เนื่องจากข้อจำกัดของระบบ host"
                     );
                 }
-                *attachment_lock = Some(attach_lsm_hooks(Arc::clone(&self.lsm_engine))?);
+                *attachment_lock = Some(attach_lsm_hooks(
+                    Arc::clone(&self.lsm_engine),
+                    self.config.ebpf.enable_fallback,
+                )?);
                 info!("LSM Hooks แนบสำเร็จ");
             }
         }
@@ -1334,6 +1337,7 @@ mod tests {
         config.kernel_companion.uds_socket_path =
             format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
         config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+        config.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
         let mut companion = KernelCompanion::with_config(&config);
 
         companion.boot().await.expect("boot should succeed");
@@ -1349,6 +1353,7 @@ mod tests {
         config.kernel_companion.uds_socket_path =
             format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
         config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+        config.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
         let mut companion = KernelCompanion::with_config(&config);
 
         companion.boot().await.expect("first boot should succeed");
