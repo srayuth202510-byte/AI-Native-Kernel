@@ -26,3 +26,9 @@ target/
 /.zig-cache/
 /.zig-global-cache/
 
+
+# cargo-fuzz generated artifacts (corpus seeds + crash artifacts)
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+/fuzz/target/
