@@ -9,7 +9,9 @@ The AI-Native Kernel is a hybrid companion to the Linux kernel that provides AI-
 The repository is in **Phase 2** with a fully validated workspace.
 
 - 7 workspace crates (`kernel-companion`, `agent-scheduler`, `intent-bus`, `context-memory`, `compute-scheduler`, `capability-security`, `immune-system`) — all compile with zero warnings.
-- **244/244 tests pass**, 4 ignored (Qdrant-backed, require external endpoint).
+- **469/469 tests pass** (unit + integration + property + chaos), 4 ignored (Qdrant-backed, require external endpoint). 7 fuzz targets compile; benchmarks cover every crate.
+- **Measured performance (2026-07-09):** agent spawn ~13µs (budget 500µs), policy decision + audit ~12µs (budget 1ms), TCell syscall observation ~136ns/event, grant_capability ~81µs.
+- **No panic paths in production code** — fallible constructors return `Result`, poisoned locks recover, audit writes fail gracefully with handle recovery.
 - **eBPF/LSM**: Real Aya-based syscall tracer with prebuilt BPF objects, LSM policy engine, runtime allowlist, and simulation fallback for non-privileged hosts.
 - **P2P Context Mesh**: Gossip-based distributed context sync over TCP with trust scoring and conflict resolution.
 - **VRAM Paging**: GPU/NPU VRAM tier with LRU eviction and bidirectional page-in/page-out.
@@ -52,6 +54,7 @@ Hardware (CPU / GPU / NPU / NVMe)
 - [Async Patterns](async-patterns.md)
 - [Error Handling](error-handling.md)
 - [Functions, Relationships, and Errors](functions-and-errors.md)
+- **[🗺️ Function Map — per-function notes with graph relationships](functions/00-Function-Map.md)**
 
 ## Components
 

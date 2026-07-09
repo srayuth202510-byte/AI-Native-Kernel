@@ -2,6 +2,9 @@
 
 เอกสารนี้รวบรวมรายละเอียดของฟังก์ชันทั้งหมดในระบบ ความสัมพันธ์ในการทำงานร่วมกัน (Data & Call Flow) และโครงสร้างการจัดการข้อผิดพลาด (Error Handling) ของโครงการ **AI-Native Kernel (Prototype Phase 1)** เพื่อให้เห็นภาพรวมเชิงสถาปัตยกรรมแบบบูรณาการ
 
+> [!tip] Note รายฟังก์ชันพร้อม Graph View
+> ดู [[00-Function-Map]] — note แยกรายฟังก์ชันพร้อม wikilink ความสัมพันธ์ (callers/callees), invariants, performance ที่วัดจริง — เปิด Graph View เพื่อเห็นความสัมพันธ์ทั้งระบบ
+
 ---
 
 ## 1. สารระบบฟังก์ชันแยกตามโมดูล (Function Registry by Crate)

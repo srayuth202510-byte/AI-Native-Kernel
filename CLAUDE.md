@@ -69,16 +69,23 @@ ai-native-kernel/
 │   ├── capability-security/   # CapabilityToken + LSM policy + audit
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── token.rs       # CapabilityToken, Scope
+│   │       ├── token.rs       # CapabilityToken, Scope (constant-time eq)
 │   │       ├── policy.rs      # Policy decision point (fail-DENY)
-│   │       └── audit.rs       # WORM audit logger
+│   │       ├── audit.rs       # WORM audit logger (hash chain, tail-read)
+│   │       └── uds_auth.rs    # Zero-trust UDS command auth
+│   ├── immune-system/         # White Blood Cell Agents
+│   │   └── src/
+│   │       ├── tcell.rs       # Anomaly detection + quarantine/kill (DashMap hot path)
+│   │       ├── bcell.rs       # Pattern learning + antibody (LSM rule) generation
+│   │       ├── macrophage.rs  # Garbage collection
+│   │       └── cytokine.rs    # Critical broadcast signals
 │   └── intent-bus/            # Intent capture + event loop
 │       └── src/lib.rs
-├── tests/
-│   ├── integration/           # End-to-end pipeline tests
-│   ├── fuzz/                  # cargo-fuzz targets
-│   └── fixtures/              # Shared test data
-├── benches/                   # Criterion benchmarks
+│   # แต่ละ crate มี tests/ (integration, property, chaos) และ benches/ ของตัวเอง
+├── fuzz/                      # cargo-fuzz targets (7 ตัว, excluded from workspace,
+│                              #   ต้องใช้ cargo-fuzz + nightly)
+├── obsidian_vault/            # Documentation vault (function notes + relationships)
+│   └── functions/             # Note รายฟังก์ชันพร้อม wikilink graph
 └── config/
     └── default.toml
 ```

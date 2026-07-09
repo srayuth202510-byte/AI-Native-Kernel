@@ -2,7 +2,7 @@
 
 This note tracks the current repository state as implemented and locally validated in this workspace, not only the target architecture described in `docs/ai_native_kernel_plan_v2.html`.
 
-Last verified: 2026-07-01
+Last verified: 2026-07-09 — **469/469 tests pass** (4 ignored, Qdrant-backed), clippy clean, cargo audit clean
 
 ## Current Baseline
 
@@ -102,6 +102,18 @@ Last verified: 2026-07-01
 - **[ANK-038] Timeout hardening for external I/O paths**: ครอบ tokio::time::timeout ให้ external calls ที่ยังเหลือ เช่น Qdrant, TCP peer connect/accept/read paths และ network-facing endpoints ให้ตรงกับ AGENTS.md.
 - **[ANK-039] CI-equivalent clippy validation (--all-targets --all-features)**: ผ่านแล้ว — cargo clippy --all-targets --all-features clean (0 errors, 0 lint warnings). เหลือแค่ info log จาก prebuilt eBPF objects.
 - **[ANK-056] Cross-Crate Pipeline Integration Tests**: 11 cross-crate integration tests ครอบคลุม end-to-end pipeline: intent → scheduler → capability → LSM decision → audit log, พร้อม fault injection สำหรับทุก Failure Domain.
+
+### Hardening Round 2026-07-09
+
+- **Panic-path elimination**: กำจัด `unwrap()`/`expect()` ทั้งหมดใน production code — engine constructors คืน `Result<Self, EngineError>` ผ่าน [[build_http_client]], lock poisoning กู้ด้วย `PoisonError::into_inner`, metrics registration มี isolated-registry fallback.
+- **Audit logger rewrite** ([[audit-record]]): tail-read O(1) แทนการอ่าน+parse ทั้งไฟล์ (57.8ms → 81µs บน grant_capability, -99.87%); persistent write handle + writer lock แก้ hash chain fork และบรรทัดปนกันจาก concurrent writers; ซ่อมบรรทัดครึ่งท่อนจาก mid-write crash ตอนเปิดไฟล์.
+- **TCell hot path** ([[observe_syscall]]): `RwLock<HashMap>` → DashMap (per-shard lock) + `Arc<str>` (1 alloc/event) — ~136ns/event sequential, ~71ns/event ที่ 8-way concurrency (~14M events/s).
+- **Constant-time token equality**: `CapabilityToken` ใช้ manual `PartialEq` ผ่าน `constant_time_eq` กับ secret (เดิม derive เทียบ short-circuit = timing side channel).
+- **Property tests (14)**: zero-trust invariants ([[policy-decision]]), cost monotonicity ([[choose_best]]), priority-queue ordering.
+- **Chaos tests (+6)**: concurrent audit hash chain, restart tail recovery, partial-line repair, unwritable path, TCell concurrent quarantine, intent-bus slow-subscriber overflow.
+- **Fuzz repair + expansion**: fuzz manifest เดิมไม่มี [[bin]] และใช้ workspace deps ทั้งที่ไม่อยู่ใน workspace — targets ไม่เคยถูก compile; ซ่อมแล้ว + async calls รันจริงผ่าน runtime + เพิ่ม 3 targets ใหม่ (audit_entry, config_toml, uds_command) รวมเป็น 7.
+- **CVE**: crossbeam-epoch 0.9.18 → 0.9.20 (RUSTSEC-2026-0204).
+- **Benchmarks**: เพิ่ม immune_bench (crate สุดท้ายที่ยังไม่มี bench); ทุก bench เขียน audit log ลง temp path (เดิมสะสม 2.9GB ใน crate dirs — ลบแล้ว).
 <!-- IMPLEMENTED_NOW_END -->
 
 ## Not Implemented Yet
