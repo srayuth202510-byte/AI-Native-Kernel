@@ -21,6 +21,7 @@ tokio = { workspace = true, features = ["fs", "io-util", "time"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
+proptest = { workspace = true }
 
 [[bench]]
 name = "security_bench"

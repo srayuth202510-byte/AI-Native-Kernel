@@ -24,6 +24,7 @@ libloading = "0.8"
 
 [dev-dependencies]
 criterion = { workspace = true }
+proptest = { workspace = true }
 
 [[bench]]
 name = "compute_bench"
