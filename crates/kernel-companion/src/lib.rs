@@ -496,9 +496,9 @@ impl KernelCompanion {
                             // If the process has a valid capability token, we scale down its sensitivity (factor 1.5)
                             // to avoid false positive kills on legitimate agents under heavy load.
                             if capability_security.has_valid_token_for_pid(event.pid) {
-                                tcell.set_pid_sensitivity_factor(event.pid, 1.5).await;
+                                tcell.set_pid_sensitivity_factor(event.pid, 1.5);
                             } else {
-                                tcell.set_pid_sensitivity_factor(event.pid, 1.0).await;
+                                tcell.set_pid_sensitivity_factor(event.pid, 1.0);
                             }
 
                             let denied = matches!(event.decision, PolicyDecision::Deny);
@@ -511,7 +511,7 @@ impl KernelCompanion {
 
                                 // Audit logging with full context
                                 let reason = format!("{:?}", decision);
-                                let anomaly_score = tcell.get_stats(event.pid).await
+                                let anomaly_score = tcell.get_stats(event.pid)
                                     .map(|s| s.anomaly_score)
                                     .unwrap_or(0.0);
                                 let entry = match decision {
@@ -578,8 +578,8 @@ impl KernelCompanion {
                                             Some("Quarantine") => 8,
                                             _ => 5,
                                         };
-                                        if let Some(stats) = tcell_for_immune.get_stats(pid).await {
-                                            let syscalls: Vec<String> = stats.syscall_history.into_iter().collect();
+                                        if let Some(stats) = tcell_for_immune.get_stats(pid) {
+                                            let syscalls: Vec<String> = stats.syscall_history.iter().map(|s| s.to_string()).collect();
                                             if !syscalls.is_empty() {
                                                 bcell.learn_threat(syscalls, severity).await;
 

@@ -346,14 +346,19 @@ impl ComputeScheduler {
         &self,
         candidates: &[(ComputeTarget, ComputeProfile)],
     ) -> Result<ComputeTarget, ComputeError> {
+        // อ่าน weights ครั้งเดียวและคำนวณคะแนนแต่ละ candidate เพียงครั้งเดียว
+        // (min_by เดิมเรียก score ซ้ำและยึด lock ~2n ครั้ง)
+        let weights = self
+            .weights
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         candidates
             .iter()
+            .map(|(target, profile)| (*target, score_target(*profile, &weights)))
             .min_by(|(_, left), (_, right)| {
-                self.score(*left)
-                    .partial_cmp(&self.score(*right))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|(target, _)| *target)
+            .map(|(target, _)| target)
             .ok_or(ComputeError::NoTargetAvailable)
     }
 

@@ -10,6 +10,7 @@ keywords = ["ai", "immune", "wbc", "anomaly"]
 
 [dependencies]
 anyhow = { workspace = true }
+dashmap = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

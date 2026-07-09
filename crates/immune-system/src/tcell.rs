@@ -1,3 +1,4 @@
+use dashmap::DashMap;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -58,11 +59,11 @@ pub struct ProcessStats {
     /// เวลาที่เริ่มต้นนับ
     pub window_start: Instant,
     /// syscall ล่าสุดที่เรียก
-    pub last_syscall: Option<String>,
+    pub last_syscall: Option<Arc<str>>,
     /// คะแนนความผิดปกติสะสม (Anomaly Score)
     pub anomaly_score: f64,
     /// ประวัติการเรียก syscall ล่าสุด 5 รายการ
-    pub syscall_history: VecDeque<String>,
+    pub syscall_history: VecDeque<Arc<str>>,
     /// จำนวนวินาทีติดต่อกันที่ตรวจพบความผิดปกติ (Consecutive violation windows)
     pub consecutive_violations: u32,
 }
@@ -83,8 +84,8 @@ impl Default for ProcessStats {
 
 /// T-Cell Agent ที่ตรวจจับภัยคุกคามแบบ real-time
 pub struct TCellAgent {
-    /// สถิติของแต่ละ PID
-    stats: Arc<RwLock<HashMap<u32, ProcessStats>>>,
+    /// สถิติของแต่ละ PID — ใช้ DashMap เพื่อ lock ราย shard บน hot path (ทุก syscall event)
+    stats: DashMap<u32, ProcessStats>,
     /// จำนวน syscall ต่อวินาทีที่ถือว่าผิดปกติ
     rate_threshold: AtomicU64,
     /// จำนวน deny ติดต่อกันที่ถือว่าผิดปกติ
@@ -101,8 +102,8 @@ pub struct TCellAgent {
     exempt_pids: Arc<RwLock<std::collections::HashSet<u32>>>,
     /// จำนวนวินาทีติดต่อกันที่ต้องตรวจพบความผิดปกติก่อนตัดสินใจ Kill
     violation_window_limit: AtomicU32,
-    /// ปรับสัดส่วนการตรวจจับ (Sensitivity factor) ราย PID
-    pid_sensitivity_factors: Arc<RwLock<HashMap<u32, f64>>>,
+    /// ปรับสัดส่วนการตรวจจับ (Sensitivity factor) ราย PID — DashMap เพราะถูกอ่าน/เขียนทุก event
+    pid_sensitivity_factors: DashMap<u32, f64>,
 }
 
 impl TCellAgent {
@@ -118,7 +119,7 @@ impl TCellAgent {
         kill_threshold: u32,
     ) -> Self {
         Self {
-            stats: Arc::new(RwLock::new(HashMap::new())),
+            stats: DashMap::new(),
             rate_threshold: AtomicU64::new(rate_threshold),
             deny_threshold: AtomicU32::new(deny_threshold),
             kill_threshold: AtomicU32::new(kill_threshold),
@@ -140,7 +141,7 @@ impl TCellAgent {
             )),
             exempt_pids: Arc::new(RwLock::new(std::collections::HashSet::new())),
             violation_window_limit: AtomicU32::new(3),
-            pid_sensitivity_factors: Arc::new(RwLock::new(HashMap::new())),
+            pid_sensitivity_factors: DashMap::new(),
         }
     }
 
@@ -188,76 +189,90 @@ impl TCellAgent {
             };
 
         // Apply dynamic sensitivity factor for this PID (Blast Radius Minimization)
-        let sensitivity = {
-            let factors = self.pid_sensitivity_factors.read().await;
-            factors.get(&pid).copied().unwrap_or(1.0)
-        };
+        let sensitivity = self
+            .pid_sensitivity_factors
+            .get(&pid)
+            .map(|factor| *factor)
+            .unwrap_or(1.0);
         rate_limit = (rate_limit as f64 * sensitivity).round() as u64;
         deny_limit = (deny_limit as f64 * sensitivity).round().max(1.0) as u32;
         kill_limit = (kill_limit as f64 * sensitivity).round().max(1.0) as u32;
 
-        let mut stats = self.stats.write().await;
-        let entry = stats.entry(pid).or_default();
+        // อัปเดตสถิติภายใต้ shard lock ของ DashMap
+        // ห้ามมี await ระหว่างถือ entry guard — คัดลอกค่าที่ต้องใช้ออกมาก่อนปล่อย lock
+        let (score, deny_count, syscall_count, total_violations) = {
+            let mut entry = self.stats.entry(pid).or_default();
 
-        let now = Instant::now();
-        let elapsed = now.duration_since(entry.window_start);
+            let now = Instant::now();
+            let elapsed = now.duration_since(entry.window_start);
 
-        if elapsed >= Duration::from_secs(1) {
-            // Check if previous window constituted a violation
-            let prev_violating = entry.deny_count >= deny_limit as u64
-                || (rate_limit > 0 && entry.syscall_count >= rate_limit * 2)
-                || entry.anomaly_score >= kill_limit as f64;
+            if elapsed >= Duration::from_secs(1) {
+                // Check if previous window constituted a violation
+                let prev_violating = entry.deny_count >= deny_limit as u64
+                    || (rate_limit > 0 && entry.syscall_count >= rate_limit * 2)
+                    || entry.anomaly_score >= kill_limit as f64;
 
-            if prev_violating {
-                entry.consecutive_violations += 1;
-            } else {
-                entry.consecutive_violations = 0;
+                if prev_violating {
+                    entry.consecutive_violations += 1;
+                } else {
+                    entry.consecutive_violations = 0;
+                }
+                entry.syscall_count = 0;
+                entry.window_start = now;
             }
-            entry.syscall_count = 0;
-            entry.window_start = now;
-        }
 
-        entry.syscall_count += 1;
-        entry.last_syscall = Some(syscall_name.to_string());
+            // allocate ครั้งเดียวต่อ event แล้วแชร์ผ่าน Arc<str>
+            let name: Arc<str> = Arc::from(syscall_name);
+            entry.syscall_count += 1;
+            entry.last_syscall = Some(Arc::clone(&name));
 
-        // จัดเก็บประวัติ syscall ย้อนหลัง (เก็บสูงสุด 5 รายการ)
-        if entry.syscall_history.len() >= 5 {
-            entry.syscall_history.pop_front();
-        }
-        entry.syscall_history.push_back(syscall_name.to_string());
+            // จัดเก็บประวัติ syscall ย้อนหลัง (เก็บสูงสุด 5 รายการ)
+            if entry.syscall_history.len() >= 5 {
+                entry.syscall_history.pop_front();
+            }
+            entry.syscall_history.push_back(name);
 
-        if denied {
-            entry.deny_count += 1;
-        } else {
-            entry.deny_count = 0;
-        }
+            if denied {
+                entry.deny_count += 1;
+            } else {
+                entry.deny_count = 0;
+            }
 
-        // คำนวณ Anomaly Score แบบไดนามิก
-        let mut score = 0.0;
+            // คำนวณ Anomaly Score แบบไดนามิก
+            let mut score = 0.0;
 
-        // 1. ผลกระทบจากปริมาณ syscall (Syscall Rate contribution)
-        if rate_limit > 0 {
-            score += (entry.syscall_count as f64 / rate_limit as f64) * 4.0;
-        }
+            // 1. ผลกระทบจากปริมาณ syscall (Syscall Rate contribution)
+            if rate_limit > 0 {
+                score += (entry.syscall_count as f64 / rate_limit as f64) * 4.0;
+            }
 
-        // 2. ผลกระทบจากการเรียกปฏิเสธ (Deny count contribution)
-        // Capped at deny_limit to prevent unbounded score growth
-        let capped_deny = entry.deny_count.min(deny_limit as u64);
-        score += capped_deny as f64 * 2.0;
+            // 2. ผลกระทบจากการเรียกปฏิเสธ (Deny count contribution)
+            // Capped at deny_limit to prevent unbounded score growth
+            let capped_deny = entry.deny_count.min(deny_limit as u64);
+            score += capped_deny as f64 * 2.0;
 
-        // 3. ผลกระทบจากลำดับการเรียกที่น่าสงสัย (Suspicious sequence contribution)
-        if has_suspicious_sequence(&entry.syscall_history) {
-            score += 8.0;
-        }
+            // 3. ผลกระทบจากลำดับการเรียกที่น่าสงสัย (Suspicious sequence contribution)
+            if has_suspicious_sequence(&entry.syscall_history) {
+                score += 8.0;
+            }
 
-        entry.anomaly_score = score;
+            entry.anomaly_score = score;
 
-        // ตัดสินใจระดับภัยคุกคามโดยอ้างอิงจากเกณฑ์ (Hard limits), Consecutive Violations และ Anomaly Score
-        let current_violating = entry.deny_count >= deny_limit as u64
-            || (rate_limit > 0 && entry.syscall_count >= rate_limit * 2)
-            || score >= kill_limit as f64;
+            // ตัดสินใจระดับภัยคุกคามโดยอ้างอิงจากเกณฑ์ (Hard limits), Consecutive Violations และ Anomaly Score
+            let current_violating = entry.deny_count >= deny_limit as u64
+                || (rate_limit > 0 && entry.syscall_count >= rate_limit * 2)
+                || score >= kill_limit as f64;
 
-        let total_violations = entry.consecutive_violations + if current_violating { 1 } else { 0 };
+            let total_violations =
+                entry.consecutive_violations + if current_violating { 1 } else { 0 };
+            (
+                score,
+                entry.deny_count,
+                entry.syscall_count,
+                total_violations,
+            )
+        };
+
         let violation_limit = self.violation_window_limit.load(Ordering::Relaxed);
 
         if total_violations >= violation_limit {
@@ -289,29 +304,29 @@ impl TCellAgent {
             warn!(
                 pid,
                 score = ?score,
-                deny_count = entry.deny_count,
-                syscall_count = entry.syscall_count,
+                deny_count,
+                syscall_count,
                 consecutive_violations = total_violations,
                 "T-Cell: critical threat detected — Action: KILL"
             );
             return ThreatDecision::Kill;
         }
 
-        if (rate_limit > 0 && entry.syscall_count >= rate_limit) || score >= 8.0 {
+        if (rate_limit > 0 && syscall_count >= rate_limit) || score >= 8.0 {
             warn!(
                 pid,
                 score = ?score,
-                syscall_count = entry.syscall_count,
+                syscall_count,
                 "T-Cell: high syscall rate/anomaly — Action: QUARANTINE"
             );
             return ThreatDecision::Quarantine;
         }
 
-        if entry.deny_count > 0 || score >= 2.0 {
+        if deny_count > 0 || score >= 2.0 {
             debug!(
                 pid,
                 score = ?score,
-                deny_count = entry.deny_count,
+                deny_count,
                 "T-Cell: suspicious syscall/anomaly — Action: WARN"
             );
             return ThreatDecision::Warn;
@@ -366,8 +381,9 @@ impl TCellAgent {
     }
 
     /// ดึงสถิติของ process
-    pub async fn get_stats(&self, pid: u32) -> Option<ProcessStats> {
-        self.stats.read().await.get(&pid).cloned()
+    #[must_use]
+    pub fn get_stats(&self, pid: u32) -> Option<ProcessStats> {
+        self.stats.get(&pid).map(|entry| entry.clone())
     }
 
     /// เพิ่มรายชื่อโปรเซสที่ได้รับการยกเว้นจากการ Kill (Exempt from Kill)
@@ -386,11 +402,8 @@ impl TCellAgent {
     }
 
     /// กำหนดค่า Sensitivity Factor สำหรับ PID เจาะจง
-    pub async fn set_pid_sensitivity_factor(&self, pid: u32, factor: f64) {
-        self.pid_sensitivity_factors
-            .write()
-            .await
-            .insert(pid, factor);
+    pub fn set_pid_sensitivity_factor(&self, pid: u32, factor: f64) {
+        self.pid_sensitivity_factors.insert(pid, factor);
     }
 }
 
@@ -401,7 +414,7 @@ fn get_process_comm(pid: u32) -> Option<String> {
 }
 
 /// ตรวจสอบรูปแบบ syscall sequence ย้อนหลังเพื่อดูความน่าจะเป็นในการโจมตีระบบ
-fn has_suspicious_sequence(history: &VecDeque<String>) -> bool {
+fn has_suspicious_sequence(history: &VecDeque<Arc<str>>) -> bool {
     if history.len() < 2 {
         return false;
     }
@@ -409,6 +422,7 @@ fn has_suspicious_sequence(history: &VecDeque<String>) -> bool {
     // 1. Privilege Escalation signature: setuid/setgid -> execve
     let mut has_setuid = false;
     for s in history {
+        let s = s.as_ref();
         if s == "setuid" || s == "setgid" {
             has_setuid = true;
         } else if (s == "execve" || s == "execveat") && has_setuid {
@@ -419,6 +433,7 @@ fn has_suspicious_sequence(history: &VecDeque<String>) -> bool {
     // 2. Process Hijack/Injection signature: ptrace -> memfd_create / process_vm_writev
     let mut has_ptrace = false;
     for s in history {
+        let s = s.as_ref();
         if s == "ptrace" {
             has_ptrace = true;
         } else if (s == "memfd_create" || s == "process_vm_writev") && has_ptrace {
@@ -430,6 +445,7 @@ fn has_suspicious_sequence(history: &VecDeque<String>) -> bool {
     let mut has_socket = false;
     let mut has_dup = false;
     for s in history {
+        let s = s.as_ref();
         if s == "socket" || s == "connect" {
             has_socket = true;
         } else if (s == "dup2" || s == "dup3") && has_socket {
@@ -481,9 +497,9 @@ mod tests {
     async fn stats_are_tracked() {
         let t = make_tcell();
         let _ = t.observe_syscall(1, "read", false).await;
-        let stats = t.get_stats(1).await.unwrap();
+        let stats = t.get_stats(1).unwrap();
         assert_eq!(stats.syscall_count, 1);
-        assert_eq!(stats.last_syscall, Some("read".to_string()));
+        assert_eq!(stats.last_syscall.as_deref(), Some("read"));
     }
 
     #[tokio::test]
@@ -559,11 +575,8 @@ mod tests {
         assert_ne!(decision1, ThreatDecision::Kill);
 
         // Advance window
-        {
-            let mut stats = t.stats.write().await;
-            if let Some(entry) = stats.get_mut(&101) {
-                entry.window_start -= Duration::from_secs(2);
-            }
+        if let Some(mut entry) = t.stats.get_mut(&101) {
+            entry.window_start -= Duration::from_secs(2);
         }
 
         // 2nd window violation
@@ -574,11 +587,8 @@ mod tests {
         assert_ne!(decision2, ThreatDecision::Kill);
 
         // Advance window again
-        {
-            let mut stats = t.stats.write().await;
-            if let Some(entry) = stats.get_mut(&101) {
-                entry.window_start -= Duration::from_secs(2);
-            }
+        if let Some(mut entry) = t.stats.get_mut(&101) {
+            entry.window_start -= Duration::from_secs(2);
         }
 
         // 3rd window violation -> should trigger KILL
@@ -615,7 +625,7 @@ mod tests {
         t.set_violation_window_limit(1);
 
         // Set sensitivity factor to 2.0 (double threshold)
-        t.set_pid_sensitivity_factor(200, 2.0).await;
+        t.set_pid_sensitivity_factor(200, 2.0);
 
         for _ in 0..30 {
             let _ = t.observe_syscall(200, "read", false).await;

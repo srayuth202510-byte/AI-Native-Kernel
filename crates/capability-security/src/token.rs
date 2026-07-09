@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 use zeroize::Zeroize;
 
 /// โทเค็นแสดงสิทธิ์ความสามารถ (Capability Token) สำหรับระบุสิทธิ์ ขอบเขต และอายุการใช้งานของตัวแทนหรือส่วนประกอบระบบ
-#[derive(Debug, Clone, PartialEq, Eq, Zeroize, Serialize, Deserialize)]
+#[derive(Debug, Clone, Zeroize, Serialize, Deserialize)]
 #[zeroize(drop)]
 pub struct CapabilityToken {
     /// รหัสระบุเฉพาะตัวของโทเค็นความสามารถ
@@ -51,6 +51,20 @@ impl CapabilityToken {
         self.capabilities.iter().any(|item| item == capability)
     }
 }
+
+// เปรียบเทียบ secret ด้วย constant-time เสมอ เพื่อไม่ให้เกิด timing side channel
+// (derive(PartialEq) จะเทียบ [u8; 32] แบบ short-circuit ซึ่งขัดกับ security convention)
+impl PartialEq for CapabilityToken {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.scope == other.scope
+            && self.capabilities == other.capabilities
+            && self.expires_at == other.expires_at
+            && crate::constant_time_eq(&self.secret, &other.secret)
+    }
+}
+
+impl Eq for CapabilityToken {}
 
 /// ขอบเขตในการบังคับใช้สิทธิ์ของโทเค็นความสามารถ
 #[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash, Zeroize, Serialize, Deserialize)]
