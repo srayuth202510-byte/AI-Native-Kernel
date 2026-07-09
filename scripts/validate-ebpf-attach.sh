@@ -79,12 +79,12 @@ if [[ "$(id -u)" -ne 0 ]] && ! capsh --print 2>/dev/null | grep -q 'cap_bpf'; th
 fi
 
 # 3. Locate / build the companion binary -------------------------------------
+# สร้างใหม่เสมอเมื่อไม่ระบุ --binary เพื่อไม่ให้ validate binary เก่าที่ค้างอยู่
+# (binary ที่ build ก่อนการแก้ไขอาจให้ผลลวง เช่น fallback ทั้งที่สั่งปิด)
 if [[ -z "$BINARY" ]]; then
+    info "building companion (cargo build --release -p kernel-companion)"
+    (cd "$PROJECT_ROOT" && cargo build --release -p kernel-companion)
     BINARY="$PROJECT_ROOT/target/release/kernel-companion"
-    if [[ ! -x "$BINARY" ]]; then
-        info "release binary not found — building (cargo build --release -p kernel-companion)"
-        (cd "$PROJECT_ROOT" && cargo build --release -p kernel-companion)
-    fi
 fi
 [[ -x "$BINARY" ]] || { fail "companion binary not found at: $BINARY"; exit 1; }
 info "binary: $BINARY"

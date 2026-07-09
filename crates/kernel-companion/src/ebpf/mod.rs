@@ -506,38 +506,73 @@ fn parse_raw_event(buf: &[u8]) -> Option<RawSyscallEvent> {
 
 // ---- BPF program loading ----
 
+/// prebuilt BPF objects ที่ฝังเข้า binary ตอน compile — ทำให้ release binary
+/// self-contained: attach จริงได้โดยไม่ต้องพึ่งไฟล์ .o ข้างนอกหรือ env var ใด ๆ
+/// (`env!` ถูก resolve ตอน compile time จึงไม่ต้องมี CARGO_MANIFEST_DIR ตอน runtime)
+const EMBEDDED_SYSCALL_TRACER_O: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/prebuilt-bpf/syscall-tracer.bpf.o"
+));
+const EMBEDDED_LSM_SECURITY_O: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/prebuilt-bpf/lsm-security.bpf.o"
+));
+
+/// คืน prebuilt object ที่ฝังไว้ตาม stem (fallback สุดท้ายเมื่อไม่พบไฟล์บนดิสก์)
+fn embedded_bpf_o(stem: &str) -> Option<&'static [u8]> {
+    match stem {
+        "syscall-tracer" => Some(EMBEDDED_SYSCALL_TRACER_O),
+        "lsm-security" => Some(EMBEDDED_LSM_SECURITY_O),
+        _ => None,
+    }
+}
+
 /// Load a compiled BPF .o file by stem name (e.g., "syscall-tracer" or "lsm-security").
-/// Looks in BPF_OUT_DIR first, then CARGO_MANIFEST_DIR/target/bpf/, then common paths.
+///
+/// ลำดับการค้นหา (freshly-built ชนะเพื่อให้ dev ทดสอบการแก้ไขได้):
+/// 1. `BPF_OUT_DIR` env (ops override)
+/// 2. `CARGO_MANIFEST_DIR/target/bpf/` (dev build)
+/// 3. ข้าง binary ปัจจุบัน
+/// 4. prebuilt object ที่ฝังใน binary (default — ทำให้ deployed binary attach ได้เสมอ)
 pub fn load_bpf_o(stem: &str) -> Result<Vec<u8>> {
     let filename = format!("{}.bpf.o", stem);
-    let bpf_o_path = if let Ok(out_dir) = std::env::var("BPF_OUT_DIR") {
-        std::path::PathBuf::from(out_dir).join(&filename)
-    } else if let Ok(cargo_manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        std::path::PathBuf::from(cargo_manifest)
+
+    // 1. BPF_OUT_DIR override
+    if let Ok(out_dir) = std::env::var("BPF_OUT_DIR") {
+        let path = std::path::PathBuf::from(out_dir).join(&filename);
+        if path.exists() {
+            return Ok(std::fs::read(&path)?);
+        }
+    }
+
+    // 2. dev build output
+    if let Ok(cargo_manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        let path = std::path::PathBuf::from(cargo_manifest)
             .join("target")
             .join("bpf")
-            .join(&filename)
-    } else {
-        // Check relative to the current binary
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_default();
+            .join(&filename);
+        if path.exists() {
+            return Ok(std::fs::read(&path)?);
+        }
+    }
+
+    // 3. next to the running binary
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    {
         let rel = exe_dir.join(&filename);
         if rel.exists() {
             return Ok(std::fs::read(&rel)?);
         }
-        anyhow::bail!(
-            "BPF_OUT_DIR and CARGO_MANIFEST_DIR not set, and {} not found near binary",
-            filename
-        );
-    };
-
-    if !bpf_o_path.exists() {
-        anyhow::bail!("BPF object file not found: {}", bpf_o_path.display());
     }
 
-    Ok(std::fs::read(&bpf_o_path)?)
+    // 4. embedded prebuilt object (always available for a deployed binary)
+    if let Some(bytes) = embedded_bpf_o(stem) {
+        return Ok(bytes.to_vec());
+    }
+
+    anyhow::bail!("no BPF object found for stem '{stem}' (no file on disk and none embedded)")
 }
 
 // Backward compatibility for internal use
