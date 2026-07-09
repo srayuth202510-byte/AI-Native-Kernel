@@ -337,9 +337,10 @@ impl Default for LsmAttachment {
 
 /// พยายามโหลดและแนบโปรแกรม LSM eBPF จริงผ่าน Aya
 ///
-/// โปรแกรมที่แนบ:
-/// - `lsm/security_file_open` — ตรวจสอบ PID ที่ allowed_pids map (kernel ≥5.7)
-/// - `lsm/security_bprm_check` — ตรวจสอบ PID ก่อน execve (kernel ≥5.5)
+/// โปรแกรมที่แนบ (ชื่อ LSM hook ต้องตรงกับ kernel BTF trampoline `bpf_lsm_<hook>`):
+/// - `file_open` — ตรวจสอบ PID ที่ allowed_pids map (kernel ≥5.7)
+/// - `bprm_check_security` — ตรวจสอบ PID ก่อน execve (kernel ≥5.5)
+/// - `socket_create` — ตรวจสอบ PID ก่อนสร้าง socket
 ///
 /// # Errors
 ///
@@ -355,46 +356,47 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
     let btf = aya::Btf::from_sys_fs()
         .map_err(|e| anyhow::anyhow!("Cannot load kernel BTF from /sys/kernel/btf/vmlinux: {e}"))?;
 
-    // ── security_file_open LSM hook ──
+    // ── file_open LSM hook ──
     // ตรวจสอบทุกครั้งที่มีการเปิดไฟล์ โดยเช็ค PID จาก allowed_pids map
+    // หมายเหตุ: program_mut ใช้ชื่อฟังก์ชัน C ("lsm_file_open"); load ใช้ชื่อ LSM
+    // hook ("file_open") ที่ Aya จะ resolve เป็น BTF trampoline `bpf_lsm_file_open`
     {
         let prog: &mut aya::programs::Lsm = bpf
             .program_mut("lsm_file_open")
             .ok_or_else(|| anyhow::anyhow!("lsm_file_open program not found"))?
             .try_into()?;
-        // In Aya 0.12, load(lsm_hook_name, btf) attaches the hook name to the program
-        prog.load("security_file_open", &btf)?;
+        prog.load("file_open", &btf)?;
         // attach() with no arguments — the hook name was already specified in load()
         let link = prog.attach()?;
         // Leak the link so it stays alive for the daemon's lifetime.
         // The kernel keeps a reference via the file descriptor.
         Box::leak(Box::new(link));
-        info!("LSM eBPF: security_file_open attached");
+        info!("LSM eBPF: file_open attached");
     }
 
-    // ── security_bprm_check LSM hook ──
+    // ── bprm_check_security LSM hook ──
     // ตรวจสอบก่อน execute ใหม่ ห้าม fork/exec โดยไม่ได้รับอนุญาต
     {
         let prog: &mut aya::programs::Lsm = bpf
             .program_mut("lsm_bprm_check")
             .ok_or_else(|| anyhow::anyhow!("lsm_bprm_check program not found"))?
             .try_into()?;
-        prog.load("security_bprm_check", &btf)?;
+        prog.load("bprm_check_security", &btf)?;
         let link = prog.attach()?;
         Box::leak(Box::new(link));
-        info!("LSM eBPF: security_bprm_check attached");
+        info!("LSM eBPF: bprm_check_security attached");
     }
 
-    // ── security_socket_create LSM hook ──
+    // ── socket_create LSM hook ──
     {
         let prog: &mut aya::programs::Lsm = bpf
             .program_mut("lsm_socket_create")
             .ok_or_else(|| anyhow::anyhow!("lsm_socket_create program not found"))?
             .try_into()?;
-        prog.load("security_socket_create", &btf)?;
+        prog.load("socket_create", &btf)?;
         let link = prog.attach()?;
         Box::leak(Box::new(link));
-        info!("LSM eBPF: security_socket_create attached");
+        info!("LSM eBPF: socket_create attached");
     }
 
     // ── populate allowed_pids eBPF map ──
