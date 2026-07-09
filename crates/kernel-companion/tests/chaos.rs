@@ -173,46 +173,51 @@ async fn chaos_tcell_survives_concurrent_observe_and_quarantine() {
 
 // -----------------------------------------------------------------------------
 // 5. Chaos Test: Intent Bus Slow Subscriber / Overflow (Failure Domain: Intent Bus)
-// Publisher ยิง intent เร็วกว่าที่ subscriber อ่านมาก — บัสต้องไม่ panic
-// และ subscriber ที่ตามไม่ทัน (lagged) ต้องยังรับ intent ต่อได้
+// จงใจทำให้ subscriber lag จน buffer ล้น (deterministic ไม่พึ่ง timing) แล้ว
+// พิสูจน์ว่า: (1) publish ไม่ panic แม้บัสล้น (2) subscriber ที่ lag แล้ว
+// ยังรับ intent ที่ publish ต่อจากนั้นได้ ไม่หยุดถาวร
 // -----------------------------------------------------------------------------
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn chaos_intent_bus_survives_slow_subscriber_overflow() {
-    let bus = Arc::new(IntentBus::new(8)); // buffer เล็กจงใจให้ล้น
+    const CAPACITY: usize = 8;
+    let bus = IntentBus::new(CAPACITY);
     let mut subscriber = bus.subscribe();
 
-    let publisher = {
-        let bus = Arc::clone(&bus);
-        tokio::spawn(async move {
-            for i in 0..1000u32 {
-                let intent = Intent::new(
-                    format!("chaos-{i}"),
-                    IntentType::Event,
-                    format!("payload-{i}"),
-                    IntentPriority::Low,
-                    "chaos-publisher",
-                );
-                // publish ห้าม panic แม้บัสล้น
-                let _ = bus.publish(intent).await;
-            }
-        })
+    let publish = |tag: &str, i: u32| {
+        let intent = Intent::new(
+            format!("chaos-{tag}-{i}"),
+            IntentType::Event,
+            format!("payload-{i}"),
+            IntentPriority::Low,
+            "chaos-publisher",
+        );
+        bus.publish(intent)
     };
 
-    // Subscriber อ่านช้า ๆ — ต้องยังได้รับ intent แม้พลาดบางส่วนจาก overflow
-    let mut received = 0u32;
-    for _ in 0..50 {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), subscriber.receive())
-            .await
-        {
-            Ok(Some(_)) => received += 1,
-            Ok(None) | Err(_) => break,
-        }
-        tokio::task::yield_now().await;
+    // 1. ยิง intent เกิน capacity หลายเท่าโดยที่ subscriber ยังไม่อ่านเลย
+    //    → รับประกันว่า subscriber ต้องเจอ Lagged ในการ recv ครั้งถัดไป
+    for i in 0..(CAPACITY as u32 * 4) {
+        publish("flood", i).await.expect("publish must not panic");
     }
 
-    publisher.await.expect("publisher must not panic");
-    assert!(
-        received > 0,
-        "lagged subscriber must keep receiving intents after overflow"
+    // 2. ยิง intent ที่รู้จำนวนแน่นอนต่อจากนั้น (จำนวน = capacity พอดี)
+    for i in 0..(CAPACITY as u32) {
+        publish("post", i).await.expect("publish must not panic");
+    }
+
+    // 3. subscriber ต้อง recover จาก Lagged แล้วอ่าน intent ชุดหลังได้ครบ capacity
+    //    (buffer เก็บ intent ล่าสุด capacity ตัว = ชุด "post" ทั้งหมด)
+    let mut received = 0u32;
+    for _ in 0..CAPACITY {
+        match tokio::time::timeout(std::time::Duration::from_secs(1), subscriber.receive()).await {
+            Ok(Some(_)) => received += 1,
+            Ok(None) => panic!("channel must stay open while the bus is alive"),
+            Err(_) => break,
+        }
+    }
+
+    assert_eq!(
+        received, CAPACITY as u32,
+        "lagged subscriber must recover and drain the most recent {CAPACITY} intents"
     );
 }

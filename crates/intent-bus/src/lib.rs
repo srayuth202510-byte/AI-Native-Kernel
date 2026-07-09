@@ -302,9 +302,22 @@ pub struct IntentSubscriber {
 }
 
 impl IntentSubscriber {
-    /// รอรับและคืนค่า Intent ถัดไปแบบ Asynchronous คืนค่า `None` หากเกิดความล้มเหลว
+    /// รอรับและคืนค่า Intent ถัดไปแบบ Asynchronous
+    ///
+    /// คืน `None` เฉพาะเมื่อช่องถูกปิด (`Closed`) เท่านั้น หาก subscriber ตามไม่ทัน
+    /// จน buffer ล้น (`Lagged`) จะข้าม intent ที่พลาดแล้วรอรับ intent ถัดไปต่อ —
+    /// สอดคล้องกับ internal processor loop และทำให้ caller แยก "ช่องปิด" ออกจาก
+    /// "lag ชั่วคราว" ได้ (lagged subscriber ต้องรับต่อได้ ไม่ใช่หยุดถาวร)
     pub async fn receive(&mut self) -> Option<Intent> {
-        self.receiver.recv().await.ok()
+        loop {
+            match self.receiver.recv().await {
+                Ok(intent) => return Some(intent),
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "IntentBus: subscriber lagged, skipping intents");
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
     }
 }
 
