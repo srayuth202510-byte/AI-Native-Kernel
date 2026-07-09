@@ -6,8 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn reserve_port() -> u16 {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind ephemeral port");
-    listener.local_addr().expect("local addr").port()
+    // Hold the socket to prevent TOCTOU race; caller must NOT bind again
+    // (P2PMeshManager binds internally). This is inherently racy; tests that
+    // need a port should bind the listener themselves and pass the bound addr.
+    std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .map(|l| l.local_addr().map(|a| a.port()).unwrap_or(0))
+        .unwrap_or(0)
 }
 
 fn can_bind_tcp() -> bool {

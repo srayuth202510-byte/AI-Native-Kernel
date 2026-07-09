@@ -747,21 +747,29 @@ async fn int_nlp_to_compute_placement_pipeline() {
 //   Boot two companion nodes A and B with P2P enabled.
 //   Verify they connect, handshake, and discover each other's NodeInfo.
 // ---------------------------------------------------------------------------
+fn reserve_port() -> u16 {
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("bind ephemeral port");
+    listener.local_addr().expect("local addr").port()
+}
+
 #[tokio::test]
 async fn int_p2p_mesh_discovery_pipeline() {
+    let port_a = reserve_port();
+    let port_b = reserve_port();
     let mut config_a = kernel_companion::config::Config::default();
     config_a.kernel_companion.uds_socket_path =
         format!("/tmp/p2p-test-a-{}.sock", uuid::Uuid::new_v4());
     config_a.context_memory.p2p_enabled = true;
-    config_a.context_memory.p2p_listen_addr = "127.0.0.1:29091".to_string();
+    config_a.context_memory.p2p_listen_addr = format!("127.0.0.1:{}", port_a);
     config_a.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
 
     let mut config_b = kernel_companion::config::Config::default();
     config_b.kernel_companion.uds_socket_path =
         format!("/tmp/p2p-test-b-{}.sock", uuid::Uuid::new_v4());
     config_b.context_memory.p2p_enabled = true;
-    config_b.context_memory.p2p_listen_addr = "127.0.0.1:29092".to_string();
-    config_b.context_memory.p2p_bootstrap_nodes = vec!["127.0.0.1:29091".to_string()];
+    config_b.context_memory.p2p_listen_addr = format!("127.0.0.1:{}", port_b);
+    config_b.context_memory.p2p_bootstrap_nodes = vec![format!("127.0.0.1:{}", port_a)];
     config_b.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
 
     // Boot Node A
