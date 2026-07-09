@@ -205,7 +205,7 @@ impl CapabilitySecurityManager {
         Ok(())
     }
 
-    /// ลงทะเบียน Callback สำหรับประมวลผลเมื่อโทเค็นถูกเพิกถอน (เช่น ลบ PID ใน allowed_pids)
+    /// ลงทะเบียน Callback สำหรับประมวลผลเมื่อโทเค็นถูกเพิกถอน (เช่น เพิ่ม PID ใน blocked_pids)
     pub fn register_revocation_callback(
         &self,
         callback: std::sync::Arc<dyn Fn(u64, Scope) + Send + Sync>,

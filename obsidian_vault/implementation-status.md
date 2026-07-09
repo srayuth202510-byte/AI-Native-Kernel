@@ -74,7 +74,7 @@ Last verified: 2026-07-09 — **469/469 tests pass** (4 ignored, Qdrant-backed),
 - **[ANK-018] Policy Engine (fail-DENY)**: Policy engine default = DENY, capability allowlist, และ token validation/decision paths มีแล้ว; constant_time_eq ถูกใช้งานแล้ว.
 - **[ANK-019] Persistent WORM audit logger**: Audit trail เป็น file-backed append-only log พร้อม hash chaining แล้ว; ยังควร harden เรื่อง fail-closed ordering ของ revoke path เพิ่ม.
 - **[ANK-020] Security hardening: constant-time token comparison**: แทนที่การเทียบ token แบบปกติด้วย constant_time_eq ตาม security guideline ใน AGENTS.md.
-- **[ANK-047] Automatic Capability Revoke + Expiry + Rate Limiting**: revoke_token() พร้อม callback propagation ไปยัง allowed_pids; token expiry check ในทุก decision path; rate-limited token issuance (max_issue_rate ปรับได้).
+- **[ANK-047] Automatic Capability Revoke + Expiry + Rate Limiting**: revoke_token() พร้อม callback propagation ไปยัง blocked_pids (global default-allow LSM hook, deny เฉพาะ PID ที่ถูกบล็อก); token expiry check ในทุก decision path; rate-limited token issuance (max_issue_rate ปรับได้).
 - **[ANK-048] Security Metrics / Prometheus Counters**: SecurityMetrics struct พร้อม Prometheus counters: tokens_issued_total, token_validation_failures_total, policy_decisions_total (allow/deny labels), audit_entries_total. ลงทะเบียนกับ global registry.
 - **[ANK-054] Cryptographic Audit Log Validation**: Hash chain validation สำหรับ WORM audit log; cryptographic verification ของ log integrity; CLI integration สำหรับ log validation commands.
 

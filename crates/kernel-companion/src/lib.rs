@@ -371,17 +371,26 @@ impl KernelCompanion {
             // ── Register capability revocation callback ──
             {
                 let attachment_clone = Arc::clone(&self.attachment);
-                self.capability_security.register_revocation_callback(Arc::new(move |token_id, scope| {
-                    if let Scope::Process(pid) = scope {
-                        if let Some(attachment) = attachment_clone.lock().as_mut() {
-                            if let Err(e) = attachment.deny_pid(pid) {
-                                tracing::error!("Failed to deny PID {} upon token revocation: {:?}", pid, e);
-                            } else {
-                                tracing::warn!("LSM: Revoked PID {} from allowed_pids because token {} was revoked", pid, token_id);
+                self.capability_security
+                    .register_revocation_callback(Arc::new(move |token_id, scope| {
+                        if let Scope::Process(pid) = scope {
+                            if let Some(attachment) = attachment_clone.lock().as_mut() {
+                                if let Err(e) = attachment.deny_pid(pid) {
+                                    tracing::error!(
+                                        "Failed to deny PID {} upon token revocation: {:?}",
+                                        pid,
+                                        e
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        "LSM: Blocked PID {} because token {} was revoked",
+                                        pid,
+                                        token_id
+                                    );
+                                }
                             }
                         }
-                    }
-                }));
+                    }));
             }
 
             // ── Spawn periodic capability expiration task ──
@@ -394,20 +403,24 @@ impl KernelCompanion {
                     loop {
                         tokio::select! {
                             _ = tokio::time::sleep(expiry_interval) => {
-                                // 1. ทำความสะอาด Token ที่หมดอายุ และขยะอื่นๆ ในระบบ
+                                // 1. ดึงรายการ PID ที่เคยได้รับ token แบบ Process-scoped ไว้
+                                //    ก่อน garbage_collect ลบ token ที่หมดอายุทิ้ง (ต้องอ่านก่อน
+                                //    ไม่ใช่จาก LSM attachment ซึ่งตอนนี้เป็น block-list เปล่าๆ
+                                //    โดยดีฟอลต์ ไม่ใช่ทะเบียน PID ที่ได้รับอนุญาต)
+                                let process_scoped_pids: std::collections::HashSet<u32> = cap_sec
+                                    .get_tokens()
+                                    .into_iter()
+                                    .filter_map(|t| match t.scope {
+                                        Scope::Process(pid) => Some(pid),
+                                        _ => None,
+                                    })
+                                    .collect();
+
+                                // 2. ทำความสะอาด Token ที่หมดอายุ และขยะอื่นๆ ในระบบ
                                 cap_sec.garbage_collect();
 
-                                // 2. ดึงรายการ PID ที่ยังได้รับอนุญาตอยู่ใน BPF Map มาเพื่อตรวจสอบ
-                                let current_allowed_pids = {
-                                    if let Some(attachment) = attachment_for_expiry.lock().as_ref() {
-                                        attachment.allowed_pids()
-                                    } else {
-                                        std::collections::HashSet::new()
-                                    }
-                                };
-
-                                // 3. สำหรับแต่ละ PID ที่ได้รับอนุญาต ตรวจสอบว่ายังมี Token ที่ใช้งานได้อยู่หรือไม่
-                                for pid in current_allowed_pids {
+                                // 3. สำหรับแต่ละ PID ที่เคยมี token ตรวจสอบว่ายังมี Token ที่ใช้งานได้อยู่หรือไม่
+                                for pid in process_scoped_pids {
                                     if pid == std::process::id() {
                                         continue;
                                     }
@@ -419,7 +432,7 @@ impl KernelCompanion {
                                             if let Err(e) = attachment.deny_pid(pid) {
                                                 tracing::error!("Failed to deny expired PID {}: {:?}", pid, e);
                                             } else {
-                                                tracing::warn!("LSM: Revoked PID {} from allowed_pids due to token expiration/no active tokens", pid);
+                                                tracing::warn!("LSM: Blocked PID {} due to token expiration/no active tokens", pid);
                                             }
                                         }
                                     }
@@ -1275,9 +1288,11 @@ impl KernelCompanion {
         Ok(allowed)
     }
 
+    /// คืนค่า `true` หาก PID นี้ไม่ได้ถูกบล็อกโดย LSM (kernel default-allow):
+    /// PID ที่ยังไม่เคยผ่าน `authorize_process_token` เลยจะคืน `true` เช่นกัน
+    /// เพราะยังไม่เคยถูกปฏิเสธ — ใช้ `authorize_process_token`/
+    /// `has_valid_token_for_pid` หากต้องการตรวจสอบว่ามี token ที่ valid จริง
     #[must_use]
-    /// ฟังก์ชัน `is_pid_authorized` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `is_pid_authorized` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
     pub fn is_pid_authorized(&self, pid: u32) -> bool {
         self.attachment
             .lock()

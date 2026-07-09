@@ -14,7 +14,7 @@ Current implementation facts:
 - WORM audit logger is file-backed with hash chain validation and cryptographic log verification
 - `authorize_token`, `validate`, and `decision_for` all emit audit records with Prometheus metrics counters
 - token issuance is rate-limited (configurable via `max_issue_rate`)
-- automatic revoke with callback propagation to kernel LSM `allowed_pids`
+- automatic revoke with callback propagation to kernel LSM `blocked_pids` (global default-allow hook, deny only explicitly-blocked PIDs)
 - revocation callbacks registered via `register_revocation_callback`
 
 ## Zero-Trust Security Model

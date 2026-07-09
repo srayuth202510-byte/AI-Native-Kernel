@@ -193,7 +193,7 @@ QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
 
 ### 8.1 ระบบถอนสิทธิ์ความปลอดภัยลงสู่ Kernel LSM ทันที (Automatic Revoke/Expiry Propagation)
 - เมื่อ `CapabilityToken` ถูกสั่งยกเลิก (Revoke) หรือหมดอายุการใช้งาน (Expired) ในชั้น `capability-security` ระบบประสานงานหลัก `kernel-companion` จะรับรู้ผ่านกลไกการจดทะเบียน callback ทันที
-- ระบบจะดึงรายชื่อ PIDs ทั้งหมดที่เชื่อมโยงกับโทเค็นดังกล่าว และทำการสั่งลบออกจาก `allowed_pids` ในชั้น Kernel LSM hook (Aya) ทันที รวมถึงมี background thread คอยตรวจสอบความปลอดภัยซ้ำทุกๆ 500ms เพื่อให้สอดคล้องกับมาตรการ Zero-Trust แบบ fail-safe
+- ระบบจะดึงรายชื่อ PIDs ทั้งหมดที่เชื่อมโยงกับโทเค็นดังกล่าว และทำการสั่งเพิ่มเข้า `blocked_pids` ในชั้น Kernel LSM hook (Aya) ทันที (LSM เป็น global hook ที่ default-allow ทุก process บนเครื่อง แล้ว deny เฉพาะ PID ที่ถูกบล็อกอย่างชัดเจนเท่านั้น) รวมถึงมี background thread คอยตรวจสอบความปลอดภัยซ้ำทุกๆ 500ms เพื่อให้สอดคล้องกับมาตรการ Zero-Trust แบบ fail-safe
 
 ### 8.2 RocksDB Warm Store แบบจัดเก็บถาวร (Persistent RocksDB Warm Store)
 เมื่อคอมไพล์โปรเจกต์ด้วย `--features context-memory/rocksdb-warm` ระบบจัดเก็บข้อมูล RocksDB บน NVMe จะทำงานแบบจัดเก็บถาวร (Persistent):

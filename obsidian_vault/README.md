@@ -110,7 +110,7 @@ Zero-trust capability tokens with WORM audit and Prometheus metrics.
 
 - **Files**: `crates/capability-security/src/`
 - **Key Features**: Rate-limited token issuance, constant-time comparison, fail-closed allowlist policy, WORM audit with hash chain validation, Prometheus security counters, automatic revoke with kernel callback propagation
-- **Integration**: Security layer for all components; revoke callback propagates to LSM allowed_pids
+- **Integration**: Security layer for all components; revoke callback propagates to LSM `blocked_pids` (global default-allow hook, deny only explicitly-blocked PIDs)
 
 ## Development Workflow
 

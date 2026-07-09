@@ -226,18 +226,23 @@ impl Default for LsmPolicyEngine {
 ///
 /// ในโหมดจริง (real eBPF): เก็บ `aya::Bpf` เพื่อให้โปรแกรม LSM ทำงานใน kernel
 /// ในโหมดจำลอง: แค่ flag `attached` สำหรับทดสอบการทำงานของ lifecycle
+///
+/// หมายเหตุด้านความปลอดภัย: hook เหล่านี้เป็น **global** — ทำงานกับทุก process
+/// บนเครื่อง ไม่ใช่แค่ agent ที่ daemon จัดการ ดังนั้นโมเดลจึงเป็น
+/// **default-allow + block-list เจาะจง PID** (ตรงข้ามกับ allowlist แบบเดิม
+/// ที่ deny ทุก process ที่ไม่รู้จัก ซึ่งทำให้ทั้งเครื่องค้างทันทีที่แนบ hook)
 #[derive(Debug)]
 pub struct LsmAttachment {
     /// BPF object ที่เก็บรักษาโปรแกรม LSM ใน kernel (None = โหมดจำลอง)
     bpf: Option<aya::Bpf>,
-    /// map สำหรับ sync PID allowlist runtime เข้ากับ kernel hook
-    allowed_pids: Option<BpfHashMap<MapData, u32, u32>>,
+    /// map สำหรับ sync PID block-list runtime เข้ากับ kernel hook
+    blocked_pids: Option<BpfHashMap<MapData, u32, u32>>,
     /// map สำหรับ sync syscall allowlist runtime เข้ากับ kernel hook
     allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
     /// บ่งชี้ว่ายังคงแนบอยู่กับ Kernel หรือไม่
     attached: bool,
     /// snapshot ฝั่ง userspace สำหรับทดสอบและ fail-safe checks
-    allowed_pid_cache: HashSet<u32>,
+    blocked_pid_cache: HashSet<u32>,
 }
 
 impl LsmAttachment {
@@ -247,10 +252,10 @@ impl LsmAttachment {
     pub fn new() -> Self {
         Self {
             bpf: None,
-            allowed_pids: None,
+            blocked_pids: None,
             allowed_syscalls: None,
             attached: true,
-            allowed_pid_cache: HashSet::new(),
+            blocked_pid_cache: HashSet::new(),
         }
     }
 
@@ -259,16 +264,16 @@ impl LsmAttachment {
     #[must_use]
     pub fn new_with_bpf(
         bpf: aya::Bpf,
-        allowed_pids: Option<BpfHashMap<MapData, u32, u32>>,
+        blocked_pids: Option<BpfHashMap<MapData, u32, u32>>,
         allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
-        allowed_pid_cache: HashSet<u32>,
+        blocked_pid_cache: HashSet<u32>,
     ) -> Self {
         Self {
             bpf: Some(bpf),
-            allowed_pids,
+            blocked_pids,
             allowed_syscalls,
             attached: true,
-            allowed_pid_cache,
+            blocked_pid_cache,
         }
     }
 
@@ -276,10 +281,10 @@ impl LsmAttachment {
     pub fn detach(&mut self) {
         // Dropping the Bpf object detaches all programs and unloads them
         self.bpf = None;
-        self.allowed_pids = None;
+        self.blocked_pids = None;
         self.allowed_syscalls = None;
         self.attached = false;
-        self.allowed_pid_cache.clear();
+        self.blocked_pid_cache.clear();
     }
 
     /// ตรวจสอบสถานะว่า LSM Hook ยังทำงานอยู่หรือไม่
@@ -294,38 +299,36 @@ impl LsmAttachment {
         self.bpf.is_some()
     }
 
-    /// ฟังก์ชัน `allow_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `allow_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// อนุญาต PID นี้อีกครั้ง (ลบออกจาก block-list) — ค่าดีฟอลต์ของทุก PID
+    /// อยู่แล้วคือ "อนุญาต" เว้นแต่เคยถูกบล็อกไว้มาก่อน
     pub fn allow_pid(&mut self, pid: u32) -> Result<()> {
-        if let Some(map) = self.allowed_pids.as_mut() {
-            map.insert(pid, 1, 0)?;
-        }
-        self.allowed_pid_cache.insert(pid);
-        Ok(())
-    }
-
-    /// ฟังก์ชัน `deny_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `deny_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    pub fn deny_pid(&mut self, pid: u32) -> Result<()> {
-        if let Some(map) = self.allowed_pids.as_mut() {
+        if let Some(map) = self.blocked_pids.as_mut() {
             let _ = map.remove(&pid);
         }
-        self.allowed_pid_cache.remove(&pid);
+        self.blocked_pid_cache.remove(&pid);
+        Ok(())
+    }
+
+    /// บล็อก PID นี้ (เพิ่มเข้า block-list) — ใช้เมื่อ token ถูกเพิกถอน/หมดอายุ
+    /// หรือ Immune System สั่งกักกัน/kill agent
+    pub fn deny_pid(&mut self, pid: u32) -> Result<()> {
+        if let Some(map) = self.blocked_pids.as_mut() {
+            map.insert(pid, 1, 0)?;
+        }
+        self.blocked_pid_cache.insert(pid);
         Ok(())
     }
 
     #[must_use]
-    /// ฟังก์ชัน `allows_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `allows_pid` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
+    /// คืนค่า `true` หาก PID นี้ยังคงถูกอนุญาต (ไม่อยู่ใน block-list)
     pub fn allows_pid(&self, pid: u32) -> bool {
-        self.allowed_pid_cache.contains(&pid)
+        !self.blocked_pid_cache.contains(&pid)
     }
 
     #[must_use]
-    /// ฟังก์ชัน `allowed_pids` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    /// ฟังก์ชัน `allowed_pids` ใช้สำหรับดำเนินการที่เกี่ยวข้องกับระบบ
-    pub fn allowed_pids(&self) -> HashSet<u32> {
-        self.allowed_pid_cache.clone()
+    /// คืนค่า snapshot ของ PID ทั้งหมดที่ถูกบล็อกอยู่ในปัจจุบัน
+    pub fn blocked_pids(&self) -> HashSet<u32> {
+        self.blocked_pid_cache.clone()
     }
 }
 
@@ -337,10 +340,11 @@ impl Default for LsmAttachment {
 
 /// พยายามโหลดและแนบโปรแกรม LSM eBPF จริงผ่าน Aya
 ///
-/// โปรแกรมที่แนบ (ชื่อ LSM hook ต้องตรงกับ kernel BTF trampoline `bpf_lsm_<hook>`):
-/// - `file_open` — ตรวจสอบ PID ที่ allowed_pids map (kernel ≥5.7)
-/// - `bprm_check_security` — ตรวจสอบ PID ก่อน execve (kernel ≥5.5)
-/// - `socket_create` — ตรวจสอบ PID ก่อนสร้าง socket
+/// โปรแกรมที่แนบ (ชื่อ LSM hook ต้องตรงกับ kernel BTF trampoline `bpf_lsm_<hook>`),
+/// ทุกตัว default-allow และ deny เฉพาะ PID ที่อยู่ใน `blocked_pids` map:
+/// - `file_open` (kernel ≥5.7)
+/// - `bprm_check_security` (kernel ≥5.5)
+/// - `socket_create`
 ///
 /// # Errors
 ///
@@ -349,7 +353,7 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
     let metrics = kernel_metrics();
     let bpf_bytes = load_bpf_o("lsm-security")?;
     let mut bpf = aya::Bpf::load(&bpf_bytes)?;
-    let mut allowed_pid_cache = HashSet::new();
+    let blocked_pid_cache = HashSet::new();
 
     // Aya 0.12: LSM programs require kernel BTF (/sys/kernel/btf/vmlinux)
     // to resolve types between the BPF program and kernel LSM hooks.
@@ -357,7 +361,7 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
         .map_err(|e| anyhow::anyhow!("Cannot load kernel BTF from /sys/kernel/btf/vmlinux: {e}"))?;
 
     // ── file_open LSM hook ──
-    // ตรวจสอบทุกครั้งที่มีการเปิดไฟล์ โดยเช็ค PID จาก allowed_pids map
+    // ตรวจสอบทุกครั้งที่มีการเปิดไฟล์ โดยเช็ค PID จาก blocked_pids map
     // หมายเหตุ: program_mut ใช้ชื่อฟังก์ชัน C ("lsm_file_open"); load ใช้ชื่อ LSM
     // hook ("file_open") ที่ Aya จะ resolve เป็น BTF trampoline `bpf_lsm_file_open`
     {
@@ -399,21 +403,16 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
         info!("LSM eBPF: socket_create attached");
     }
 
-    // ── populate allowed_pids eBPF map ──
-    // เพิ่ม PID ของ companion daemon เองให้อยู่ใน allowlist เสมอ
-    let mut allowed_pids = if let Some(map) = bpf.take_map("allowed_pids") {
+    // ── populate blocked_pids eBPF map ──
+    // ว่างเปล่าโดยดีฟอลต์ — ทุก PID (รวมถึง daemon เอง) ได้รับอนุญาตจนกว่าจะถูก
+    // เพิ่มเข้า block-list อย่างชัดเจน (token ถูกเพิกถอน/หมดอายุ หรือ Immune
+    // System สั่งกักกัน) ไม่ต้องเติมอะไรตอน attach
+    let blocked_pids = if let Some(map) = bpf.take_map("blocked_pids") {
         Some(BpfHashMap::<_, u32, u32>::try_from(map)?)
     } else {
+        warn!("LSM eBPF: could not create HashMap from blocked_pids map");
         None
     };
-    if let Some(pid_map) = allowed_pids.as_mut() {
-        let own_pid = std::process::id();
-        let _ = pid_map.insert(own_pid, 1, 0);
-        allowed_pid_cache.insert(own_pid);
-        info!("LSM eBPF: PID {own_pid} added to allowed_pids map");
-    } else {
-        warn!("LSM eBPF: could not create HashMap from allowed_pids map");
-    }
 
     // ── populate allowed_syscalls eBPF map ──
     // เติม syscall numbers ที่ LsmPolicyEngine อนุญาต
@@ -439,9 +438,9 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
     metrics.set_active_mode("lsm", "real");
     Ok(LsmAttachment::new_with_bpf(
         bpf,
-        allowed_pids,
+        blocked_pids,
         allowed_syscalls,
-        allowed_pid_cache,
+        blocked_pid_cache,
     ))
 }
 
@@ -580,15 +579,16 @@ mod tests {
     }
 
     #[test]
-    fn attachment_pid_allowlist_can_be_updated_in_fail_closed_mode() {
+    fn attachment_pid_block_list_can_be_updated() {
         let mut attachment = LsmAttachment::new();
-        assert!(!attachment.allows_pid(4242));
-
-        attachment.allow_pid(4242).expect("allow should succeed");
+        // Default-allow: an unknown PID is allowed until explicitly blocked.
         assert!(attachment.allows_pid(4242));
 
         attachment.deny_pid(4242).expect("deny should succeed");
         assert!(!attachment.allows_pid(4242));
+
+        attachment.allow_pid(4242).expect("allow should succeed");
+        assert!(attachment.allows_pid(4242));
     }
 
     #[test]
@@ -704,11 +704,19 @@ mod tests {
         eprintln!("LSM: attached — is_real={}", attachment.is_real());
 
         if attachment.is_real() {
-            // Verify PID allowlist operations
+            // Verify PID block-list operations. Default-allow: own PID is
+            // never inserted into blocked_pids at attach time, so it must
+            // already be allowed.
             let own_pid = std::process::id();
             assert!(
                 attachment.allows_pid(own_pid),
-                "own PID should be in allowlist"
+                "own PID should be allowed by default (not in block-list)"
+            );
+
+            attachment.deny_pid(99999).expect("deny_pid should succeed");
+            assert!(
+                !attachment.allows_pid(99999),
+                "denied PID should be in block-list"
             );
 
             attachment
@@ -716,16 +724,10 @@ mod tests {
                 .expect("allow_pid should succeed");
             assert!(
                 attachment.allows_pid(99999),
-                "newly allowed PID should be in allowlist"
+                "re-allowed PID should be removed from block-list"
             );
 
-            attachment.deny_pid(99999).expect("deny_pid should succeed");
-            assert!(
-                !attachment.allows_pid(99999),
-                "denied PID should be removed from allowlist"
-            );
-
-            eprintln!("LSM: PID allowlist operations verified");
+            eprintln!("LSM: PID block-list operations verified");
         }
 
         // Detach
