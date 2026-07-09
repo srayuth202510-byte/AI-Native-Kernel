@@ -15,6 +15,19 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
+/// สร้าง security manager ที่เขียน audit log ลง temp path — กันไฟล์โตสะสมใน crate dir
+fn bench_security_manager() -> CapabilitySecurityManager {
+    let path = std::env::temp_dir().join(format!(
+        "ank-bench-audit-{}-{}.log",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    CapabilitySecurityManager::new_with_log_path(path)
+}
+
 fn bench_spawn_agents(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
@@ -24,7 +37,7 @@ fn bench_spawn_agents(c: &mut Criterion) {
                 AgentScheduler::new(
                     Arc::new(IntentBus::new(1024)),
                     Arc::new(ContextMemoryManager::new()),
-                    Arc::new(CapabilitySecurityManager::new()),
+                    Arc::new(bench_security_manager()),
                 )
             },
             |scheduler| {
@@ -50,7 +63,7 @@ fn bench_agent_lifecycle(c: &mut Criterion) {
                 AgentScheduler::new(
                     Arc::new(IntentBus::new(1024)),
                     Arc::new(ContextMemoryManager::new()),
-                    Arc::new(CapabilitySecurityManager::new()),
+                    Arc::new(bench_security_manager()),
                 )
             },
             |scheduler| {
@@ -76,7 +89,7 @@ fn bench_get_running_agents(c: &mut Criterion) {
     let scheduler = AgentScheduler::new(
         Arc::new(IntentBus::new(1024)),
         Arc::new(ContextMemoryManager::new()),
-        Arc::new(CapabilitySecurityManager::new()),
+        Arc::new(bench_security_manager()),
     );
     rt.block_on(async {
         for _ in 0..100 {
@@ -113,7 +126,7 @@ fn bench_grant_capability(c: &mut Criterion) {
                 let scheduler = AgentScheduler::new(
                     Arc::new(IntentBus::new(1024)),
                     Arc::new(ContextMemoryManager::new()),
-                    Arc::new(CapabilitySecurityManager::new()),
+                    Arc::new(bench_security_manager()),
                 );
                 let id = rt
                     .block_on(scheduler.spawn_agent(AgentControlBlock::new(0)))
@@ -137,7 +150,7 @@ fn bench_delegated_spawn_route(c: &mut Criterion) {
     let scheduler = AgentScheduler::new(
         Arc::new(IntentBus::new(1024)),
         Arc::new(ContextMemoryManager::new()),
-        Arc::new(CapabilitySecurityManager::new()),
+        Arc::new(bench_security_manager()),
     );
     rt.block_on(async {
         scheduler

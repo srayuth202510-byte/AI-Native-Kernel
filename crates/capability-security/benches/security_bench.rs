@@ -4,9 +4,22 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
+/// สร้าง manager ที่เขียน audit log ลง temp path — กันไฟล์โตสะสมใน crate dir
+fn bench_manager(max_issue_rate: usize) -> CapabilitySecurityManager {
+    let path = std::env::temp_dir().join(format!(
+        "ank-bench-audit-{}-{}.log",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    CapabilitySecurityManager::new_with_log_path_and_rate(path, max_issue_rate)
+}
+
 fn bench_issue_token(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let manager = CapabilitySecurityManager::with_rate_limit(0);
+    let manager = bench_manager(0);
     let token = CapabilityToken::new(
         1,
         Scope::Global,
@@ -33,7 +46,7 @@ fn run_issue_token(
 
 fn bench_authorize_token_allow(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let manager = CapabilitySecurityManager::new();
+    let manager = bench_manager(100);
     let token = CapabilityToken::new(
         2,
         Scope::Global,
@@ -65,7 +78,7 @@ fn run_authorize_token_allow(
 
 fn bench_authorize_token_deny(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let manager = CapabilitySecurityManager::new();
+    let manager = bench_manager(100);
     let token = CapabilityToken::new(
         3,
         Scope::Global,
@@ -97,7 +110,7 @@ fn run_authorize_token_deny(
 
 fn bench_validate_token(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let manager = CapabilitySecurityManager::new();
+    let manager = bench_manager(100);
     let token = CapabilityToken::new(
         4,
         Scope::Global,
@@ -124,7 +137,7 @@ fn run_validate_token(c: &mut Criterion, rt: &Runtime, manager: &CapabilitySecur
 
 fn bench_decision_for(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let manager = CapabilitySecurityManager::new();
+    let manager = bench_manager(100);
     let token = CapabilityToken::new(
         5,
         Scope::Process(99),

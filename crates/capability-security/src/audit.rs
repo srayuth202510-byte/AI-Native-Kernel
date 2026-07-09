@@ -149,6 +149,9 @@ pub struct AuditLogger {
     log_path: PathBuf,
     /// แฮชล่าสุดที่บันทึกไว้ในหน่วยความจำ (ใช้สำหรับ Hash Chaining)
     last_hash: std::sync::Arc<parking_lot::Mutex<Option<String>>>,
+    /// File handle ถาวรสำหรับเขียน log (เปิดครั้งเดียว) — Mutex บังคับให้เขียนทีละ entry
+    /// เพื่อกัน hash chain fork และบรรทัดปนกันเมื่อ record() ถูกเรียกพร้อมกันหลาย task
+    writer: std::sync::Arc<tokio::sync::Mutex<Option<tokio::fs::File>>>,
 }
 
 impl AuditLogger {
@@ -158,26 +161,70 @@ impl AuditLogger {
         Self {
             log_path,
             last_hash: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+            writer: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
+    /// อ่านแฮชล่าสุดจากท้ายไฟล์ โดย parse เฉพาะบรรทัดที่จำเป็น (ไม่อ่านทั้งไฟล์)
+    /// เริ่มจาก chunk เล็กที่ท้ายไฟล์ แล้วขยายย้อนกลับเมื่อยังไม่พบ entry ที่มี hash
     async fn get_last_hash_from_file(&self) -> String {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        const INITIAL_TAIL_CHUNK: u64 = 64 * 1024;
+
         let path = self.log_path.clone();
-        let content =
-            match tokio::time::timeout(AUDIT_IO_TIMEOUT, tokio::fs::read_to_string(&path)).await {
-                Ok(Ok(c)) => c,
-                _ => String::new(),
-            };
-        content
-            .lines()
-            .filter_map(|line| serde_json::from_str::<AuditEntry>(line).ok())
-            .filter_map(|e| e.hash)
-            .next_back()
-            .unwrap_or_default()
+        let result = tokio::time::timeout(AUDIT_IO_TIMEOUT, async {
+            let mut file = tokio::fs::File::open(&path).await.ok()?;
+            let len = file.metadata().await.ok()?.len();
+
+            let mut chunk = INITIAL_TAIL_CHUNK;
+            loop {
+                let start = len.saturating_sub(chunk);
+                file.seek(std::io::SeekFrom::Start(start)).await.ok()?;
+                let mut buf = Vec::with_capacity((len - start) as usize);
+                file.read_to_end(&mut buf).await.ok()?;
+                let text = String::from_utf8_lossy(&buf);
+
+                // ถ้าไม่ได้เริ่มอ่านจากต้นไฟล์ บรรทัดแรกอาจโดนตัดครึ่ง — ข้ามทิ้ง
+                let text = if start > 0 {
+                    match text.find('\n') {
+                        Some(i) => &text[i + 1..],
+                        None => "",
+                    }
+                } else {
+                    &text
+                };
+
+                let hash = text
+                    .lines()
+                    .rev()
+                    .filter_map(|line| serde_json::from_str::<AuditEntry>(line).ok())
+                    .find_map(|e| e.hash);
+
+                if let Some(h) = hash {
+                    return Some(h);
+                }
+                if start == 0 {
+                    return None; // อ่านถึงต้นไฟล์แล้ว ไม่พบ entry ที่มี hash
+                }
+                chunk *= 4; // ขยาย chunk แล้วลองใหม่ (กรณีท้ายไฟล์มีบรรทัดเสียติดกันมาก)
+            }
+        })
+        .await;
+
+        match result {
+            Ok(Some(h)) => h,
+            _ => String::new(),
+        }
     }
 
     /// บันทึกรายการตรวจสอบลงในไฟล์ล็อก พร้อมทำ Hash Chaining กับประวัติก่อนหน้า
+    ///
+    /// ถือ writer lock ตลอดช่วง "อ่าน prev hash → คำนวณ → เขียน" เพื่อให้ chain ต่อเนื่อง
+    /// แม้ถูกเรียกพร้อมกันจากหลาย task
     pub async fn record(&self, mut entry: AuditEntry) -> Result<(), AuditError> {
+        let mut writer_guard = self.writer.lock().await;
+
         let prev_hash = {
             let guard = self.last_hash.lock();
             guard.as_ref().cloned()
@@ -194,25 +241,47 @@ impl AuditLogger {
         let hash = entry.compute_hash(&prev_hash);
         entry.hash = Some(hash.clone());
 
-        let json_str = serde_json::to_string(&entry).map_err(AuditError::Serialize)?;
+        let mut line = serde_json::to_string(&entry).map_err(AuditError::Serialize)?;
+        line.push('\n');
 
-        let path = self.log_path.clone();
-        tokio::time::timeout(AUDIT_IO_TIMEOUT, async {
-            let mut file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .await
-                .map_err(AuditError::Open)?;
-            file.write_all(json_str.as_bytes())
+        // เปิดไฟล์ครั้งแรกครั้งเดียว แล้วถือ handle ไว้ใช้ตลอดอายุ logger
+        if writer_guard.is_none() {
+            let file = tokio::time::timeout(
+                AUDIT_IO_TIMEOUT,
+                tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.log_path),
+            )
+            .await
+            .map_err(|_| AuditError::Timeout)?
+            .map_err(AuditError::Open)?;
+            *writer_guard = Some(file);
+        }
+        let Some(file) = writer_guard.as_mut() else {
+            return Err(AuditError::Open(std::io::Error::other(
+                "audit writer unavailable",
+            )));
+        };
+
+        let write_result = tokio::time::timeout(AUDIT_IO_TIMEOUT, async {
+            file.write_all(line.as_bytes())
                 .await
                 .map_err(AuditError::Write)?;
-            file.write_all(b"\n").await.map_err(AuditError::Write)?;
             file.flush().await.map_err(AuditError::Write)?;
             Ok::<_, AuditError>(())
         })
         .await
-        .map_err(|_| AuditError::Timeout)??;
+        .map_err(|_| AuditError::Timeout)
+        .and_then(|r| r);
+
+        if let Err(e) = write_result {
+            // handle อาจอยู่ในสถานะครึ่ง ๆ กลาง ๆ — ทิ้งเพื่อให้ record ถัดไปเปิดใหม่
+            // และ invalidate hash cache เพราะไฟล์อาจมีบรรทัดครึ่งท่อน
+            *writer_guard = None;
+            *self.last_hash.lock() = None;
+            return Err(e);
+        }
 
         *self.last_hash.lock() = Some(hash);
         Ok(())
