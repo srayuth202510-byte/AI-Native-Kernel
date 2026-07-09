@@ -1355,6 +1355,7 @@ dependencies = [
  "anyhow",
  "capability-security",
  "context-memory",
+ "criterion",
  "dashmap",
  "intent-bus",
  "thiserror 1.0.69",
