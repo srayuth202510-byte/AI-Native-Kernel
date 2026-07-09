@@ -27,7 +27,9 @@ pub enum UdsAuthError {
     /// สิทธิ์ (Capability) ไม่เพียงพอสำหรับการทำคำสั่งดังกล่าว
     #[error("Insufficient capabilities. Required: {required}, Available: {available:?}")]
     InsufficientCapabilities {
+        /// Capability ที่คำสั่งนี้ต้องการ
         required: String,
+        /// Capability ทั้งหมดที่เซสชันนี้ถือครองอยู่จริง
         available: Vec<String>,
     },
     /// เกิดข้อผิดพลาดในการอ่านเขียนไฟล์เก็บโทเค็นชั่วคราว
@@ -87,12 +89,19 @@ impl CommandCapabilityMap {
 /// โครงสร้างข้อมูลเซสชันการเชื่อมต่อ UDS ที่ผ่านการตรวจสอบสิทธิ์แล้ว
 #[derive(Debug, Clone)]
 pub struct UdsSession {
+    /// รหัสประจำเซสชัน (ไม่ซ้ำกันภายใน process เดียว)
     pub session_id: u64,
+    /// รหัสของ CapabilityToken ที่ใช้ยืนยันตัวตนตอนเปิดเซสชัน
     pub token_id: u64,
+    /// UID ของ peer process ฝั่งตรงข้าม (จาก SO_PEERCRED)
     pub peer_uid: u32,
+    /// PID ของ peer process ฝั่งตรงข้าม (จาก SO_PEERCRED)
     pub peer_pid: u32,
+    /// เวลาที่เปิดเซสชัน ใช้คำนวณอายุตาม TTL
     pub created_at: Instant,
+    /// เวลากิจกรรมล่าสุด ใช้ตรวจ idle timeout (แชร์ข้าม thread ได้)
     pub last_activity: std::sync::Arc<parking_lot::Mutex<Instant>>,
+    /// รายการ capability ที่เซสชันนี้ได้รับอนุมัติให้ใช้
     pub granted_capabilities: Vec<String>,
 }
 

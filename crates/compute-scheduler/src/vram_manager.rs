@@ -6,12 +6,22 @@ use tracing::{info, warn};
 /// ข้อผิดพลาดของการจัดสรร VRAM หรือ Circuit Breaker ทำงาน
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
 pub enum VramError {
+    /// VRAM ไม่พอสำหรับคำขอนี้
     #[error("VRAM Out-of-Memory: ต้องการ {requested} ไบต์ แต่เหลือพื้นที่สำหรับ Agent เพียง {available} ไบต์")]
-    OutOfMemory { requested: usize, available: usize },
+    OutOfMemory {
+        /// จำนวนไบต์ที่ขอ
+        requested: usize,
+        /// จำนวนไบต์ที่เหลือให้จัดสรรได้
+        available: usize,
+    },
+    /// การใช้งาน VRAM รวมแตะเกณฑ์สูงสุด — ระงับการจัดสรรใหม่ชั่วคราว
     #[error(
         "GPU Circuit Breaker ทำงานเนื่องจากมีระดับการใช้งาน VRAM เกินเกณฑ์สูงสุด ({threshold_percent}%)"
     )]
-    CircuitBreakerTriggered { threshold_percent: f64 },
+    CircuitBreakerTriggered {
+        /// เกณฑ์เปอร์เซ็นต์ที่ตั้งไว้
+        threshold_percent: f64,
+    },
 }
 
 /// ระบบควบคุมและจำกัดการใช้ VRAM ของ Agent แบบ Multi-tenant
@@ -33,6 +43,7 @@ impl Default for GpuVramManager {
 }
 
 impl GpuVramManager {
+    /// สร้างตัวจัดการ VRAM ใหม่ ระบุความจุจำลอง (เมื่อไม่มี GPU จริง) และเกณฑ์ circuit breaker
     #[must_use]
     pub fn new(mock_total_capacity: usize, circuit_breaker_threshold: f64) -> Self {
         Self {

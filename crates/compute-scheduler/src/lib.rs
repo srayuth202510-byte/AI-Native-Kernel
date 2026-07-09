@@ -1,6 +1,15 @@
+//! ตัวจัดสรรงานประมวลผล AI (Compute Scheduler)
+//!
+//! เลือกฮาร์ดแวร์ (CPU/GPU/NPU) และรันไทม์ (llama.cpp, ONNX Runtime, vLLM)
+//! ให้แต่ละ workload ด้วย cost function ถ่วงน้ำหนัก latency + พลังงาน + ต้นทุน
+//! พร้อมจัดการ VRAM แบบ multi-tenant (budget, OOM killer, circuit breaker)
 // We allow unsafe code in this crate to interface with C-FFI bindings (ONNX Runtime, llama.cpp)
+
+/// รันไทม์ llama.cpp ผ่าน C FFI สำหรับ CPU/GPU inference
 pub mod llama;
+/// รันไทม์ ONNX Runtime ผ่าน C FFI (โหลดแบบ dlopen)
 pub mod onnx;
+/// ตัวควบคุมโควตา VRAM ต่อ agent พร้อม circuit breaker
 pub mod vram_manager;
 
 /// โมดูลจัดการงบประมาณ VRAM แบบ per-agent (GpuBudgetController)
@@ -286,7 +295,9 @@ pub trait NpuRuntime: Send + Sync {
 /// การตัดสินใจผลลัพธ์การจัดสรร (PlacementDecision) ที่รวบรวมทั้งฮาร์ดแวร์เป้าหมายและรันไทม์ที่เลือก
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlacementDecision {
+    /// ฮาร์ดแวร์เป้าหมายที่เลือก (CPU/GPU/NPU)
     pub target: ComputeTarget,
+    /// รันไทม์ inference ที่เลือก (`None` = workload ไม่ใช่งาน inference)
     pub runtime: Option<InferenceRuntime>,
 }
 

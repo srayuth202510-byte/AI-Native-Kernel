@@ -40,12 +40,16 @@ impl Default for VllmModelConfig {
 /// ข้อผิดพลาดของ vLLM subprocess
 #[derive(Debug, thiserror::Error)]
 pub enum VllmError {
+    /// หา vLLM binary ไม่พบบนระบบ
     #[error("vLLM binary not found: {0}")]
     BinaryNotFound(String),
+    /// vLLM subprocess เริ่มทำงานไม่สำเร็จ
     #[error("vLLM failed to start: {0}")]
     StartFailed(String),
+    /// vLLM process ตายระหว่างทำงาน
     #[error("vLLM process died: {0}")]
     ProcessDied(String),
+    /// เรียก HTTP API ของ vLLM ล้มเหลว
     #[error("HTTP request failed: {0}")]
     HttpError(String),
 }

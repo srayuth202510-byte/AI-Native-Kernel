@@ -62,6 +62,7 @@ impl MpsEngine {
         self
     }
 
+    /// ปิด mock fallback — ถ้าเชื่อมต่อ engine จริงไม่ได้ให้คืน error แทนการจำลองผล
     #[must_use]
     pub fn with_no_fallback(mut self) -> Self {
         self.fallback_mock = false;

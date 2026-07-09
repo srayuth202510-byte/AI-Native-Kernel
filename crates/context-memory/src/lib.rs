@@ -3,14 +3,22 @@
 //! ระบบจัดการหน่วยความจำบริบท (Context Memory Manager)
 //! รองรับการจัดเก็บข้อมูลแบบลำดับชั้น (Hierarchical Paging) ตั้งแต่ Hot, Warm ไปจนถึง Cold Store
 
+/// Cold tier — ไฟล์บนดิสก์สำหรับข้อมูลที่นานๆ ใช้ที
 pub mod cold;
+/// Semantic File System — ค้นหาไฟล์เชิงความหมาย
 pub mod fs;
+/// Hot tier — เก็บใน RAM สำหรับข้อมูลที่ใช้บ่อยที่สุด
 pub mod hot;
 pub mod indexer;
+/// P2P mesh สำหรับ replicate context ข้ามเครื่อง
 pub mod p2p_mesh;
+/// Vector store + semantic embedding ของ context
 pub mod semantic;
+/// SWIM failure detector สำหรับตรวจ node ล้มเหลวใน mesh
 pub mod swim;
+/// VRAM tier — tensor/KV cache บน GPU/NPU
 pub mod vram;
+/// Warm tier — NVMe (RocksDB ผ่าน feature flag) สำหรับข้อมูลรองจาก Hot
 pub mod warm;
 
 use crate::cold::ColdStore;
@@ -523,19 +531,23 @@ impl ContextMemoryManager {
         count
     }
 
+    /// เชื่อม P2P mesh เข้ากับ memory manager เพื่อเปิดโหมด distributed
     pub fn attach_mesh(&self, mesh: Arc<P2PMeshManager>) {
         *self.mesh.write() = Some(mesh);
     }
 
+    /// ตัดการเชื่อม mesh — กลับสู่โหมด local-only
     pub fn detach_mesh(&self) {
         *self.mesh.write() = None;
     }
 
+    /// ตรวจว่าขณะนี้เชื่อม mesh อยู่หรือไม่
     #[must_use]
     pub fn mesh_enabled(&self) -> bool {
         self.mesh.read().is_some()
     }
 
+    /// เขียนข้อมูลลง tier ฝั่งเรา แล้ว replicate ไปยังทุก node ใน mesh (ถ้าเชื่อมอยู่)
     pub async fn put_distributed(
         &self,
         key: impl Into<String> + AsRef<str>,
@@ -552,6 +564,7 @@ impl ContextMemoryManager {
         Ok(())
     }
 
+    /// อ่านข้อมูล — ลอง tier ฝั่งเราก่อน ถ้าไม่พบจึงไปถาม node อื่นใน mesh
     pub async fn get_distributed(&self, key: &str) -> Result<Vec<u8>> {
         if let Ok(value) = self.get(key) {
             return Ok(value);

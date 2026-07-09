@@ -13,6 +13,7 @@ pub enum GpuPlatform {
 }
 
 impl GpuPlatform {
+    /// ชื่อแพลตฟอร์มแบบ string คงที่ ใช้ใน log และ metrics label
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
@@ -25,12 +26,21 @@ impl GpuPlatform {
 /// ข้อผิดพลาดสำหรับ GpuMemoryPool
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
 pub enum PoolError {
+    /// การเรียก CUDA API ล้มเหลว
     #[error("CUDA API call failed: {0}")]
     CudaError(String),
+    /// การเรียก ROCm HIP API ล้มเหลว
     #[error("ROCm HIP API call failed: {0}")]
     RocmError(String),
+    /// คำขอจัดสรรใหญ่เกินความจุที่เหลือของ pool
     #[error("allocation of {size} bytes exceeds pool capacity {capacity}")]
-    PoolExhausted { size: usize, capacity: usize },
+    PoolExhausted {
+        /// ขนาดที่ขอจัดสรร (ไบต์)
+        size: usize,
+        /// ความจุรวมของ pool (ไบต์)
+        capacity: usize,
+    },
+    /// อ้างถึงบล็อกที่ไม่มีใน pool
     #[error("block {0} not found in pool")]
     BlockNotFound(String),
 }
@@ -66,6 +76,7 @@ pub struct GpuBlock {
 }
 
 impl GpuBlock {
+    /// สร้างตัวติดตามบล็อกใหม่ในสถานะ `Allocated` (ยังไม่ pin กับอุปกรณ์จริง)
     #[must_use]
     pub fn new(id: String, platform: GpuPlatform, size_bytes: usize) -> Self {
         Self {

@@ -5,16 +5,28 @@ use tracing::{debug, info, warn};
 /// ข้อผิดพลาดสำหรับ GpuBudgetController
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
 pub enum BudgetError {
+    /// ไม่เคยตั้งงบประมาณให้ agent นี้
     #[error("Agent {agent} has no budget configured")]
-    AgentNotFound { agent: String },
+    AgentNotFound {
+        /// ชื่อ agent ที่หาไม่พบ
+        agent: String,
+    },
+    /// คำขอเกินงบประมาณ VRAM ที่เหลือของ agent
     #[error("Agent {agent} budget exceeded: ต้องการ {requested} ไบต์ เหลือ {remaining} ไบต์")]
     BudgetExceeded {
+        /// ชื่อ agent ที่ขอเกินงบ
         agent: String,
+        /// จำนวนไบต์ที่ขอ
         requested: usize,
+        /// จำนวนไบต์ที่ยังเหลือในงบ
         remaining: usize,
     },
+    /// ระบบมีแรงกดดันหน่วยความจำรวม (ไม่ใช่แค่ agent เดียว)
     #[error("System memory pressure: {reason}")]
-    SystemPressure { reason: String },
+    SystemPressure {
+        /// คำอธิบายสาเหตุของแรงกดดัน
+        reason: String,
+    },
 }
 
 /// ระดับความสำคัญของ Agent — ส่งผลต่อการ preempt
@@ -42,6 +54,7 @@ pub struct AgentBudget {
 }
 
 impl AgentBudget {
+    /// สร้างงบประมาณใหม่ (เริ่มต้นยังไม่ใช้ VRAM เลย)
     #[must_use]
     pub fn new(max_bytes: usize, priority: AgentPriority) -> Self {
         Self {

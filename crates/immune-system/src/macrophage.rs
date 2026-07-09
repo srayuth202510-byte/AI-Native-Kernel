@@ -26,6 +26,7 @@ pub struct MacrophageAgent {
 }
 
 impl MacrophageAgent {
+    /// สร้าง Macrophage ผูกกับ Intent Bus และ context memory พร้อมกำหนดอายุขยะที่จะเก็บกวาด
     #[must_use]
     pub fn new(
         intent_bus: Arc<IntentBus>,
@@ -108,9 +109,12 @@ impl MacrophageAgent {
     }
 }
 
+/// สถิติผลการเก็บกวาดรอบล่าสุดของ Macrophage
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SweepStats {
+    /// จำนวน intent เก่าที่ถูกกำจัด
     pub collected: u64,
+    /// จำนวน context entries หมดอายุที่ถูกกำจัด
     pub collected_context: u64,
 }
 

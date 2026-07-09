@@ -7,9 +7,15 @@ use tracing::{error, info, warn};
 #[derive(Debug, Clone, PartialEq)]
 pub enum OomAction {
     /// Agent ถูก swap ออกจาก GPU ไปยัง host memory
-    SwappedOut { agent: String },
+    SwappedOut {
+        /// ชื่อ agent ที่ถูก swap ออก
+        agent: String,
+    },
     /// Agent ถูก kill (deallocate ทั้งหมด) เพื่อปลดปล่อย VRAM
-    Killed { agent: String },
+    Killed {
+        /// ชื่อ agent ที่ถูก kill
+        agent: String,
+    },
 }
 
 /// ผลลัพธ์จากการจัดสรร VRAM ผ่าน OOM killer
@@ -22,10 +28,15 @@ pub struct OomAllocationResult {
 /// ข้อผิดพลาดสำหรับ GPU OOM killer
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
 pub enum OomError {
+    /// agent ที่อ้างถึงไม่มีใน budget controller
     #[error("ไม่พบ agent {0} ใน budget controller")]
     AgentNotFound(String),
+    /// พยายามทุกวิถีทาง (swap + kill) แล้วยังจัดสรรไม่พอ
     #[error("ไม่สามารถจัดสรร VRAM {needed} ไบต์ได้ — swap และ kill แล้วยังไม่พอ")]
-    AllocationFailed { needed: usize },
+    AllocationFailed {
+        /// จำนวนไบต์ที่ยังขาด
+        needed: usize,
+    },
 }
 
 /// GPU OOM Killer — จัดการสถานการณ์ VRAM เต็มด้วยการ preempt/kill ตาม priority

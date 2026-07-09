@@ -28,16 +28,15 @@ use tokio::task::JoinHandle;
 use tracing::{info, instrument, warn};
 
 pub mod capability_detect;
+/// Cognitive Control Plane — วงจรวิเคราะห์และปรับพฤติกรรมระบบอัตโนมัติ
 pub mod cognitive;
-/// โมดูล `config` จัดการระบบย่อยที่เกี่ยวข้อง
-/// โมดูล `config` จัดการระบบย่อยที่เกี่ยวข้อง
+/// โหลดและตรวจสอบ config (TOML) ของ companion daemon
 pub mod config;
-/// โมดูล `ebpf` จัดการระบบย่อยที่เกี่ยวข้อง
-/// โมดูล `ebpf` จัดการระบบย่อยที่เกี่ยวข้อง
+/// ชั้น eBPF: โหลด BPF object, แนบ syscall tracer และจัดการ event channel
 pub mod ebpf;
+/// สะพานส่ง Intent ข้ามเครื่องระหว่าง node ใน mesh
 pub mod intent_bridge;
-/// โมดูล `lsm` จัดการระบบย่อยที่เกี่ยวข้อง
-/// โมดูล `lsm` จัดการระบบย่อยที่เกี่ยวข้อง
+/// LSM policy engine + การแนบ kernel LSM hooks (block-list ระดับ PID)
 pub mod lsm;
 /// โมดูล `metrics_server` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `metrics_server` จัดการระบบย่อยที่เกี่ยวข้อง

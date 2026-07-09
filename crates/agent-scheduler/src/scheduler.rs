@@ -84,13 +84,18 @@ impl Default for DistributedRoutingPolicy {
 /// Snapshot ทรัพยากรของ remote node สำหรับใช้ตัดสินใจ routing
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteNodeState {
+    /// รหัสประจำ node ปลายทาง
     pub node_id: String,
+    /// จำนวน slot ว่างที่รับ agent เพิ่มได้
     pub available_agent_slots: usize,
+    /// คะแนนความน่าเชื่อถือ 0–100 ของ node
     pub trust_score: u8,
+    /// ความสามารถที่ node ให้บริการ
     pub capabilities: Vec<String>,
 }
 
 impl RemoteNodeState {
+    /// สร้าง snapshot สถานะ remote node ใหม่
     #[must_use]
     pub fn new(
         node_id: impl Into<String>,
@@ -134,8 +139,11 @@ pub enum AgentEvent {
     AgentCapabilityRevoked(u64, u64),
     /// Intent ถูก route ไป spawn บน remote node แทน
     AgentDelegated {
+        /// รหัส agent ที่ถูกส่งต่อ
         agent_id: u64,
+        /// รหัส node ปลายทางที่รับงานไป
         target_node: String,
+        /// เหตุผลของการ delegate (เช่น slot ในเครื่องเต็ม)
         reason: String,
     },
 }

@@ -28,8 +28,11 @@ pub struct SemanticFile {
 /// ข้อมูล metadata ของไฟล์ (ไม่รวม content)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMetadata {
+    /// พาธเต็มของไฟล์
     pub path: String,
+    /// ขนาดไฟล์ในหน่วยไบต์
     pub size: u64,
+    /// นามสกุลไฟล์ (ไม่รวมจุด)
     pub extension: String,
 }
 

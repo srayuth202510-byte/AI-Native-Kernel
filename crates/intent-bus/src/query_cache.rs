@@ -116,12 +116,15 @@ pub struct CacheStats {
 /// ข้อผิดพลาดที่เกี่ยวข้องกับ Query Cache
 #[derive(Debug, thiserror::Error)]
 pub enum QueryCacheError {
+    /// ไม่พบ entry สำหรับ query นี้ใน cache
     #[error("cache entry not found")]
     NotFound,
 
+    /// cache เต็มและไม่สามารถ evict เพื่อรับ entry ใหม่ได้
     #[error("cache is full and cannot accept new entries")]
     CacheFull,
 
+    /// cache ถูกปิดการใช้งานอยู่
     #[error("cache is disabled")]
     Disabled,
 }
@@ -130,9 +133,15 @@ pub enum QueryCacheError {
 #[derive(Debug, Clone)]
 pub enum CacheInvalidation {
     /// มีไฟล์ถูก index ใหม่ — ต้องลบ cache entries ที่เกี่ยวข้อง
-    FileIndexed { paths: Vec<String> },
+    FileIndexed {
+        /// รายการพาธของไฟล์ที่ถูก index ใหม่
+        paths: Vec<String>,
+    },
     /// มีไฟล์ถูกลบ — ต้องลบ cache entries ที่มีผลลัพธ์อ้างอิงไฟล์นี้
-    FileDeleted { path: String },
+    FileDeleted {
+        /// พาธของไฟล์ที่ถูกลบ
+        path: String,
+    },
     /// ล้าง cache ทั้งหมด
     FullClear,
 }

@@ -180,11 +180,20 @@ pub struct ChangeDetector {
 #[derive(Debug, Clone)]
 pub enum FileChange {
     /// ไฟล์ใหม่ที่ยังไม่เคย index
-    Created { path: String },
+    Created {
+        /// พาธของไฟล์ที่ถูกสร้าง
+        path: String,
+    },
     /// ไฟล์ที่มีการเปลี่ยนแปลงเนื้อหา
-    Modified { path: String },
+    Modified {
+        /// พาธของไฟล์ที่ถูกแก้ไข
+        path: String,
+    },
     /// ไฟล์ที่ถูกลบ
-    Deleted { path: String },
+    Deleted {
+        /// พาธของไฟล์ที่ถูกลบ
+        path: String,
+    },
 }
 
 impl ChangeDetector {
@@ -425,11 +434,22 @@ pub struct SemanticIndexer {
 #[derive(Debug, Clone)]
 pub enum IndexerEvent {
     /// มีไฟล์ถูก index ใหม่
-    FileIndexed { paths: Vec<String> },
+    FileIndexed {
+        /// รายการพาธที่เพิ่ง index เสร็จ
+        paths: Vec<String>,
+    },
     /// มีไฟล์ถูกลบออก
-    FileDeleted { path: String },
+    FileDeleted {
+        /// พาธของไฟล์ที่ถูกถอดจาก index
+        path: String,
+    },
     /// Index ทั้งหมดเสร็จสมบูรณ์
-    ScanComplete { total_files: usize, indexed: usize },
+    ScanComplete {
+        /// จำนวนไฟล์ทั้งหมดที่สแกนพบ
+        total_files: usize,
+        /// จำนวนไฟล์ที่ index สำเร็จ
+        indexed: usize,
+    },
 }
 
 impl SemanticIndexer {

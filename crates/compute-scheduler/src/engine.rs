@@ -4,12 +4,16 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
+/// ข้อผิดพลาดจากการเรียก inference engine ภายนอก (llama.cpp / vLLM / ONNX)
 #[derive(Debug, Error)]
 pub enum EngineError {
+    /// เชื่อมต่อ engine ไม่สำเร็จ (เครือข่าย/socket)
     #[error("Inference engine connection failed: {0}")]
     ConnectionFailed(String),
+    /// engine ไม่ตอบกลับภายในเวลาที่กำหนด
     #[error("Inference engine timeout")]
     Timeout,
+    /// engine ตอบกลับด้วยข้อผิดพลาดภายใน
     #[error("Inference engine error: {0}")]
     Internal(String),
 }
@@ -264,6 +268,7 @@ impl TensorRtLlmEngine {
         })
     }
 
+    /// ปิด mock fallback — ถ้าเชื่อมต่อ engine จริงไม่ได้ให้คืน error แทนการจำลองผล
     #[must_use]
     pub fn with_no_fallback(mut self) -> Self {
         self.fallback_mock = false;

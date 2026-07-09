@@ -1,3 +1,12 @@
+//! T-Cell Agent — หน่วยพิฆาต (Killer T-Cell)
+//!
+//! ทำหน้าที่ตรวจจับพฤติกรรมผิดปกติ (Anomaly Detection) ของ Agent และ Process:
+//! - ติดตามอัตราการเรียก syscall ของแต่ละ Process
+//! - ตรวจจับ rate spike ที่ผิดปกติ (เช่น fork bomb, tight loop)
+//! - ตรวจจับ syscall ต้องห้ามที่ถูก deny ซ้ำๆ
+//! - ตรวจจับรูปแบบลำดับ syscall ที่น่าสงสัย (Suspicious Syscall Sequence)
+//! - สั่ง quarantine หรือ kill process ที่น่าสงสัย
+
 use dashmap::DashMap;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -21,17 +30,10 @@ fn get_jitter_percentage() -> f64 {
     percent as f64 / 100.0
 }
 
-/// T-Cell Agent — หน่วยพิฆาต (Killer T-Cell)
-///
-/// ทำหน้าที่ตรวจจับพฤติกรรมผิดปกติ (Anomaly Detection) ของ Agent และ Process:
-/// - ติดตามอัตราการเรียก syscall ของแต่ละ Process
-/// - ตรวจจับ rate spike ที่ผิดปกติ (เช่น fork bomb, tight loop)
-/// - ตรวจจับ syscall ต้องห้ามที่ถูก deny ซ้ำๆ
-/// - ตรวจจับรูปแบบลำดับ syscall ที่น่าสงสัย (Suspicious Syscall Sequence)
-/// - สั่ง quarantine หรือ kill process ที่น่าสงสัย
-
+/// ข้อผิดพลาดของ T-Cell Agent
 #[derive(Debug, Error)]
 pub enum TCellError {
+    /// ค่าเกณฑ์การตรวจจับ (threshold) ไม่ถูกต้อง
     #[error("threshold config error: {0}")]
     ConfigError(String),
 }
@@ -107,11 +109,13 @@ pub struct TCellAgent {
 }
 
 impl TCellAgent {
+    /// สร้าง T-Cell ด้วยเกณฑ์ syscall rate และ deny count (kill threshold ดีฟอลต์ = 15)
     #[must_use]
     pub fn new(rate_threshold: u64, deny_threshold: u32) -> Self {
         Self::with_kill_threshold(rate_threshold, deny_threshold, 15)
     }
 
+    /// สร้าง T-Cell พร้อมระบุเกณฑ์ deny สะสมที่จะยกระดับจาก quarantine เป็น kill
     #[must_use]
     pub fn with_kill_threshold(
         rate_threshold: u64,

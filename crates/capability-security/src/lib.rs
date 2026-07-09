@@ -1,8 +1,15 @@
+//! ชั้นความปลอดภัยแบบ Zero-Trust ของ AI-Native Kernel
+//!
+//! รวมการออก/ตรวจสอบ/เพิกถอน [`CapabilityToken`], นโยบาย fail-closed (default = DENY),
+//! WORM audit log แบบ hash chain และการตรวจสอบตัวตนผ่าน UDS
 #![deny(unsafe_code)]
 
+/// บันทึกประวัติการตัดสินใจด้านความปลอดภัยแบบ WORM (เขียนต่อท้ายเท่านั้น พร้อม hash chain)
 pub mod audit;
 pub mod metrics;
+/// เอนจินตัดสินใจเชิงนโยบาย (Policy Engine) แบบ fail-closed
 pub mod policy;
+/// นิยาม [`CapabilityToken`] และขอบเขตสิทธิ์ ([`Scope`]) พร้อมการเปรียบเทียบแบบ constant-time
 pub mod token;
 pub mod uds_auth;
 
@@ -16,6 +23,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 use thiserror::Error;
 
+/// ชนิดผลลัพธ์มาตรฐานของ crate นี้ — ล้มเหลวด้วย [`CapabilityError`]
 pub type Result<T> = core::result::Result<T, CapabilityError>;
 
 /// ข้อผิดพลาดประเภทต่างๆ ที่เกี่ยวข้องกับการตรวจสอบและจัดการสิทธิ์การเข้าถึง (Capability)
@@ -113,6 +121,7 @@ impl CapabilitySecurityManager {
         Self::with_rate_limit(100)
     }
 
+    /// สร้างตัวจัดการความปลอดภัยพร้อมกำหนดเพดานอัตราการออกโทเค็นต่อวินาที (rate limit)
     #[must_use]
     pub fn with_rate_limit(max_issue_rate: usize) -> Self {
         let metrics = SecurityMetrics::register(prometheus::default_registry()).ok();
@@ -134,6 +143,7 @@ impl CapabilitySecurityManager {
         Self::new_with_log_path_and_rate(log_path, 100)
     }
 
+    /// สร้างตัวจัดการความปลอดภัยพร้อมระบุทั้งพาธไฟล์ audit log และเพดานอัตราการออกโทเค็น
     #[must_use]
     pub fn new_with_log_path_and_rate(log_path: std::path::PathBuf, max_issue_rate: usize) -> Self {
         let metrics = SecurityMetrics::register(prometheus::default_registry()).ok();

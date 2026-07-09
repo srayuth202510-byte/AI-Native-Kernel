@@ -11,26 +11,40 @@ unsafe extern "C" {
     fn dlclose(handle: *mut c_void) -> std::os::raw::c_int;
 }
 
+/// opaque handle ของ ONNX Runtime: สถานะ/ข้อผิดพลาดจากการเรียก API
 pub type OrtStatus = c_void;
+/// opaque handle ของ ONNX Runtime: environment กลาง (สร้างครั้งเดียวต่อ process)
 pub type OrtEnv = c_void;
+/// opaque handle ของ ONNX Runtime: session ของโมเดลที่โหลดแล้ว
 pub type OrtSession = c_void;
+/// opaque handle ของ ONNX Runtime: ตัวเลือกการสร้าง session
 pub type OrtSessionOptions = c_void;
+/// opaque handle ของ ONNX Runtime: ค่า tensor/ข้อมูลเข้า-ออก
 pub type OrtValue = c_void;
+/// opaque handle ของ ONNX Runtime: ข้อมูลตำแหน่งหน่วยความจำ (CPU/GPU)
 pub type OrtMemoryInfo = c_void;
+/// opaque handle ของ ONNX Runtime: ตัวจัดสรรหน่วยความจำ
 pub type OrtAllocator = c_void;
+/// opaque handle ของ ONNX Runtime: ข้อมูลชนิดของ input/output
 pub type OrtTypeInfo = c_void;
+/// opaque handle ของ ONNX Runtime: ชนิดและ shape ของ tensor
 pub type OrtTensorTypeAndShapeInfo = c_void;
 
+/// ตาราง function pointer (vtable) ของ ONNX Runtime C API
+///
+/// โครงสร้างต้องเรียงตรงกับ `OrtApi` ใน onnxruntime_c_api.h ทุกช่อง —
+/// ช่องที่ไม่ใช้แทนด้วย `_padN` เพื่อรักษา offset ให้ถูกต้อง
+/// (หมายเลข slot ในคอมเมนต์คือ index ในตารางต้นฉบับ)
 #[allow(non_snake_case)]
 #[repr(C)]
 pub struct OrtApi {
-    // 0: CreateStatus
+    /// FFI slot 0: CreateStatus
     pub CreateStatus: Option<unsafe extern "C" fn(code: i32, msg: *const c_char) -> *mut OrtStatus>,
-    // 1: GetErrorCode
+    /// FFI slot 1: GetErrorCode
     pub GetErrorCode: Option<unsafe extern "C" fn(status: *const OrtStatus) -> i32>,
-    // 2: GetErrorMessage
+    /// FFI slot 2: GetErrorMessage
     pub GetErrorMessage: Option<unsafe extern "C" fn(status: *const OrtStatus) -> *const c_char>,
-    // 3: CreateEnv
+    /// FFI slot 3: CreateEnv
     pub CreateEnv: Option<
         unsafe extern "C" fn(
             log_severity_level: i32,
@@ -38,13 +52,13 @@ pub struct OrtApi {
             out: *mut *mut OrtEnv,
         ) -> *mut OrtStatus,
     >,
-    // 4: CreateEnvWithCustomLogger
+    /// FFI slot 4: CreateEnvWithCustomLogger
     _pad4: *const c_void,
-    // 5: EnableTelemetryEvents
+    /// FFI slot 5: EnableTelemetryEvents
     _pad5: *const c_void,
-    // 6: DisableTelemetryEvents
+    /// FFI slot 6: DisableTelemetryEvents
     _pad6: *const c_void,
-    // 7: CreateSession
+    /// FFI slot 7: CreateSession
     pub CreateSession: Option<
         unsafe extern "C" fn(
             env: *const OrtEnv,
@@ -53,7 +67,7 @@ pub struct OrtApi {
             out: *mut *mut OrtSession,
         ) -> *mut OrtStatus,
     >,
-    // 8: CreateSessionFromArray
+    /// FFI slot 8: CreateSessionFromArray
     pub CreateSessionFromArray: Option<
         unsafe extern "C" fn(
             env: *const OrtEnv,
@@ -63,7 +77,7 @@ pub struct OrtApi {
             out: *mut *mut OrtSession,
         ) -> *mut OrtStatus,
     >,
-    // 9: Run
+    /// FFI slot 9: Run
     pub Run: Option<
         unsafe extern "C" fn(
             session: *mut OrtSession,
@@ -76,19 +90,19 @@ pub struct OrtApi {
             output_len: usize,
         ) -> *mut OrtStatus,
     >,
-    // 10: CreateSessionOptions
+    /// FFI slot 10: CreateSessionOptions
     pub CreateSessionOptions:
         Option<unsafe extern "C" fn(out: *mut *mut OrtSessionOptions) -> *mut OrtStatus>,
-    // 11: SetOptimizationLevel
+    /// FFI slot 11: SetOptimizationLevel
     pub SetOptimizationLevel:
         Option<unsafe extern "C" fn(options: *mut OrtSessionOptions, level: i32) -> *mut OrtStatus>,
-    // 12: SetIntraOpNumThreads
+    /// FFI slot 12: SetIntraOpNumThreads
     pub SetIntraOpNumThreads:
         Option<unsafe extern "C" fn(options: *mut OrtSessionOptions, n: i32) -> *mut OrtStatus>,
-    // 13..14
+    /// FFI slot 13..14
     _pad13: *const c_void,
     _pad14: *const c_void,
-    // 15: CreateTensorAsOrtValue
+    /// FFI slot 15: CreateTensorAsOrtValue
     pub CreateTensorAsOrtValue: Option<
         unsafe extern "C" fn(
             allocator: *mut OrtAllocator,
@@ -98,7 +112,7 @@ pub struct OrtApi {
             out: *mut *mut OrtValue,
         ) -> *mut OrtStatus,
     >,
-    // 16: CreateTensorWithDataAsOrtValue
+    /// FFI slot 16: CreateTensorWithDataAsOrtValue
     pub CreateTensorWithDataAsOrtValue: Option<
         unsafe extern "C" fn(
             mem_info: *const OrtMemoryInfo,
@@ -110,15 +124,15 @@ pub struct OrtApi {
             out: *mut *mut OrtValue,
         ) -> *mut OrtStatus,
     >,
-    // 17: IsTensor
+    /// FFI slot 17: IsTensor
     pub IsTensor:
         Option<unsafe extern "C" fn(value: *const OrtValue, out: *mut bool) -> *mut OrtStatus>,
-    // 18: GetTensorMutableData
+    /// FFI slot 18: GetTensorMutableData
     pub GetTensorMutableData:
         Option<unsafe extern "C" fn(value: *mut OrtValue, out: *mut *mut c_void) -> *mut OrtStatus>,
-    // 19..26 (8 fields)
+    /// FFI slot 19..26 (8 fields)
     _pad19: [*const c_void; 8],
-    // 27: AllocatorAlloc
+    /// FFI slot 27: AllocatorAlloc
     pub AllocatorAlloc: Option<
         unsafe extern "C" fn(
             allocator: *mut OrtAllocator,
@@ -126,21 +140,21 @@ pub struct OrtApi {
             out: *mut *mut u8,
         ) -> *mut OrtStatus,
     >,
-    // 28: AllocatorFree
+    /// FFI slot 28: AllocatorFree
     pub AllocatorFree:
         Option<unsafe extern "C" fn(allocator: *mut OrtAllocator, ptr: *mut u8) -> *mut OrtStatus>,
-    // 29: GetAllocatorWithDefaultOptions
+    /// FFI slot 29: GetAllocatorWithDefaultOptions
     pub GetAllocatorWithDefaultOptions:
         Option<unsafe extern "C" fn(out: *mut *mut OrtAllocator) -> *mut OrtStatus>,
-    // 30..34 (5 fields)
+    /// FFI slot 30..34 (5 fields)
     _pad30: [*const c_void; 5],
-    // 35: SessionGetInputCount
+    /// FFI slot 35: SessionGetInputCount
     pub SessionGetInputCount:
         Option<unsafe extern "C" fn(session: *const OrtSession, out: *mut usize) -> *mut OrtStatus>,
-    // 36: SessionGetOutputCount
+    /// FFI slot 36: SessionGetOutputCount
     pub SessionGetOutputCount:
         Option<unsafe extern "C" fn(session: *const OrtSession, out: *mut usize) -> *mut OrtStatus>,
-    // 37: SessionGetInputName
+    /// FFI slot 37: SessionGetInputName
     pub SessionGetInputName: Option<
         unsafe extern "C" fn(
             session: *const OrtSession,
@@ -149,7 +163,7 @@ pub struct OrtApi {
             out: *mut *mut c_char,
         ) -> *mut OrtStatus,
     >,
-    // 38: SessionGetOutputName
+    /// FFI slot 38: SessionGetOutputName
     pub SessionGetOutputName: Option<
         unsafe extern "C" fn(
             session: *const OrtSession,
@@ -158,7 +172,7 @@ pub struct OrtApi {
             out: *mut *mut c_char,
         ) -> *mut OrtStatus,
     >,
-    // 39: SessionGetInputTypeInfo
+    /// FFI slot 39: SessionGetInputTypeInfo
     pub SessionGetInputTypeInfo: Option<
         unsafe extern "C" fn(
             session: *const OrtSession,
@@ -166,7 +180,7 @@ pub struct OrtApi {
             out: *mut *mut OrtTypeInfo,
         ) -> *mut OrtStatus,
     >,
-    // 40: SessionGetOutputTypeInfo
+    /// FFI slot 40: SessionGetOutputTypeInfo
     pub SessionGetOutputTypeInfo: Option<
         unsafe extern "C" fn(
             session: *const OrtSession,
@@ -174,9 +188,9 @@ pub struct OrtApi {
             out: *mut *mut OrtTypeInfo,
         ) -> *mut OrtStatus,
     >,
-    // 41..44 (4 fields)
+    /// FFI slot 41..44 (4 fields)
     _pad41: [*const c_void; 4],
-    // 45: CreateMemoryInfo
+    /// FFI slot 45: CreateMemoryInfo
     pub CreateMemoryInfo: Option<
         unsafe extern "C" fn(
             name: *const c_char,
@@ -186,52 +200,62 @@ pub struct OrtApi {
             out: *mut *mut OrtMemoryInfo,
         ) -> *mut OrtStatus,
     >,
-    // 46..89 (44 fields)
+    /// FFI slot 46..89 (44 fields)
     _pad46: [*const c_void; 44],
-    // 90: ReleaseStatus
+    /// FFI slot 90: ReleaseStatus
     pub ReleaseStatus: Option<unsafe extern "C" fn(status: *mut OrtStatus)>,
-    // 91: ReleaseMemoryInfo
+    /// FFI slot 91: ReleaseMemoryInfo
     _pad91: *const c_void,
-    // 92: ReleaseTensorTypeAndShapeInfo
+    /// FFI slot 92: ReleaseTensorTypeAndShapeInfo
     pub ReleaseTensorTypeAndShapeInfo:
         Option<unsafe extern "C" fn(info: *mut OrtTensorTypeAndShapeInfo)>,
-    // 93: ReleaseTypeInfo
+    /// FFI slot 93: ReleaseTypeInfo
     pub ReleaseTypeInfo: Option<unsafe extern "C" fn(info: *mut OrtTypeInfo)>,
-    // 94: ReleaseSession
+    /// FFI slot 94: ReleaseSession
     pub ReleaseSession: Option<unsafe extern "C" fn(session: *mut OrtSession)>,
-    // 95: ReleaseSessionOptions
+    /// FFI slot 95: ReleaseSessionOptions
     pub ReleaseSessionOptions: Option<unsafe extern "C" fn(options: *mut OrtSessionOptions)>,
-    // 96: ReleaseValue
+    /// FFI slot 96: ReleaseValue
     pub ReleaseValue: Option<unsafe extern "C" fn(ptr: *mut OrtValue)>,
-    // 97: ReleaseAllocator
+    /// FFI slot 97: ReleaseAllocator
     pub ReleaseAllocator: Option<unsafe extern "C" fn(allocator: *mut OrtAllocator)>,
-    // 98..100
+    /// FFI slot 98..100
     _pad98: [*const c_void; 3],
-    // 101: ReleaseEnv
+    /// FFI slot 101: ReleaseEnv
     pub ReleaseEnv: Option<unsafe extern "C" fn(env: *mut OrtEnv)>,
 }
 
+/// จุดเข้า (entry point) ของ ONNX Runtime C API — ได้จาก symbol `OrtGetApiBase`
 #[allow(non_snake_case)]
 #[repr(C)]
 pub struct OrtApiBase {
+    /// ขอ vtable [`OrtApi`] ตามเวอร์ชัน API ที่ระบุ
     pub GetApi: Option<unsafe extern "C" fn(api_version: u32) -> *const OrtApi>,
+    /// อ่าน string เวอร์ชันของไลบรารี ONNX Runtime
     pub GetVersionString: Option<unsafe extern "C" fn() -> *const c_char>,
 }
 
+/// ข้อผิดพลาดจากการใช้งาน ONNX Runtime ผ่าน FFI
 #[derive(Debug, Error)]
 pub enum OnnxError {
+    /// หา libonnxruntime.so ไม่พบบนระบบ
     #[error("ONNX Runtime library not found: {0}")]
     LibraryNotFound(String),
+    /// การเรียก C API ล้มเหลว (สถานะไม่เป็น null)
     #[error("ONNX API error: {0}")]
     ApiError(String),
+    /// สร้างหรือใช้งาน session ไม่สำเร็จ
     #[error("ONNX session error: {0}")]
     SessionError(String),
+    /// การรัน inference ล้มเหลว
     #[error("ONNX inference error: {0}")]
     InferenceError(String),
 }
 
+/// ไลบรารี ONNX Runtime ที่โหลดผ่าน dlopen พร้อม vtable ที่ resolve แล้ว
 pub struct OnnxRuntimeLib {
     handle: *mut c_void,
+    /// vtable ของ C API (อายุ static — ชี้เข้า memory ของไลบรารีที่โหลดค้างไว้)
     pub api: &'static OrtApi,
 }
 
@@ -240,6 +264,7 @@ fn make_cstring(value: &str) -> Result<CString, String> {
 }
 
 impl OnnxRuntimeLib {
+    /// โหลด libonnxruntime.so จากพาธมาตรฐานแล้ว resolve vtable ของ C API
     pub fn load() -> Result<Self, String> {
         let paths = [
             "libonnxruntime.so",
@@ -313,6 +338,7 @@ unsafe impl Send for OnnxEnvironment {}
 unsafe impl Sync for OnnxEnvironment {}
 
 impl OnnxEnvironment {
+    /// สร้าง ONNX Runtime environment ใหม่ (โหลดไลบรารีและเรียก CreateEnv)
     pub fn new(log_id: &str) -> Result<Self, OnnxError> {
         let lib = OnnxRuntimeLib::load().map_err(OnnxError::LibraryNotFound)?;
         let c_log_id = CString::new(log_id).map_err(|e| OnnxError::ApiError(e.to_string()))?;
@@ -333,11 +359,13 @@ impl OnnxEnvironment {
         Ok(Self { lib, env_ptr })
     }
 
+    /// pointer ดิบของ environment สำหรับส่งต่อให้ C API
     #[must_use]
     pub fn env_ptr(&self) -> *mut OrtEnv {
         self.env_ptr
     }
 
+    /// vtable ของ C API ที่ environment นี้ใช้อยู่
     #[must_use]
     pub fn api(&self) -> &'static OrtApi {
         self.lib.api
@@ -377,6 +405,7 @@ unsafe impl Send for OnnxSessionOptions {}
 unsafe impl Sync for OnnxSessionOptions {}
 
 impl OnnxSessionOptions {
+    /// สร้าง session options ใหม่จาก C API
     pub fn new(api: &'static OrtApi) -> Result<Self, OnnxError> {
         let mut ptr = ptr::null_mut();
         let create_opts = api
@@ -417,6 +446,7 @@ impl OnnxSessionOptions {
         Ok(())
     }
 
+    /// pointer ดิบของ options สำหรับส่งต่อให้ C API
     #[must_use]
     pub fn as_ptr(&self) -> *const OrtSessionOptions {
         self.ptr

@@ -7,16 +7,22 @@ use tokio::time::Duration;
 
 const AUDIT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// ข้อผิดพลาดจากการเขียน/ตรวจสอบไฟล์ audit log
 #[derive(Debug, Error)]
 pub enum AuditError {
+    /// เปิดไฟล์ audit log ไม่สำเร็จ
     #[error("failed to open audit log")]
     Open(#[source] std::io::Error),
+    /// แปลงรายการบันทึกเป็น JSON ไม่สำเร็จ
     #[error("failed to serialize audit entry")]
     Serialize(#[source] serde_json::Error),
+    /// เขียนรายการบันทึกลงไฟล์ไม่สำเร็จ
     #[error("failed to write audit entry")]
     Write(#[source] std::io::Error),
+    /// การอ่าน/เขียนไฟล์เกินเวลาที่กำหนด (ป้องกัน I/O ค้าง)
     #[error("audit I/O timed out")]
     Timeout,
+    /// hash chain ของ log ไม่ต่อเนื่อง — ไฟล์อาจถูกแก้ไขหรือเสียหาย
     #[error("audit log validation failed")]
     ValidationFailed,
 }

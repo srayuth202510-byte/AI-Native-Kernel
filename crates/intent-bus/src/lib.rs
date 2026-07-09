@@ -1,5 +1,10 @@
+//! Intent Bus — บัสรับส่งเหตุการณ์และคำสั่ง (Intent) แบบ asynchronous
+//!
+//! ใช้ `tokio::sync::broadcast` กระจาย Intent จากผู้ใช้/AI ไปยังทุก subsystem
+//! (scheduler, immune system, audit) พร้อม query cache สำหรับคำถามซ้ำ
 #![deny(unsafe_code)]
 
+/// แคชผลลัพธ์ query ภาษาธรรมชาติ พร้อมกลไก invalidation ตามการเปลี่ยนแปลงไฟล์
 pub mod query_cache;
 
 use std::collections::HashMap;

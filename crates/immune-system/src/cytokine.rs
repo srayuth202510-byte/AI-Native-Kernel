@@ -12,6 +12,7 @@ use tracing::{debug, instrument, warn};
 /// - Escalation levels: Info → Warning → Critical → Emergency
 #[derive(Debug, Error)]
 pub enum CytokineError {
+    /// ส่งสัญญาณเข้า Intent Bus ไม่สำเร็จ
     #[error("broadcast failed: {0}")]
     BroadcastFailed(String),
 }
@@ -19,23 +20,33 @@ pub enum CytokineError {
 /// ระดับความรุนแรงของ Cytokine Signal
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CytokineLevel {
+    /// ข้อมูลทั่วไป ไม่ต้องตอบสนอง
     Info,
+    /// สิ่งผิดปกติที่ควรจับตา
     Warning,
+    /// ภัยคุกคามที่ต้องตอบสนองทันที
     Critical,
+    /// เหตุฉุกเฉินระดับระบบ — ระดมทุก agent
     Emergency,
 }
 
 /// Cytokine Signal event
 #[derive(Debug, Clone)]
 pub struct CytokineEvent {
+    /// ระดับความรุนแรงของสัญญาณ
     pub level: CytokineLevel,
+    /// ชื่อ component ต้นทางที่ส่งสัญญาณ (เช่น "tcell")
     pub source: String,
+    /// ข้อความอธิบายเหตุการณ์
     pub message: String,
+    /// เวลาเกิดเหตุการณ์
     pub timestamp: Instant,
+    /// รายการ PID ที่ได้รับผลกระทบจากเหตุการณ์นี้
     pub affected_pids: Vec<u32>,
 }
 
 impl CytokineEvent {
+    /// สร้าง event ใหม่ ณ เวลาปัจจุบัน (ยังไม่ระบุ PID ที่กระทบ)
     #[must_use]
     pub fn new(level: CytokineLevel, source: &str, message: &str) -> Self {
         Self {
@@ -58,6 +69,7 @@ pub struct CytokineSignal {
 }
 
 impl CytokineSignal {
+    /// สร้าง broadcaster ใหม่ ผูกกับ Intent Bus และจำกัดขนาดประวัติ
     #[must_use]
     pub fn new(intent_bus: Arc<IntentBus>, max_history: usize) -> Self {
         Self {

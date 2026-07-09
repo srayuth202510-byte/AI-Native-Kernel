@@ -409,14 +409,19 @@ impl Default for RetryTelemetryConfig {
     }
 }
 
+/// การตั้งค่า observability (OpenTelemetry + structured logging)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservabilityConfig {
+    /// endpoint ของ OTLP collector สำหรับส่ง trace
     #[serde(default = "default_otel_endpoint")]
     pub otel_endpoint: String,
+    /// ชื่อ service ที่รายงานใน trace
     #[serde(default = "default_otel_service_name")]
     pub otel_service_name: String,
+    /// เพดานเวลาส่งออก trace ต่อรอบ (มิลลิวินาที)
     #[serde(default = "default_otel_export_timeout_ms")]
     pub otel_export_timeout_ms: u64,
+    /// ปลายทางของ JSON log ("stdout", "stderr" หรือพาธไฟล์)
     #[serde(default = "default_json_log_output")]
     pub json_log_output: String,
 }
@@ -766,14 +771,20 @@ fn default_bridge_request_timeout_ms() -> u64 {
     5_000
 }
 
+/// การตั้งค่า peer แบบ static สำหรับ intent bridge (กำหนดล่วงหน้าใน config)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentBridgePeerConfig {
+    /// รหัสประจำ node ของ peer
     pub node_id: String,
+    /// ที่อยู่ host:port ของ bridge ฝั่ง peer
     pub addr: String,
+    /// จำนวน slot ว่างรับ agent ของ peer (ค่าตั้งต้นก่อนได้ telemetry จริง)
     #[serde(default)]
     pub available_agent_slots: usize,
+    /// คะแนนความน่าเชื่อถือตั้งต้น 0–100
     #[serde(default = "default_peer_trust_score")]
     pub trust_score: u8,
+    /// ความสามารถที่ peer ให้บริการ
     #[serde(default)]
     pub capabilities: Vec<String>,
 }

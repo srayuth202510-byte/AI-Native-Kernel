@@ -7,8 +7,11 @@ use tracing::{debug, error, info};
 
 /// โครงสร้างคำขอที่ส่งเข้ามารอจัดคิวทำ Batch
 pub struct BatchRequest {
+    /// ข้อความ prompt ที่จะส่งให้โมเดล
     pub prompt: String,
+    /// จำนวน token สูงสุดที่ให้โมเดลตอบ
     pub max_tokens: usize,
+    /// ช่องทางส่งผลลัพธ์กลับให้ผู้เรียก (oneshot)
     pub response_tx: oneshot::Sender<Result<String, EngineError>>,
 }
 

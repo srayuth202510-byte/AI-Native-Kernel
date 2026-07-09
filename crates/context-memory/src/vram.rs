@@ -8,16 +8,24 @@ use tracing::{debug, instrument, warn};
 /// ชนิดของข้อมูลใน Tensor (element type)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TensorDtype {
+    /// จำนวนจริง 32 บิต (single precision)
     F32,
+    /// จำนวนจริง 16 บิต (half precision)
     F16,
+    /// bfloat16 — ช่วงกว้างเท่า F32 แต่ความละเอียดต่ำกว่า
     BF16,
+    /// จำนวนเต็มมีเครื่องหมาย 8 บิต (quantized)
     I8,
+    /// จำนวนเต็ม 4 บิตแบบ packed (2 ค่าต่อไบต์, quantized)
     I4,
+    /// จำนวนเต็มมีเครื่องหมาย 32 บิต
     I32,
+    /// จำนวนเต็มไม่มีเครื่องหมาย 8 บิต
     U8,
 }
 
 impl TensorDtype {
+    /// ขนาดต่อ element ในหน่วยไบต์ (I4 นับเป็น 1 เพราะ packed)
     #[must_use]
     pub fn size_bytes(&self) -> usize {
         match self {
@@ -48,6 +56,7 @@ pub enum TensorDevice {
 }
 
 impl TensorDevice {
+    /// ชื่ออุปกรณ์แบบ string คงที่ ใช้ใน log และ metrics label
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
@@ -117,16 +126,24 @@ impl TensorMetadata {
 /// โครงสร้างแทนข้อมูล KV Cache ของโมเดล AI (เช่น LLM)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct KvCachePage {
+    /// รหัส sequence (บทสนทนา/คำขอ) ที่ cache นี้เป็นของ
     pub sequence_id: String,
+    /// จำนวน token ที่ cache ครอบคลุม
     pub num_tokens: usize,
+    /// จำนวน layer ของโมเดล
     pub num_layers: usize,
+    /// จำนวน attention head ต่อ layer
     pub num_heads: usize,
+    /// มิติของแต่ละ head
     pub head_dim: usize,
+    /// ขนาดต่อ element ในหน่วยไบต์ (ตาม dtype ของโมเดล)
     pub element_size_bytes: usize,
+    /// ข้อมูล K/V ดิบ (ขนาด = 2 × layers × heads × tokens × head_dim × element)
     pub data: Vec<u8>,
 }
 
 impl KvCachePage {
+    /// สร้าง KV cache page พร้อมจองพื้นที่ข้อมูลตามขนาดโมเดลที่ระบุ
     #[must_use]
     pub fn new(
         sequence_id: String,
@@ -148,6 +165,7 @@ impl KvCachePage {
         }
     }
 
+    /// ขนาดข้อมูล cache ทั้งหมดในหน่วยไบต์
     #[must_use]
     pub fn size_bytes(&self) -> usize {
         self.data.len()
@@ -173,6 +191,7 @@ pub struct DeviceMemoryBlock {
 }
 
 impl DeviceMemoryBlock {
+    /// สร้างบล็อกหน่วยความจำใหม่ (ยังไม่ pin กับอุปกรณ์จริงจนกว่าจะ allocate)
     #[must_use]
     pub fn new(id: String, device: TensorDevice, size_bytes: usize) -> Self {
         Self {
@@ -194,15 +213,22 @@ pub type OnEvictCallback = Arc<dyn Fn(&str, &[u8], Option<&TensorMetadata>) + Se
 /// สถิติการใช้งาน VRAM Store ( getCounts)
 #[derive(Debug, Default)]
 pub struct VramMetrics {
+    /// จำนวนครั้งที่เขียนข้อมูลเข้า store
     pub inserts: AtomicU64,
+    /// จำนวนครั้งที่เรียกอ่านทั้งหมด
     pub gets: AtomicU64,
+    /// จำนวนครั้งที่อ่านแล้วพบข้อมูล (cache hit)
     pub hits: AtomicU64,
+    /// จำนวนครั้งที่อ่านแล้วไม่พบข้อมูล (cache miss)
     pub misses: AtomicU64,
+    /// จำนวนรายการที่ถูกถอดถอนเพราะพื้นที่เต็ม
     pub evictions: AtomicU64,
+    /// จำนวนรายการที่ถูกลบโดยตรง
     pub removes: AtomicU64,
 }
 
 impl VramMetrics {
+    /// เก็บค่าตัวนับทั้งหมด ณ ขณะนี้เป็น snapshot แบบอ่านอย่างเดียว
     #[must_use]
     pub fn snapshot(&self) -> VramMetricsSnapshot {
         VramMetricsSnapshot {
@@ -219,15 +245,22 @@ impl VramMetrics {
 /// Snapshot ของสถิติ (Copy-friendly)
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VramMetricsSnapshot {
+    /// จำนวนครั้งที่เขียนข้อมูลเข้า store
     pub inserts: u64,
+    /// จำนวนครั้งที่เรียกอ่านทั้งหมด
     pub gets: u64,
+    /// จำนวนครั้งที่อ่านแล้วพบข้อมูล (cache hit)
     pub hits: u64,
+    /// จำนวนครั้งที่อ่านแล้วไม่พบข้อมูล (cache miss)
     pub misses: u64,
+    /// จำนวนรายการที่ถูกถอดถอนเพราะพื้นที่เต็ม
     pub evictions: u64,
+    /// จำนวนรายการที่ถูกลบโดยตรง
     pub removes: u64,
 }
 
 impl VramMetricsSnapshot {
+    /// อัตราส่วน cache hit ต่อการอ่านทั้งหมด (0.0 เมื่อยังไม่เคยอ่าน)
     #[must_use]
     pub fn hit_rate(&self) -> f64 {
         if self.gets == 0 {

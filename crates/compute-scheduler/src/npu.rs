@@ -7,11 +7,13 @@ const NPU_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---- Intel Gaudi Runtime ----
 
+/// รันไทม์ Intel Gaudi (accelerator สำหรับ training/inference ระดับ datacenter)
 pub struct IntelGaudiRuntime {
     profile: NpuProfile,
 }
 
 impl IntelGaudiRuntime {
+    /// สร้างรันไทม์พร้อมโปรไฟล์ Gaudi 3
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::intel_gaudi3(),
@@ -78,6 +80,7 @@ pub struct IntelOpenvinoNpuRuntime {
 }
 
 impl IntelOpenvinoNpuRuntime {
+    /// สร้างรันไทม์พร้อมโปรไฟล์ OpenVINO NPU
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::intel_openvino_npu(),
@@ -169,11 +172,13 @@ impl NpuRuntime for IntelOpenvinoNpuRuntime {
 
 // ---- Google TPU Runtime ----
 
+/// รันไทม์ Google TPU (ผ่าน libtpu)
 pub struct TpuRuntime {
     profile: NpuProfile,
 }
 
 impl TpuRuntime {
+    /// สร้างรันไทม์พร้อมโปรไฟล์ TPU v5e
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::google_tpu_v5e(),
@@ -239,11 +244,13 @@ impl NpuRuntime for TpuRuntime {
 
 // ---- Apple Silicon Neural Engine Runtime ----
 
+/// รันไทม์ Apple Neural Engine (Apple Silicon)
 pub struct AppleNpuRuntime {
     profile: NpuProfile,
 }
 
 impl AppleNpuRuntime {
+    /// สร้างรันไทม์พร้อมโปรไฟล์ M4 Neural Engine
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::apple_m4_ne(),
@@ -306,11 +313,13 @@ impl NpuRuntime for AppleNpuRuntime {
 
 // ---- Qualcomm Hexagon Runtime ----
 
+/// รันไทม์ Qualcomm Hexagon DSP/NPU
 pub struct HexagonRuntime {
     profile: NpuProfile,
 }
 
 impl HexagonRuntime {
+    /// สร้างรันไทม์พร้อมโปรไฟล์ Hexagon
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::qualcomm_hexagon(),
@@ -376,6 +385,7 @@ pub struct QualcommQnnRuntime {
 }
 
 impl QualcommQnnRuntime {
+    /// สร้างรันไทม์พร้อมโปรไฟล์ QNN NPU
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::qualcomm_qnn_npu(),
@@ -454,11 +464,13 @@ impl NpuRuntime for QualcommQnnRuntime {
 
 // ---- AMD XDNA Runtime ----
 
+/// รันไทม์ AMD XDNA (Ryzen AI NPU)
 pub struct XdnaRuntime {
     profile: NpuProfile,
 }
 
 impl XdnaRuntime {
+    /// สร้างรันไทม์พร้อมโปรไฟล์ XDNA 2
     pub fn new() -> Self {
         Self {
             profile: NpuProfile::amd_xdna2(),

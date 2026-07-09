@@ -12,8 +12,11 @@ use tracing::{info, warn};
 /// โครงสร้างข้อมูลสำหรับรุ่นของ Linux Kernel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct KernelVersion {
+    /// เลขรุ่นหลัก (เช่น 6 ใน 6.1.0)
     pub major: u32,
+    /// เลขรุ่นรอง (เช่น 1 ใน 6.1.0)
     pub minor: u32,
+    /// เลขรุ่น patch (เช่น 0 ใน 6.1.0)
     pub patch: u32,
 }
 
@@ -66,9 +69,15 @@ pub enum DeploymentMode {
     /// โหมดการทำงานเต็มประสิทธิภาพบน Kernel จริง (eBPF + LSM Hooks)
     Production,
     /// โหมดรันแบบลดรูป (เช่น ติดตั้ง LSM ไม่ได้ แต่ยังสามารถใช้ eBPF Tracer ดักจับข้อมูลได้)
-    Degraded { reasons: Vec<String> },
+    Degraded {
+        /// เหตุผลที่ทำให้ลงโหมดเต็มไม่ได้
+        reasons: Vec<String>,
+    },
     /// โหมดการทำงานจำลองบนพื้นที่ผู้ใช้ (Pure Userspace Simulation) เนื่องจากขาดสิทธิ์หรือฟีเจอร์ของ Kernel
-    Simulation { reasons: Vec<String> },
+    Simulation {
+        /// เหตุผลที่ต้องจำลองใน userspace ทั้งหมด
+        reasons: Vec<String>,
+    },
 }
 
 impl DeploymentMode {
@@ -124,22 +133,34 @@ impl fmt::Display for DeploymentMode {
 /// โครงสร้างข้อมูลสำหรับรายงานผลการตรวจสอบรายรายการ
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityDiagnostic {
+    /// ชื่อรายการที่ตรวจ (เช่น "Kernel Version", "BTF Support")
     pub check: String,
+    /// ผลการตรวจ (true = ผ่าน)
     pub passed: bool,
+    /// รายละเอียดผลการตรวจ
     pub detail: String,
+    /// คำแนะนำวิธีแก้ไขเมื่อไม่ผ่าน (ถ้ามี)
     pub remediation: Option<String>,
 }
 
 /// โครงสร้างข้อมูลความสามารถของระบบและ Kernel ทั้งหมดที่ตรวจสอบพบ
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KernelCapabilities {
+    /// รุ่นของ kernel ที่ตรวจพบ (`None` = อ่านไม่ได้)
     pub kernel_version: Option<KernelVersion>,
+    /// kernel เปิด CONFIG_BPF_LSM หรือมี bpf ใน active LSM list
     pub has_bpf_lsm_config: bool,
+    /// มี BTF ที่ /sys/kernel/btf/vmlinux
     pub has_btf: bool,
+    /// process นี้รันเป็น root
     pub is_root: bool,
+    /// BPF filesystem ถูก mount ที่ /sys/fs/bpf
     pub bpf_fs_mounted: bool,
+    /// มี effective capability CAP_BPF
     pub cap_bpf: bool,
+    /// มี effective capability CAP_SYS_ADMIN
     pub cap_sys_admin: bool,
+    /// มี effective capability CAP_PERFMON
     pub cap_perfmon: bool,
 }
 

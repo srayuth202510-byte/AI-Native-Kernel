@@ -1,3 +1,11 @@
+//! B-Cell Agent — หน่วยสร้างแอนติบอดี (Antibody Generator)
+//!
+//! ทำหน้าที่เรียนรู้รูปแบบการโจมตีจาก T-Cell threat reports:
+//! - วิเคราะห์ syscall patterns ที่ถูก quarantine/killed
+//! - สร้าง LSM Policy Rules (แอนติบอดี) ใหม่
+//! - จดจำ attack signatures สำหรับการตรวจจับครั้งถัดไป
+//! - persist learned rules ลง persistent storage
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -5,16 +13,10 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, warn};
 
-/// B-Cell Agent — หน่วยสร้างแอนติบอดี (Antibody Generator)
-///
-/// ทำหน้าที่เรียนรู้รูปแบบการโจมตีจาก T-Cell threat reports:
-/// - วิเคราะห์ syscall patterns ที่ถูก quarantine/killed
-/// - สร้าง LSM Policy Rules (แอนติบอดี) ใหม่
-/// - จดจำ attack signatures สำหรับการตรวจจับครั้งถัดไป
-/// - persist learned rules ลง persistent storage
-
+/// ข้อผิดพลาดของ B-Cell Agent
 #[derive(Debug, Error)]
 pub enum BCellError {
+    /// การเรียนรู้ pattern จากประวัติ syscall ล้มเหลว
     #[error("learning failed: {0}")]
     LearningFailed(String),
 }
@@ -127,6 +129,7 @@ pub struct BCellAgent {
 }
 
 impl BCellAgent {
+    /// สร้าง B-Cell ด้วยค่า shadow mode ดีฟอลต์ (สังเกต 60 วิ, promote เมื่อ confidence ≥ 0.7, FPR ≤ 0.1)
     #[must_use]
     pub fn new(max_patterns: usize) -> Self {
         Self::with_shadow_config(max_patterns, Duration::from_secs(60), 0.7, 0.1)

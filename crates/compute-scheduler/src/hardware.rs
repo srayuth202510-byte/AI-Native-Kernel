@@ -28,6 +28,7 @@ impl Default for HardwareProber {
 }
 
 impl HardwareProber {
+    /// สร้าง prober ใหม่ — สแกนระบบและลอง init NVML เพื่อตรวจหา NVIDIA GPU
     #[must_use]
     pub fn new() -> Self {
         let sys = System::new_all();

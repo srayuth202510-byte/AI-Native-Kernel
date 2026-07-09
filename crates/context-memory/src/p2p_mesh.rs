@@ -28,89 +28,142 @@ fn default_trust_score() -> u8 {
     100
 }
 
+/// ข้อมูลประจำตัวของ node หนึ่งตัวใน P2P mesh
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
+    /// รหัสประจำ node (UUID)
     pub id: String,
+    /// ที่อยู่ TCP ที่ node นี้เปิดรับการเชื่อมต่อ
     pub addr: SocketAddr,
+    /// เวลาที่เห็น node นี้ล่าสุด (epoch millis) ใช้ตรวจความสด
     pub last_seen_millis: u64,
+    /// ความสามารถที่ node นี้ให้บริการ (เช่น "semantic", "filesystem")
     pub capabilities: Vec<String>,
+    /// คะแนนความน่าเชื่อถือ 0–100 (ต่ำกว่า 50 จะถูกตัดการเชื่อมต่อ)
     #[serde(default = "default_trust_score")]
     pub trust_score: u8,
 }
 
+/// ซองข้อความที่รับส่งระหว่าง node ใน mesh
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct P2PMessage {
+    /// รหัส node ผู้ส่ง
     pub from: String,
+    /// ที่อยู่ TCP ของผู้ส่ง (ใช้เชื่อมกลับ)
     pub from_addr: SocketAddr,
+    /// รหัส node ผู้รับ (`None` = broadcast ถึงทุก node)
     pub to: Option<String>,
+    /// ชนิดของข้อความ กำหนดวิธี decode ฟิลด์ `data`
     pub msg_type: MessageType,
+    /// payload ที่ serialize แล้ว (โครงสร้างขึ้นกับ `msg_type`)
     pub data: Vec<u8>,
+    /// เวลาสร้างข้อความ (epoch millis)
     pub timestamp_millis: u64,
 }
 
+/// ชนิดข้อความในโปรโตคอล P2P mesh
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MessageType {
+    /// ตรวจสุขภาพ peer (heartbeat ขาไป)
     Ping,
+    /// ตอบกลับ `Ping` (heartbeat ขากลับ)
     Pong,
+    /// แนะนำตัวเมื่อเชื่อมต่อครั้งแรก แลกเปลี่ยน NodeInfo
     Handshake,
+    /// กระจายรายชื่อ node ที่รู้จักเพื่อ gossip discovery
     NeighborList,
+    /// กระจาย record ที่เขียนใหม่ให้ replica ทั่ว mesh
     RecordSync,
+    /// ขอดึงค่า record จาก node อื่น (payload: [`RecordFetchRequest`])
     RecordFetchRequest,
+    /// ตอบกลับคำขอดึง record (payload: [`RecordFetchResponse`])
     RecordFetchResponse,
+    /// ซิงก์ตารางแมป identity ระหว่าง node
     IdentityMap,
+    /// กระจายสถานะทรัพยากรของ node (payload: [`NodeTelemetry`])
     NodeTelemetry,
 }
 
+/// payload ของ `RecordSync` — record หนึ่งรายการพร้อมเวอร์ชันสำหรับ conflict resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecordSyncPayload {
+    /// คีย์ของ record
     pub key: String,
+    /// ค่าแบบ binary
     pub value: Vec<u8>,
+    /// รหัส node เจ้าของข้อมูลต้นทาง
     pub owner_node: String,
+    /// เวอร์ชัน (epoch millis ตอนเขียน) — ค่ามากกว่าชนะ
     pub version: u64,
 }
 
+/// คำขอดึง record จาก node อื่นใน mesh
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecordFetchRequest {
+    /// รหัสคำขอ ใช้จับคู่กับ response ที่ตอบกลับมา
     pub request_id: String,
+    /// คีย์ของ record ที่ต้องการ
     pub key: String,
 }
 
+/// คำตอบของ [`RecordFetchRequest`]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecordFetchResponse {
+    /// รหัสคำขอเดิมที่คำตอบนี้จับคู่ด้วย
     pub request_id: String,
+    /// คีย์ของ record ที่ถูกขอ
     pub key: String,
+    /// ค่า record (`None` = node ปลายทางไม่มีคีย์นี้)
     pub value: Option<Vec<u8>>,
+    /// รหัส node ที่เป็นเจ้าของค่า
     pub owner_node: String,
 }
 
+/// สถานะทรัพยากรของ node หนึ่งตัว ใช้ประกอบการตัดสินใจ route งานข้าม mesh
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeTelemetry {
+    /// รหัส node เจ้าของ telemetry นี้
     pub node_id: String,
+    /// จำนวน slot ว่างที่รับ agent เพิ่มได้
     pub available_agent_slots: usize,
+    /// เพดานจำนวน agent สูงสุดของ node
     pub max_agents: usize,
+    /// จำนวน agent ที่กำลังรันอยู่
     pub running_agents: usize,
+    /// ความสามารถที่ node ให้บริการ
     pub capabilities: Vec<String>,
+    /// ที่อยู่ intent bridge สำหรับส่งงานข้าม node (ถ้าเปิดใช้)
     pub bridge_addr: Option<String>,
+    /// เวลาเก็บ telemetry (epoch millis)
     pub timestamp_millis: u64,
 }
 
 type PendingFetchSender = oneshot::Sender<Option<Vec<u8>>>;
 type PendingFetchMap = Arc<RwLock<HashMap<String, PendingFetchSender>>>;
 
+/// ตัวจัดการ P2P mesh: discovery, replication ของ record, trust score
+/// และ failure detection (SWIM) ระหว่าง node ของ context memory
 pub struct P2PMeshManager {
+    /// ข้อมูลประจำตัวของ node ฝั่งเรา
     pub local_node: NodeInfo,
+    /// ตาราง node ที่รู้จักทั้งหมด (key = node id)
     pub known_nodes: Arc<RwLock<HashMap<String, NodeInfo>>>,
+    /// คาบเวลาการทำ discovery รอบถัดไป
     pub discovery_interval: Duration,
+    /// ปลายทางส่งข้อความเข้า loop ประมวลผลภายใน
     pub message_tx: mpsc::Sender<P2PMessage>,
+    /// ปลายทางรับข้อความ (ถูก take ไปใช้ตอน start event loop)
     pub message_rx: Option<mpsc::Receiver<P2PMessage>>,
     peers: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>,
     records: Arc<RwLock<HashMap<String, RecordSyncPayload>>>,
     pending_fetches: PendingFetchMap,
     telemetries: Arc<RwLock<HashMap<String, NodeTelemetry>>>,
+    /// ตัวตรวจจับ node ล้มเหลวแบบ SWIM (alive/suspect/dead)
     pub failure_detector: FailureDetector,
 }
 
 impl P2PMeshManager {
+    /// สร้าง mesh manager ด้วย node id สุ่ม (UUID) และ capability ดีฟอลต์
     pub fn new(addr: SocketAddr) -> Self {
         Self::new_with_node_config(
             addr,
@@ -119,6 +172,7 @@ impl P2PMeshManager {
         )
     }
 
+    /// สร้าง mesh manager โดยระบุ node id และรายการ capability เอง
     pub fn new_with_node_config(
         addr: SocketAddr,
         node_id: String,
@@ -150,6 +204,7 @@ impl P2PMeshManager {
         }
     }
 
+    /// ลงทะเบียน node เข้าตาราง — ถ้า `last_seen` เก่ากว่า 60 วินาทีจะถูกตั้งสถานะ suspect ทันที
     pub async fn add_node(&self, node: NodeInfo) {
         let is_stale = node.last_seen_millis + 60_000 < now_millis();
         if is_stale {
@@ -162,21 +217,25 @@ impl P2PMeshManager {
         self.known_nodes.write().await.insert(node.id.clone(), node);
     }
 
+    /// ถอด node ออกจากตารางและตัดการเชื่อมต่อ พร้อม mark dead ใน failure detector
     pub async fn remove_node(&self, node_id: &str) {
         self.failure_detector.mark_dead(node_id).await;
         self.known_nodes.write().await.remove(node_id);
         self.peers.write().await.remove(node_id);
     }
 
+    /// คืนรายชื่อ node ทั้งหมดที่รู้จัก (ไม่กรองสถานะ alive)
     pub async fn get_neighbors(&self) -> Vec<NodeInfo> {
         self.known_nodes.read().await.values().cloned().collect()
     }
 
+    /// ตรวจว่า node นี้ยังเชื่อมต่ออยู่ (รู้จัก และสถานะ SWIM = Alive)
     pub async fn is_connected(&self, node_id: &str) -> bool {
         self.failure_detector.get_status(node_id).await == crate::swim::NodeStatus::Alive
             && self.known_nodes.read().await.contains_key(node_id)
     }
 
+    /// คืนเฉพาะ node ที่ failure detector ยืนยันว่ายังมีชีวิต (Alive)
     pub async fn get_alive_peers(&self) -> Vec<NodeInfo> {
         let alive = self.failure_detector.alive_nodes().await;
         self.known_nodes
@@ -280,6 +339,7 @@ impl P2PMeshManager {
         }
     }
 
+    /// เขียน record ลง store ฝั่งเราแล้ว broadcast ให้ทุก node ใน mesh replicate ตาม
     pub async fn sync_record(&self, key: impl Into<String>, value: Vec<u8>) -> Result<()> {
         let key = key.into();
         let version = now_millis();
@@ -306,6 +366,7 @@ impl P2PMeshManager {
         self.broadcast_message(message).await
     }
 
+    /// อ่านค่า record จาก cache ฝั่งเราเท่านั้น (ไม่ยิงคำขอข้ามเครือข่าย)
     pub async fn get_cached_record(&self, key: &str) -> Option<Vec<u8>> {
         self.records
             .read()
@@ -314,6 +375,7 @@ impl P2PMeshManager {
             .map(|record| record.value.clone())
     }
 
+    /// อ่านค่า record — ลอง cache ก่อน ถ้าไม่มีจึงยิงคำขอไปถาม node อื่นใน mesh
     pub async fn fetch_record(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if let Some(value) = self.get_cached_record(key).await {
             return Ok(Some(value));
@@ -358,6 +420,7 @@ impl P2PMeshManager {
         }
     }
 
+    /// ตั้งคะแนนความน่าเชื่อถือของ node — ต่ำกว่า 50 จะถูกตัดการเชื่อมต่อทันที
     pub async fn set_trust_score(&self, node_id: &str, score: u8) {
         let mut nodes = self.known_nodes.write().await;
         if let Some(node) = nodes.get_mut(node_id) {
@@ -372,6 +435,7 @@ impl P2PMeshManager {
         }
     }
 
+    /// หักคะแนนความน่าเชื่อถือของ node (saturating) — ต่ำกว่า 50 จะถูกตัดการเชื่อมต่อ
     pub async fn penalize_node(&self, node_id: &str, penalty: u8) {
         let mut nodes = self.known_nodes.write().await;
         if let Some(node) = nodes.get_mut(node_id) {
@@ -392,11 +456,13 @@ impl P2PMeshManager {
         }
     }
 
+    /// อ่านคะแนนความน่าเชื่อถือของ node (ไม่รู้จัก = 100 ตามค่าเริ่มต้น)
     pub async fn get_trust_score(&self, node_id: &str) -> u8 {
         let nodes = self.known_nodes.read().await;
         nodes.get(node_id).map(|n| n.trust_score).unwrap_or(100)
     }
 
+    /// บันทึก telemetry ของ node ฝั่งเราแล้ว broadcast ให้ทั้ง mesh รับรู้
     pub async fn publish_node_telemetry(&self, telemetry: NodeTelemetry) -> Result<()> {
         self.telemetries
             .write()
@@ -414,6 +480,7 @@ impl P2PMeshManager {
         self.broadcast_message(message).await
     }
 
+    /// คืน snapshot ของ telemetry ล่าสุดจากทุก node ที่เคยรายงานเข้ามา
     pub async fn get_telemetry_snapshot(&self) -> HashMap<String, NodeTelemetry> {
         self.telemetries.read().await.clone()
     }
