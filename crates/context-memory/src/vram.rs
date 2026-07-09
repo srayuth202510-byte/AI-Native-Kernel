@@ -370,7 +370,9 @@ impl VramStore {
         while self.allocated_bytes + value_len > self.total_capacity
             && !self.access_order.is_empty()
         {
-            let oldest_key = self.access_order.pop_front().unwrap();
+            let Some(oldest_key) = self.access_order.pop_front() else {
+                break;
+            };
             if let Some(oldest_val) = self.buffers.remove(&oldest_key) {
                 let oldest_meta = self.metadata.remove(&oldest_key);
                 self.allocated_bytes = self.allocated_bytes.saturating_sub(oldest_val.len());

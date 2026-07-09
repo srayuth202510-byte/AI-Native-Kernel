@@ -82,15 +82,10 @@ pub struct VllmEngine {
 
 impl VllmEngine {
     /// สร้าง vLLM engine จาก endpoint URL ที่มีอยู่แล้ว
-    #[must_use]
-    pub fn new(endpoint: impl Into<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .pool_max_idle_per_host(4)
-            .build()
-            .expect("failed to create HTTP client");
+    pub fn new(endpoint: impl Into<String>) -> Result<Self, EngineError> {
+        let client = crate::engine::build_http_client(Duration::from_secs(120))?;
 
-        Self {
+        Ok(Self {
             endpoint: endpoint.into(),
             client,
             process: Arc::new(Mutex::new(None)),
@@ -99,7 +94,7 @@ impl VllmEngine {
                 .ok()
                 .and_then(|val| val.parse::<bool>().ok())
                 .unwrap_or(true),
-        }
+        })
     }
 
     /// ตั้งค่า timeout
@@ -328,7 +323,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_vllm_engine_no_fallback() {
-        let engine = VllmEngine::new("http://localhost:18000").with_no_fallback();
+        let engine = VllmEngine::new("http://localhost:18000")
+            .expect("engine")
+            .with_no_fallback();
         assert_eq!(engine.runtime_type(), InferenceRuntime::Vllm);
 
         let result = engine.generate("test", 10).await;
@@ -337,7 +334,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_vllm_engine_with_fallback() {
-        let engine = VllmEngine::new("http://localhost:18000");
+        let engine = VllmEngine::new("http://localhost:18000").expect("engine");
         let result = engine.generate("hello world", 100).await;
         assert!(result.is_ok());
         let text = result.unwrap();
@@ -346,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_vllm_engine_batch_mock() {
-        let engine = VllmEngine::new("http://localhost:18000");
+        let engine = VllmEngine::new("http://localhost:18000").expect("engine");
         let prompts = vec!["prompt A".to_string(), "prompt B".to_string()];
         let results = engine.generate_batch(&prompts, 20).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -354,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_vllm_health_check_returns_false_when_down() {
-        let engine = VllmEngine::new("http://localhost:18000");
+        let engine = VllmEngine::new("http://localhost:18000").expect("engine");
         assert!(!engine.is_healthy().await);
     }
 

@@ -333,7 +333,10 @@ impl ComputeScheduler {
     /// คำนวณคะแนนต้นทุนสำหรับโปรไฟล์ประสิทธิภาพฮาร์ดแวร์ที่กำหนด
     /// ยิ่งคะแนนต่ำ หมายถึงฮาร์ดแวร์นั้นมีประสิทธิภาพ/ต้นทุนที่คุ้มค่ากว่าในการทำงาน
     pub fn score(&self, profile: ComputeProfile) -> f64 {
-        let weights = self.weights.read().expect("compute weights lock poisoned");
+        let weights = self
+            .weights
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         score_target(profile, &weights)
     }
 
@@ -356,7 +359,10 @@ impl ComputeScheduler {
 
     /// อัปเดตค่าน้ำหนักปรับตัวด้วยตัวอย่างข้อมูล (Sample) โปรไฟล์ประสิทธิภาพใหม่ล่าสุด
     pub fn update_weights(&self, sample: ComputeProfile) {
-        let mut weights = self.weights.write().expect("compute weights lock poisoned");
+        let mut weights = self
+            .weights
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         weights.observe(sample);
     }
 

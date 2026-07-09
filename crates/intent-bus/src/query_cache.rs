@@ -169,7 +169,7 @@ impl SemanticQueryCache {
     /// สร้าง Semantic Query Cache ด้วยค่าที่กำหนดเองทั้งหมด
     #[must_use]
     pub fn with_config(capacity: usize, ttl: Duration, similarity_threshold: f32) -> Self {
-        let cache_size = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(1).unwrap());
+        let cache_size = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
         Self {
             cache: Arc::new(RwLock::new(LruCache::new(cache_size))),
             ttl,

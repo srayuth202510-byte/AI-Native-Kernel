@@ -148,19 +148,14 @@ pub struct CloudAiEngine {
 
 impl CloudAiEngine {
     /// สร้าง CloudAiEngine ใหม่พร้อม URL ปลายทาง, API Key, และชื่อโมเดล
-    #[must_use]
     pub fn new(
         endpoint_url: impl Into<String>,
         api_key: impl Into<String>,
         model: impl Into<String>,
-    ) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .pool_max_idle_per_host(4)
-            .build()
-            .expect("failed to create HTTP client");
+    ) -> Result<Self, EngineError> {
+        let client = crate::engine::build_http_client(Duration::from_secs(120))?;
 
-        Self {
+        Ok(Self {
             endpoint_url: endpoint_url.into(),
             api_key: api_key.into(),
             model: model.into(),
@@ -171,18 +166,18 @@ impl CloudAiEngine {
                 .ok()
                 .and_then(|val| val.parse::<bool>().ok())
                 .unwrap_or(true),
-        }
+        })
     }
 
     /// ตั้งค่า timeout สำหรับ request (builder pattern)
+    /// หากสร้าง client ใหม่ไม่สำเร็จ จะคงใช้ client เดิมและปรับเฉพาะ request timeout
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
-        self.client = reqwest::Client::builder()
-            .timeout(timeout)
-            .pool_max_idle_per_host(4)
-            .build()
-            .expect("failed to create HTTP client");
+        match crate::engine::build_http_client(timeout) {
+            Ok(client) => self.client = client,
+            Err(e) => warn!(error = %e, "keeping existing HTTP client after rebuild failure"),
+        }
         self
     }
 
@@ -334,7 +329,7 @@ mod tests {
 
     /// สร้าง CloudAiEngine สำหรับทดสอบ (ใช้ localhost ที่ไม่มีจริง)
     fn test_engine() -> CloudAiEngine {
-        CloudAiEngine::new("http://localhost:19000", "sk-test-key", "gpt-4o-mini")
+        CloudAiEngine::new("http://localhost:19000", "sk-test-key", "gpt-4o-mini").expect("engine")
     }
 
     /// ทดสอบว่าเมื่อปิด mock fallback แล้วการเรียก API ที่ไม่มีจริงจะเกิด error

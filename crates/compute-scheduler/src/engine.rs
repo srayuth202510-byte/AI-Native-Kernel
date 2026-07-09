@@ -14,6 +14,15 @@ pub enum EngineError {
     Internal(String),
 }
 
+/// สร้าง HTTP client พร้อม timeout และ connection pool ที่กำหนด
+pub(crate) fn build_http_client(timeout: Duration) -> Result<reqwest::Client, EngineError> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .pool_max_idle_per_host(4)
+        .build()
+        .map_err(|e| EngineError::ConnectionFailed(format!("failed to create HTTP client: {e}")))
+}
+
 /// Abstraction สำหรับ AI Runtime Engine ทุกประเภท
 #[async_trait::async_trait]
 pub trait AiEngine: Send + Sync {
@@ -76,15 +85,10 @@ pub struct LlamaCppEngine {
 
 impl LlamaCppEngine {
     /// สร้าง engine ใหม่ที่เชื่อมต่อกับ llama.cpp server
-    #[must_use]
-    pub fn new(endpoint_url: impl Into<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(4)
-            .build()
-            .expect("failed to create HTTP client");
+    pub fn new(endpoint_url: impl Into<String>) -> Result<Self, EngineError> {
+        let client = build_http_client(Duration::from_secs(60))?;
 
-        Self {
+        Ok(Self {
             endpoint_url: endpoint_url.into(),
             client,
             request_timeout: Duration::from_secs(30),
@@ -92,18 +96,18 @@ impl LlamaCppEngine {
                 .ok()
                 .and_then(|val| val.parse::<bool>().ok())
                 .unwrap_or(true),
-        }
+        })
     }
 
     /// กำหนด timeout สำหรับ request
+    /// หากสร้าง client ใหม่ไม่สำเร็จ จะคงใช้ client เดิมและปรับเฉพาะ request timeout
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
-        self.client = reqwest::Client::builder()
-            .timeout(timeout)
-            .pool_max_idle_per_host(4)
-            .build()
-            .expect("failed to create HTTP client");
+        match build_http_client(timeout) {
+            Ok(client) => self.client = client,
+            Err(e) => warn!(error = %e, "keeping existing HTTP client after rebuild failure"),
+        }
         self
     }
 
@@ -247,22 +251,17 @@ pub struct TensorRtLlmEngine {
 impl TensorRtLlmEngine {
     /// สร้าง engine ที่เชื่อมต่อกับ TensorRT-LLM server
     /// `endpoint` สามารถเป็น HTTP URL หรือ UDS path ก็ได้
-    #[must_use]
-    pub fn new(endpoint: impl Into<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .pool_max_idle_per_host(4)
-            .build()
-            .expect("failed to create HTTP client");
+    pub fn new(endpoint: impl Into<String>) -> Result<Self, EngineError> {
+        let client = build_http_client(Duration::from_secs(120))?;
 
-        Self {
+        Ok(Self {
             endpoint: endpoint.into(),
             client,
             fallback_mock: std::env::var("ANK_COMPUTE_MOCK_FALLBACK")
                 .ok()
                 .and_then(|val| val.parse::<bool>().ok())
                 .unwrap_or(true),
-        }
+        })
     }
 
     #[must_use]
@@ -369,7 +368,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_llama_cpp_engine_mock_fallback() {
-        let engine = LlamaCppEngine::new("http://localhost:19876").with_no_fallback();
+        let engine = LlamaCppEngine::new("http://localhost:19876")
+            .expect("engine")
+            .with_no_fallback();
         assert_eq!(engine.runtime_type(), InferenceRuntime::LlamaCpp);
 
         // Server not running — should fail with no fallback
@@ -380,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn test_llama_cpp_engine_with_fallback() {
         // Use a non-existent port — will use mock fallback
-        let engine = LlamaCppEngine::new("http://localhost:19876");
+        let engine = LlamaCppEngine::new("http://localhost:19876").expect("engine");
         let result = engine.generate("hello world", 100).await;
         assert!(result.is_ok());
         let text = result.unwrap();
@@ -389,7 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tensor_rt_engine_mock_fallback() {
-        let engine = TensorRtLlmEngine::new("http://localhost:19877");
+        let engine = TensorRtLlmEngine::new("http://localhost:19877").expect("engine");
         let result = engine.generate("test prompt", 50).await;
         assert!(result.is_ok());
         let text = result.unwrap();
@@ -398,7 +399,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tensor_rt_engine_batch_mock() {
-        let engine = TensorRtLlmEngine::new("http://localhost:19877");
+        let engine = TensorRtLlmEngine::new("http://localhost:19877").expect("engine");
         let prompts = vec!["prompt A".to_string(), "prompt B".to_string()];
         let results = engine.generate_batch(&prompts, 20).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -407,7 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_check_returns_false_when_down() {
-        let engine = LlamaCppEngine::new("http://localhost:19876");
+        let engine = LlamaCppEngine::new("http://localhost:19876").expect("engine");
         assert!(!engine.is_healthy().await);
     }
 }

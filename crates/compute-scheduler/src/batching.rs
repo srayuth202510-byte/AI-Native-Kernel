@@ -128,7 +128,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_manager_groups_requests() {
-        let engine = Arc::new(TensorRtLlmEngine::new("/dummy/sock"));
+        let engine = Arc::new(TensorRtLlmEngine::new("/dummy/sock").expect("engine"));
         let batch_manager = Arc::new(BatchManager::new(engine, 2, Duration::from_millis(50)));
 
         let bm1 = Arc::clone(&batch_manager);
@@ -151,7 +151,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_manager_timeout_flushes_queue() {
-        let engine = Arc::new(LlamaCppEngine::new("http://dummy"));
+        let engine = Arc::new(LlamaCppEngine::new("http://dummy").expect("engine"));
         // Wait time 200ms, batch size 5
         let batch_manager = Arc::new(BatchManager::new(engine, 5, Duration::from_millis(200)));
 

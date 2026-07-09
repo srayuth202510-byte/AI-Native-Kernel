@@ -36,15 +36,10 @@ impl MpsEngine {
     /// สร้าง MPS engine ใหม่
     ///
     /// `endpoint` คือ URL ของ llama.cpp HTTP server (ปกติ `http://127.0.0.1:8080`)
-    #[must_use]
-    pub fn new(endpoint: impl Into<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(4)
-            .build()
-            .expect("failed to create HTTP client");
+    pub fn new(endpoint: impl Into<String>) -> Result<Self, EngineError> {
+        let client = crate::engine::build_http_client(Duration::from_secs(60))?;
 
-        Self {
+        Ok(Self {
             endpoint: endpoint.into(),
             client,
             request_timeout: Duration::from_secs(30),
@@ -52,18 +47,18 @@ impl MpsEngine {
                 .ok()
                 .and_then(|val| val.parse::<bool>().ok())
                 .unwrap_or(true),
-        }
+        })
     }
 
     /// กำหนด timeout
+    /// หากสร้าง client ใหม่ไม่สำเร็จ จะคงใช้ client เดิมและปรับเฉพาะ request timeout
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
-        self.client = reqwest::Client::builder()
-            .timeout(timeout)
-            .pool_max_idle_per_host(4)
-            .build()
-            .expect("failed to create HTTP client");
+        match crate::engine::build_http_client(timeout) {
+            Ok(client) => self.client = client,
+            Err(e) => warn!(error = %e, "keeping existing HTTP client after rebuild failure"),
+        }
         self
     }
 
@@ -251,14 +246,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_mps_engine_mock_fallback() {
-        let engine = MpsEngine::new("http://localhost:18001").with_no_fallback();
+        let engine = MpsEngine::new("http://localhost:18001")
+            .expect("engine")
+            .with_no_fallback();
         let result = engine.generate("test", 10).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_mps_engine_with_fallback() {
-        let engine = MpsEngine::new("http://localhost:18001");
+        let engine = MpsEngine::new("http://localhost:18001").expect("engine");
         let result = engine.generate("hello world", 100).await;
         assert!(result.is_ok());
         let text = result.unwrap();
@@ -267,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mps_engine_batch_mock() {
-        let engine = MpsEngine::new("http://localhost:18001");
+        let engine = MpsEngine::new("http://localhost:18001").expect("engine");
         let prompts = vec!["A".to_string(), "B".to_string()];
         let results = engine.generate_batch(&prompts, 10).await.unwrap();
         assert_eq!(results.len(), 2);

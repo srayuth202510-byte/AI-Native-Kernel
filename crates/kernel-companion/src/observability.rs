@@ -169,8 +169,11 @@ impl KernelMetrics {
 #[must_use]
 pub fn kernel_metrics() -> Arc<KernelMetrics> {
     Arc::clone(KERNEL_METRICS.get_or_init(|| {
-        KernelMetrics::register(prometheus::default_registry())
-            .expect("kernel observability metrics registration should succeed once")
+        KernelMetrics::register(prometheus::default_registry()).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to register kernel metrics on default registry; using isolated registry");
+            KernelMetrics::register(&prometheus::Registry::new())
+                .expect("registering fixed metric names on a fresh registry cannot conflict")
+        })
     }))
 }
 
@@ -228,7 +231,7 @@ pub fn init_tracing(config: &TracingConfig) -> Result<(), Box<dyn std::error::Er
         let _ = OTEL_PROVIDER
             .get_or_init(|| Mutex::new(None))
             .lock()
-            .expect("OTel provider lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .replace(tracer_provider);
         Some(tracing_opentelemetry::layer())
     } else {
@@ -248,7 +251,11 @@ pub fn init_tracing(config: &TracingConfig) -> Result<(), Box<dyn std::error::Er
 /// ปิดระบบ Tracing และ flush OTel spans ทั้งหมดก่อนปิดโปรแกรม
 pub fn shutdown_tracing() {
     if let Some(guard) = OTEL_PROVIDER.get() {
-        if let Some(provider) = guard.lock().expect("OTel provider lock").take() {
+        if let Some(provider) = guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             if let Err(e) = provider.shutdown() {
                 eprintln!("OTel tracer provider shutdown warning: {e:?}");
             }

@@ -643,7 +643,7 @@ impl OnnxSession {
 
         // Create memory info (CPU, default)
         let mut mem_info: *mut OrtMemoryInfo = ptr::null_mut();
-        let c_cpu = CString::new("Cpu").unwrap();
+        let c_cpu = c"Cpu";
         if let Some(create_mem) = self.api.CreateMemoryInfo {
             let status = unsafe { create_mem(c_cpu.as_ptr(), 0, 0, 0, &mut mem_info) };
             if !status.is_null() || mem_info.is_null() {
