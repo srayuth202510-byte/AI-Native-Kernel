@@ -31,14 +31,22 @@ fuzz_target!(|data: &[u8]| {
     let log_path = std::env::temp_dir().join(format!("ank-fuzz-security-{token_id}.log"));
     let _ = std::fs::remove_file(&log_path);
     let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
-    let _ = manager.issue_token(token.clone());
-    let _ = manager.authorize_token(&token, capability);
-    let _ = manager.validate(token_id, &secret, &scope, capability);
-    let _ = manager.decision_for(token_id, &secret, &scope, capability);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("fuzz runtime");
+    rt.block_on(async {
+        let _ = manager.issue_token(token.clone()).await;
+        let _ = manager.authorize_token(&token, capability).await;
+        let _ = manager
+            .validate(token_id, &secret, &scope, capability)
+            .await;
+        let decision = manager
+            .decision_for(token_id, &secret, &scope, capability)
+            .await;
+        let _ = matches!(decision, Ok(PolicyDecision::Allow | PolicyDecision::Deny));
+    });
     let _ = constant_time_eq(&secret, &secret);
-    let _ = matches!(
-        manager.decision_for(token_id, &secret, &scope, capability),
-        Ok(PolicyDecision::Allow | PolicyDecision::Deny)
-    );
     let _ = std::fs::remove_file(log_path);
 });

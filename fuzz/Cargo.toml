@@ -7,10 +7,56 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+# fuzz crate อยู่นอก workspace (ต้อง build ด้วย cargo-fuzz + nightly)
+# จึงใช้ version ตรง ๆ แทน workspace = true
 [dependencies]
 libfuzzer-sys = "0.4"
-serde_json = { workspace = true }
+serde_json = "1.0"
+toml = "0.8"
+tokio = { version = "1.0", features = ["rt"] }
 intent-bus = { path = "../crates/intent-bus" }
 capability-security = { path = "../crates/capability-security" }
 context-memory = { path = "../crates/context-memory" }
 kernel-companion = { path = "../crates/kernel-companion" }
+
+[[bin]]
+name = "capability_token"
+path = "fuzz_targets/capability_token.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "context_key"
+path = "fuzz_targets/context_key.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "intent_parser"
+path = "fuzz_targets/intent_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "security_decision"
+path = "fuzz_targets/security_decision.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "audit_entry"
+path = "fuzz_targets/audit_entry.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "config_toml"
+path = "fuzz_targets/config_toml.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "uds_command"
+path = "fuzz_targets/uds_command.rs"
+test = false
+doc = false

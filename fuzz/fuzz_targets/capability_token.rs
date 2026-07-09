@@ -36,19 +36,36 @@ fuzz_target!(|data: &[u8]| {
     let _ = std::fs::remove_file(&log_path);
     let manager = CapabilitySecurityManager::new_with_log_path(log_path.clone());
 
-    let _ = manager.issue_token(token.clone());
-    let _ = manager.authorize_token(&token, &capability);
-    let _ = manager.validate(token.id, &secret, &scope, &capability);
-    let _ = manager.decision_for(token.id, &secret, &scope, &capability);
-
     let mut mismatched_secret = secret;
     mismatched_secret[0] ^= 0xFF;
-    let _ = manager.validate(token.id, &mismatched_secret, &scope, "read");
-    let _ = manager.decision_for(token.id, &mismatched_secret, &scope, "read");
 
-    let _ = manager.revoke_token(token.id);
-    let _ = manager.validate(token.id, &secret, &scope, "read");
-    let _ = manager.decision_for(token.id, &secret, &scope, "read");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("fuzz runtime");
+    rt.block_on(async {
+        let _ = manager.issue_token(token.clone()).await;
+        let _ = manager.authorize_token(&token, &capability).await;
+        let _ = manager
+            .validate(token.id, &secret, &scope, &capability)
+            .await;
+        let _ = manager
+            .decision_for(token.id, &secret, &scope, &capability)
+            .await;
+
+        let _ = manager
+            .validate(token.id, &mismatched_secret, &scope, "read")
+            .await;
+        let _ = manager
+            .decision_for(token.id, &mismatched_secret, &scope, "read")
+            .await;
+
+        let _ = manager.revoke_token(token.id).await;
+        let _ = manager.validate(token.id, &secret, &scope, "read").await;
+        let _ = manager
+            .decision_for(token.id, &secret, &scope, "read")
+            .await;
+    });
 
     let _ = serde_json::to_string(&token)
         .ok()
