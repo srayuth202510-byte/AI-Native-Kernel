@@ -6,6 +6,13 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
+/* Emit a "version" section so the loader reads a concrete kernel_version
+ * (Some) and never falls back to KernelVersion::current(), which reads
+ * /proc/version_signature and can return EPERM on some kernels (aya 0.12
+ * unwraps that error and panics). The value is not the ANY sentinel
+ * (0xFFFFFFFE) so it is kept; LSM programs ignore kern_version. */
+__u32 _version SEC("version") = 0x00070000;
+
 /*
  * ── Architecture Overview ──────────────────────────────────────────────
  *
