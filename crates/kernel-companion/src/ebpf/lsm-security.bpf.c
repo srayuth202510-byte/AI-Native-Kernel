@@ -82,8 +82,8 @@ static __always_inline int is_pid_allowed(void)
  * Syscall-level policy (e.g., whether `openat` itself is allowed) is
  * evaluated in userspace via the tracepoint channel.
  */
-SEC("lsm/security_file_open")
-int lsm_file_open(struct file *file, const struct cred *cred) {
+SEC("lsm/file_open")
+int lsm_file_open(struct file *file) {
     if (!is_pid_allowed()) {
         return -EPERM;
     }
@@ -98,7 +98,7 @@ int lsm_file_open(struct file *file, const struct cred *cred) {
  * Syscall-level policy (e.g., whether `execve` is allowed) is evaluated
  * in userspace via the tracepoint channel.
  */
-SEC("lsm/security_bprm_check")
+SEC("lsm/bprm_check_security")
 int lsm_bprm_check(struct linux_binprm *bprm) {
     if (!is_pid_allowed()) {
         return -EPERM;
@@ -111,7 +111,7 @@ int lsm_bprm_check(struct linux_binprm *bprm) {
  * gate as file open and exec. This extends fail-closed enforcement to
  * network-capable agents that have not passed userspace token checks.
  */
-SEC("lsm/security_socket_create")
+SEC("lsm/socket_create")
 int lsm_socket_create(int family, int type, int protocol, int kern)
 {
     if (!is_pid_allowed()) {
