@@ -114,3 +114,105 @@ proptest! {
         prop_assert_eq!(decision, PolicyDecision::Deny, "System failed closed bypass!");
     }
 }
+
+// -----------------------------------------------------------------------------
+// 4. Chaos Test: T-Cell Concurrent Operations (Failure Domain: Immune System)
+// สังเกต syscall จาก 16 tasks พร้อมกัน ระหว่างที่มี task อื่น quarantine/release
+// วนอยู่ตลอด — ต้องไม่ panic, ไม่ deadlock และสถานะ quarantine ต้อง consistent
+// -----------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn chaos_tcell_survives_concurrent_observe_and_quarantine() {
+    use immune_system::TCellAgent;
+
+    let tcell = Arc::new(TCellAgent::new(1_000_000, 10_000));
+    tcell.set_jitter_enabled(false);
+
+    let mut handles = Vec::new();
+
+    // 16 observer tasks — คนละ PID
+    for pid in 1..=16u32 {
+        let tcell = Arc::clone(&tcell);
+        handles.push(tokio::spawn(async move {
+            for i in 0..200u32 {
+                let denied = i % 13 == 0;
+                let _ = tcell.observe_syscall(pid, "read", denied).await;
+            }
+        }));
+    }
+
+    // 4 chaos tasks — quarantine/release/expire วนแทรกตลอดเวลา
+    for offset in 0..4u32 {
+        let tcell = Arc::clone(&tcell);
+        handles.push(tokio::spawn(async move {
+            for round in 0..50u32 {
+                let pid = (round % 16) + 1 + offset;
+                tcell.quarantine(pid).await;
+                tokio::task::yield_now().await;
+                tcell.release(pid).await;
+                let _ = tcell
+                    .release_expired_quarantine(std::time::Duration::from_nanos(1))
+                    .await;
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.expect("no task may panic under chaos");
+    }
+
+    // สถานะสุดท้ายต้อง consistent: ทุก PID ที่รายงานว่าถูกกักกัน ต้องตอบ true จริง
+    for pid in tcell.get_quarantined_pids().await {
+        assert!(tcell.is_quarantined(pid).await);
+    }
+    // สถิติของทุก observer PID ต้องครบและไม่เสียหาย
+    for pid in 1..=16u32 {
+        let stats = tcell.get_stats(pid).expect("stats must exist");
+        assert!(stats.syscall_count > 0);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// 5. Chaos Test: Intent Bus Slow Subscriber / Overflow (Failure Domain: Intent Bus)
+// Publisher ยิง intent เร็วกว่าที่ subscriber อ่านมาก — บัสต้องไม่ panic
+// และ subscriber ที่ตามไม่ทัน (lagged) ต้องยังรับ intent ต่อได้
+// -----------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chaos_intent_bus_survives_slow_subscriber_overflow() {
+    let bus = Arc::new(IntentBus::new(8)); // buffer เล็กจงใจให้ล้น
+    let mut subscriber = bus.subscribe();
+
+    let publisher = {
+        let bus = Arc::clone(&bus);
+        tokio::spawn(async move {
+            for i in 0..1000u32 {
+                let intent = Intent::new(
+                    format!("chaos-{i}"),
+                    IntentType::Event,
+                    format!("payload-{i}"),
+                    IntentPriority::Low,
+                    "chaos-publisher",
+                );
+                // publish ห้าม panic แม้บัสล้น
+                let _ = bus.publish(intent).await;
+            }
+        })
+    };
+
+    // Subscriber อ่านช้า ๆ — ต้องยังได้รับ intent แม้พลาดบางส่วนจาก overflow
+    let mut received = 0u32;
+    for _ in 0..50 {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), subscriber.receive())
+            .await
+        {
+            Ok(Some(_)) => received += 1,
+            Ok(None) | Err(_) => break,
+        }
+        tokio::task::yield_now().await;
+    }
+
+    publisher.await.expect("publisher must not panic");
+    assert!(
+        received > 0,
+        "lagged subscriber must keep receiving intents after overflow"
+    );
+}

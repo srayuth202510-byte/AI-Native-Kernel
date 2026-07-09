@@ -218,6 +218,33 @@ impl AuditLogger {
         }
     }
 
+    /// ตรวจว่าไฟล์มีข้อมูลแต่ไม่จบด้วย newline (สัญญาณว่า crash กลางการเขียน)
+    async fn ends_without_newline(path: &std::path::Path) -> bool {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let Ok(mut file) = tokio::fs::File::open(path).await else {
+            return false;
+        };
+        let Ok(meta) = file.metadata().await else {
+            return false;
+        };
+        if meta.len() == 0 {
+            return false;
+        }
+        if file
+            .seek(std::io::SeekFrom::Start(meta.len() - 1))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        let mut last = [0u8; 1];
+        match file.read_exact(&mut last).await {
+            Ok(_) => last[0] != b'\n',
+            Err(_) => false,
+        }
+    }
+
     /// บันทึกรายการตรวจสอบลงในไฟล์ล็อก พร้อมทำ Hash Chaining กับประวัติก่อนหน้า
     ///
     /// ถือ writer lock ตลอดช่วง "อ่าน prev hash → คำนวณ → เขียน" เพื่อให้ chain ต่อเนื่อง
@@ -246,7 +273,8 @@ impl AuditLogger {
 
         // เปิดไฟล์ครั้งแรกครั้งเดียว แล้วถือ handle ไว้ใช้ตลอดอายุ logger
         if writer_guard.is_none() {
-            let file = tokio::time::timeout(
+            let repair_newline = Self::ends_without_newline(&self.log_path).await;
+            let mut file = tokio::time::timeout(
                 AUDIT_IO_TIMEOUT,
                 tokio::fs::OpenOptions::new()
                     .create(true)
@@ -256,6 +284,11 @@ impl AuditLogger {
             .await
             .map_err(|_| AuditError::Timeout)?
             .map_err(AuditError::Open)?;
+            // ปิดบรรทัดครึ่งท่อนที่ค้างจาก crash กลางการเขียนครั้งก่อน
+            // ไม่งั้น entry ใหม่จะไปต่อท้ายบรรทัดเสียแล้วหายไปด้วยกันทั้งคู่
+            if repair_newline {
+                file.write_all(b"\n").await.map_err(AuditError::Write)?;
+            }
             *writer_guard = Some(file);
         }
         let Some(file) = writer_guard.as_mut() else {
