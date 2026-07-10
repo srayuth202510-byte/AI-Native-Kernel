@@ -939,7 +939,12 @@ mod tests {
         }
 
         // Verify maps exist
-        let maps = ["blocked_pids", "allowed_syscalls"];
+        let maps = [
+            "blocked_pids",
+            "agent_cgroups",
+            "allowed_pids",
+            "allowed_syscalls",
+        ];
         for name in maps {
             let map = bpf.take_map(name);
             assert!(map.is_some(), "eBPF map '{name}' must exist in BPF object");

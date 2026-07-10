@@ -28,6 +28,8 @@ use tokio::task::JoinHandle;
 use tracing::{info, instrument, warn};
 
 pub mod capability_detect;
+/// จัดการ cgroup (v2) สำหรับ agent scope — ขอบเขต default-DENY ของ LSM hook
+pub mod cgroup;
 /// Cognitive Control Plane — วงจรวิเคราะห์และปรับพฤติกรรมระบบอัตโนมัติ
 pub mod cognitive;
 /// โหลดและตรวจสอบ config (TOML) ของ companion daemon
@@ -36,7 +38,7 @@ pub mod config;
 pub mod ebpf;
 /// สะพานส่ง Intent ข้ามเครื่องระหว่าง node ใน mesh
 pub mod intent_bridge;
-/// LSM policy engine + การแนบ kernel LSM hooks (block-list ระดับ PID)
+/// LSM policy engine + การแนบ kernel LSM hooks (cgroup-scoped allow-list)
 pub mod lsm;
 /// โมดูล `metrics_server` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `metrics_server` จัดการระบบย่อยที่เกี่ยวข้อง
@@ -52,6 +54,7 @@ pub mod retry_telemetry;
 /// โมดูล `uds` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod uds;
 
+pub use cgroup::{AgentCgroup, cgroup_id_of};
 pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
 pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
 
@@ -92,6 +95,9 @@ pub struct KernelCompanion {
     config: Config,
     /// สถานะการเชื่อมต่อกับ LSM Hook ในระบบ Linux Kernel
     attachment: Arc<parking_lot::Mutex<Option<LsmAttachment>>>,
+    /// agent cgroup (v2) ที่ลงทะเบียนเป็น default-DENY scope (Hardening H1)
+    /// — `None` เมื่อ config ไม่ได้กำหนด `lsm.agent_cgroup_path`
+    agent_cgroup: Option<AgentCgroup>,
     /// ช่องสัญญาณใช้แจ้งให้ background tasks หยุดทำงาน
     shutdown_tx: Option<watch::Sender<bool>>,
     /// handle ของ routing task
@@ -236,6 +242,7 @@ impl KernelCompanion {
             bcell,
             macrophage,
             attachment: Arc::new(parking_lot::Mutex::new(None)),
+            agent_cgroup: None,
             shutdown_tx: None,
             routing_task: None,
             supervisor_task: None,
@@ -327,6 +334,25 @@ impl KernelCompanion {
             }
         }
 
+        // ── ลงทะเบียน agent cgroup scope (Hardening H1) ──
+        // เมื่อ operator กำหนด lsm.agent_cgroup_path ต้องสร้าง+ลงทะเบียนให้
+        // สำเร็จเท่านั้น (fail-closed): ถ้าล้มเหลวแล้วรันต่อ agent จะหลุดไป
+        // อยู่โลกของ host ที่ default-ALLOW โดยผู้ดูแลไม่รู้ตัว
+        if let Some(cgroup_path) = self.config.lsm.agent_cgroup_path.clone() {
+            let agent_cgroup = AgentCgroup::ensure(&cgroup_path).map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    path = %cgroup_path,
+                    "agent cgroup setup failed — refusing to boot without the configured default-DENY scope"
+                );
+                e
+            })?;
+            if let Some(attachment) = self.attachment.lock().as_mut() {
+                attachment.register_agent_cgroup(agent_cgroup.id())?;
+            }
+            self.agent_cgroup = Some(agent_cgroup);
+        }
+
         // เริ่มต้นใช้งานโมดูลอื่น ๆ
         let _boot_context = self.context_memory();
         let _security = self.capability_security();
@@ -403,9 +429,9 @@ impl KernelCompanion {
                         tokio::select! {
                             _ = tokio::time::sleep(expiry_interval) => {
                                 // 1. ดึงรายการ PID ที่เคยได้รับ token แบบ Process-scoped ไว้
-                                //    ก่อน garbage_collect ลบ token ที่หมดอายุทิ้ง (ต้องอ่านก่อน
-                                //    ไม่ใช่จาก LSM attachment ซึ่งตอนนี้เป็น block-list เปล่าๆ
-                                //    โดยดีฟอลต์ ไม่ใช่ทะเบียน PID ที่ได้รับอนุญาต)
+                                //    ก่อน garbage_collect ลบ token ที่หมดอายุทิ้ง (อ่านจาก
+                                //    token registry ซึ่งเป็น source of truth — allow-list ใน
+                                //    LSM attachment เป็นเพียงเงาของมันฝั่ง kernel)
                                 let process_scoped_pids: std::collections::HashSet<u32> = cap_sec
                                     .get_tokens()
                                     .into_iter()
@@ -1281,6 +1307,29 @@ impl KernelCompanion {
                 attachment.allow_pid(pid)?;
             } else {
                 attachment.deny_pid(pid)?;
+            }
+        }
+
+        // ── ย้าย PID เข้า agent cgroup (Hardening H1) ──
+        // ต้องทำหลัง allow_pid เสมอ: ทันทีที่ PID เข้า cgroup มันตกอยู่ใต้
+        // default-DENY ของ kernel hook — ถ้ายังไม่อยู่ใน allow-list จะโดน
+        // ปฏิเสธทุก syscall ทั้งที่ token valid
+        if allowed {
+            if let Some(cgroup) = &self.agent_cgroup {
+                if let Err(e) = cgroup.add_pid(pid) {
+                    // fail-closed: ถ้าย้ายเข้า scope ไม่ได้ PID จะอยู่โลกของ
+                    // host ที่ไม่มี enforcement — ถอน allow-list กลับ (ไม่
+                    // quarantine เพราะ agent ไม่ได้ทำผิด) แล้วปฏิเสธ authorize
+                    if let Some(attachment) = self.attachment.lock().as_mut() {
+                        attachment.withdraw_pid(pid);
+                    }
+                    tracing::error!(
+                        pid,
+                        error = %e,
+                        "cannot place authorized PID under agent cgroup scope — authorization rolled back"
+                    );
+                    return Err(e);
+                }
             }
         }
 

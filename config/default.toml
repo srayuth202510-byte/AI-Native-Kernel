@@ -130,6 +130,10 @@ tracepoint_program = "sys_enter_tp"
 
 [lsm]
 active_profile = "runtime"
+# cgroup (v2) ที่ใช้เป็น agent scope (Hardening H1) — เมื่อกำหนด daemon จะ
+# สร้าง/ลงทะเบียน cgroup นี้ตอน boot และย้าย PID ที่ authorize ผ่านเข้าไป
+# ทำให้ agent อยู่ใต้ default-DENY ระดับ kernel โดยไม่กระทบ process ของ host
+# agent_cgroup_path = "/sys/fs/cgroup/ank-agents"
 
 [lsm.profiles.strict]
 allowed_syscalls = ["read", "write", "recvmsg", "close"]

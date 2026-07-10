@@ -228,21 +228,33 @@ impl Default for LsmPolicyEngine {
 /// ในโหมดจำลอง: แค่ flag `attached` สำหรับทดสอบการทำงานของ lifecycle
 ///
 /// หมายเหตุด้านความปลอดภัย: hook เหล่านี้เป็น **global** — ทำงานกับทุก process
-/// บนเครื่อง ไม่ใช่แค่ agent ที่ daemon จัดการ ดังนั้นโมเดลจึงเป็น
-/// **default-allow + block-list เจาะจง PID** (ตรงข้ามกับ allowlist แบบเดิม
-/// ที่ deny ทุก process ที่ไม่รู้จัก ซึ่งทำให้ทั้งเครื่องค้างทันทีที่แนบ hook)
+/// บนเครื่อง ไม่ใช่แค่ agent ที่ daemon จัดการ โมเดลจึงเป็น **cgroup-scoped
+/// allow-list** (Hardening H1):
+/// - `blocked_pids` (quarantine) ตรวจก่อนและชนะทุกกรณี รวมถึง host
+/// - process ที่ cgroup ไม่ได้ลงทะเบียนใน `agent_cgroups` = โลกของ host →
+///   ปล่อยผ่านเสมอ (host ไม่มีทางค้าง)
+/// - process ใน agent cgroup ที่ลงทะเบียนแล้ว = **default-DENY** เว้นแต่
+///   PID อยู่ใน `allowed_pids` (ถือ capability token ที่ valid)
 #[derive(Debug)]
 pub struct LsmAttachment {
     /// BPF object ที่เก็บรักษาโปรแกรม LSM ใน kernel (None = โหมดจำลอง)
     bpf: Option<aya::Bpf>,
-    /// map สำหรับ sync PID block-list runtime เข้ากับ kernel hook
+    /// map สำหรับ sync PID block-list (quarantine) เข้ากับ kernel hook
     blocked_pids: Option<BpfHashMap<MapData, u32, u32>>,
+    /// map สำหรับ sync cgroup id ของ agent scope เข้ากับ kernel hook
+    agent_cgroups: Option<BpfHashMap<MapData, u64, u32>>,
+    /// map สำหรับ sync PID allow-list (token valid) เข้ากับ kernel hook
+    allowed_pids: Option<BpfHashMap<MapData, u32, u32>>,
     /// map สำหรับ sync syscall allowlist runtime เข้ากับ kernel hook
     allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
     /// บ่งชี้ว่ายังคงแนบอยู่กับ Kernel หรือไม่
     attached: bool,
     /// snapshot ฝั่ง userspace สำหรับทดสอบและ fail-safe checks
     blocked_pid_cache: HashSet<u32>,
+    /// snapshot ฝั่ง userspace ของ cgroup id ที่ลงทะเบียนเป็น agent scope
+    agent_cgroup_cache: HashSet<u64>,
+    /// snapshot ฝั่ง userspace ของ PID ที่อยู่ใน allow-list
+    allowed_pid_cache: HashSet<u32>,
 }
 
 impl LsmAttachment {
@@ -253,9 +265,13 @@ impl LsmAttachment {
         Self {
             bpf: None,
             blocked_pids: None,
+            agent_cgroups: None,
+            allowed_pids: None,
             allowed_syscalls: None,
             attached: true,
             blocked_pid_cache: HashSet::new(),
+            agent_cgroup_cache: HashSet::new(),
+            allowed_pid_cache: HashSet::new(),
         }
     }
 
@@ -265,15 +281,21 @@ impl LsmAttachment {
     pub fn new_with_bpf(
         bpf: aya::Bpf,
         blocked_pids: Option<BpfHashMap<MapData, u32, u32>>,
+        agent_cgroups: Option<BpfHashMap<MapData, u64, u32>>,
+        allowed_pids: Option<BpfHashMap<MapData, u32, u32>>,
         allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
         blocked_pid_cache: HashSet<u32>,
     ) -> Self {
         Self {
             bpf: Some(bpf),
             blocked_pids,
+            agent_cgroups,
+            allowed_pids,
             allowed_syscalls,
             attached: true,
             blocked_pid_cache,
+            agent_cgroup_cache: HashSet::new(),
+            allowed_pid_cache: HashSet::new(),
         }
     }
 
@@ -282,9 +304,13 @@ impl LsmAttachment {
         // Dropping the Bpf object detaches all programs and unloads them
         self.bpf = None;
         self.blocked_pids = None;
+        self.agent_cgroups = None;
+        self.allowed_pids = None;
         self.allowed_syscalls = None;
         self.attached = false;
         self.blocked_pid_cache.clear();
+        self.agent_cgroup_cache.clear();
+        self.allowed_pid_cache.clear();
     }
 
     /// ตรวจสอบสถานะว่า LSM Hook ยังทำงานอยู่หรือไม่
@@ -299,36 +325,108 @@ impl LsmAttachment {
         self.bpf.is_some()
     }
 
-    /// อนุญาต PID นี้อีกครั้ง (ลบออกจาก block-list) — ค่าดีฟอลต์ของทุก PID
-    /// อยู่แล้วคือ "อนุญาต" เว้นแต่เคยถูกบล็อกไว้มาก่อน
+    /// อนุญาต PID นี้: ลบออกจาก block-list และเพิ่มเข้า PID allow-list
+    /// สำหรับ agent ใน cgroup ที่ลงทะเบียนแล้ว การอยู่ใน allow-list คือ
+    /// เงื่อนไขเดียวที่ทำให้ syscall ผ่าน (default-DENY ในโลกของ agent)
     pub fn allow_pid(&mut self, pid: u32) -> Result<()> {
         if let Some(map) = self.blocked_pids.as_mut() {
             let _ = map.remove(&pid);
         }
         self.blocked_pid_cache.remove(&pid);
+        if let Some(map) = self.allowed_pids.as_mut() {
+            map.insert(pid, 1, 0)?;
+        }
+        self.allowed_pid_cache.insert(pid);
         Ok(())
     }
 
-    /// บล็อก PID นี้ (เพิ่มเข้า block-list) — ใช้เมื่อ token ถูกเพิกถอน/หมดอายุ
-    /// หรือ Immune System สั่งกักกัน/kill agent
+    /// บล็อก PID นี้ (เพิ่มเข้า block-list และถอนออกจาก allow-list) —
+    /// ใช้เมื่อ token ถูกเพิกถอน/หมดอายุ หรือ Immune System สั่งกักกัน/kill agent
     pub fn deny_pid(&mut self, pid: u32) -> Result<()> {
         if let Some(map) = self.blocked_pids.as_mut() {
             map.insert(pid, 1, 0)?;
         }
         self.blocked_pid_cache.insert(pid);
+        if let Some(map) = self.allowed_pids.as_mut() {
+            let _ = map.remove(&pid);
+        }
+        self.allowed_pid_cache.remove(&pid);
         Ok(())
     }
 
     #[must_use]
     /// คืนค่า `true` หาก PID นี้ยังคงถูกอนุญาต (ไม่อยู่ใน block-list)
+    /// หมายเหตุ: สำหรับ PID ใน agent cgroup ต้องดู `is_pid_allow_listed`
+    /// ประกอบ เพราะโลกของ agent เป็น default-DENY
     pub fn allows_pid(&self, pid: u32) -> bool {
         !self.blocked_pid_cache.contains(&pid)
+    }
+
+    #[must_use]
+    /// คืนค่า `true` หาก PID นี้อยู่ใน allow-list (ถือ token ที่ valid) —
+    /// เงื่อนไขจำเป็นสำหรับ process ใน agent cgroup ที่ลงทะเบียนแล้ว
+    pub fn is_pid_allow_listed(&self, pid: u32) -> bool {
+        self.allowed_pid_cache.contains(&pid)
+    }
+
+    /// ถอน PID ออกจาก allow-list โดยไม่เพิ่มเข้า block-list — ใช้ rollback
+    /// เมื่อ authorize สำเร็จแต่ย้าย PID เข้า agent cgroup ไม่ได้ (PID กลับ
+    /// สู่สถานะเดิมก่อน authorize แทนที่จะโดน quarantine ทั้งที่ไม่ได้ทำผิด)
+    pub fn withdraw_pid(&mut self, pid: u32) {
+        if let Some(map) = self.allowed_pids.as_mut() {
+            let _ = map.remove(&pid);
+        }
+        self.allowed_pid_cache.remove(&pid);
     }
 
     #[must_use]
     /// คืนค่า snapshot ของ PID ทั้งหมดที่ถูกบล็อกอยู่ในปัจจุบัน
     pub fn blocked_pids(&self) -> HashSet<u32> {
         self.blocked_pid_cache.clone()
+    }
+
+    /// ลงทะเบียน cgroup id เป็น agent scope — ทุก process ใน cgroup นี้จะ
+    /// ตกอยู่ใต้ default-DENY ทันที (ต้องมี PID ใน allow-list จึงผ่าน)
+    ///
+    /// # Errors
+    ///
+    /// ส่งคืนข้อผิดพลาดหากเขียน BPF map ไม่สำเร็จ
+    pub fn register_agent_cgroup(&mut self, cgroup_id: u64) -> Result<()> {
+        if let Some(map) = self.agent_cgroups.as_mut() {
+            map.insert(cgroup_id, 1, 0)?;
+        }
+        self.agent_cgroup_cache.insert(cgroup_id);
+        info!(
+            cgroup_id,
+            "LSM: agent cgroup registered — default-DENY scope active"
+        );
+        Ok(())
+    }
+
+    /// ถอนการลงทะเบียน cgroup id ออกจาก agent scope — process ใน cgroup นี้
+    /// จะกลับไปเป็นโลกของ host (ปล่อยผ่าน ยกเว้น PID ที่ถูก quarantine)
+    ///
+    /// # Errors
+    ///
+    /// ส่งคืนข้อผิดพลาดหากเขียน BPF map ไม่สำเร็จ
+    pub fn unregister_agent_cgroup(&mut self, cgroup_id: u64) -> Result<()> {
+        if let Some(map) = self.agent_cgroups.as_mut() {
+            let _ = map.remove(&cgroup_id);
+        }
+        self.agent_cgroup_cache.remove(&cgroup_id);
+        Ok(())
+    }
+
+    #[must_use]
+    /// คืนค่า `true` หาก cgroup id นี้ลงทะเบียนเป็น agent scope อยู่
+    pub fn is_agent_cgroup(&self, cgroup_id: u64) -> bool {
+        self.agent_cgroup_cache.contains(&cgroup_id)
+    }
+
+    #[must_use]
+    /// คืนค่า snapshot ของ cgroup id ทั้งหมดที่ลงทะเบียนเป็น agent scope
+    pub fn agent_cgroups(&self) -> HashSet<u64> {
+        self.agent_cgroup_cache.clone()
     }
 }
 
@@ -341,7 +439,9 @@ impl Default for LsmAttachment {
 /// พยายามโหลดและแนบโปรแกรม LSM eBPF จริงผ่าน Aya
 ///
 /// โปรแกรมที่แนบ (ชื่อ LSM hook ต้องตรงกับ kernel BTF trampoline `bpf_lsm_<hook>`),
-/// ทุกตัว default-allow และ deny เฉพาะ PID ที่อยู่ใน `blocked_pids` map:
+/// ทุกตัวใช้ cgroup-scoped gate: host ปล่อยผ่าน, agent cgroup ที่ลงทะเบียน
+/// เป็น default-DENY เว้นแต่ PID อยู่ใน `allowed_pids`, และ `blocked_pids`
+/// (quarantine) ชนะทุกกรณี:
 /// - `file_open` (kernel ≥5.7)
 /// - `bprm_check_security` (kernel ≥5.5)
 /// - `socket_create`
@@ -414,6 +514,27 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
         None
     };
 
+    // ── agent_cgroups eBPF map ──
+    // ว่างเปล่าตอน attach = ไม่มี agent scope = ทั้งระบบคือโลกของ host
+    // (ปล่อยผ่าน) — daemon จะลงทะเบียน cgroup id ผ่าน register_agent_cgroup
+    // หลัง boot เมื่อ config กำหนด agent_cgroup_path ไว้
+    let agent_cgroups = if let Some(map) = bpf.take_map("agent_cgroups") {
+        Some(BpfHashMap::<_, u64, u32>::try_from(map)?)
+    } else {
+        warn!("LSM eBPF: could not create HashMap from agent_cgroups map");
+        None
+    };
+
+    // ── allowed_pids eBPF map ──
+    // ว่างเปล่าตอน attach — PID จะถูกเพิ่มเมื่อ authorize_process_token
+    // ตรวจ capability token ผ่าน และถูกถอนเมื่อ token หมดอายุ/ถูกเพิกถอน
+    let allowed_pids = if let Some(map) = bpf.take_map("allowed_pids") {
+        Some(BpfHashMap::<_, u32, u32>::try_from(map)?)
+    } else {
+        warn!("LSM eBPF: could not create HashMap from allowed_pids map");
+        None
+    };
+
     // ── populate allowed_syscalls eBPF map ──
     // เติม syscall numbers ที่ LsmPolicyEngine อนุญาต
     let mut allowed_syscalls = if let Some(map) = bpf.take_map("allowed_syscalls") {
@@ -439,6 +560,8 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
     Ok(LsmAttachment::new_with_bpf(
         bpf,
         blocked_pids,
+        agent_cgroups,
+        allowed_pids,
         allowed_syscalls,
         blocked_pid_cache,
     ))
@@ -581,7 +704,7 @@ mod tests {
     #[test]
     fn attachment_pid_block_list_can_be_updated() {
         let mut attachment = LsmAttachment::new();
-        // Default-allow: an unknown PID is allowed until explicitly blocked.
+        // Host world: an unknown PID is not quarantined until explicitly blocked.
         assert!(attachment.allows_pid(4242));
 
         attachment.deny_pid(4242).expect("deny should succeed");
@@ -589,6 +712,66 @@ mod tests {
 
         attachment.allow_pid(4242).expect("allow should succeed");
         assert!(attachment.allows_pid(4242));
+    }
+
+    #[test]
+    fn attachment_agent_cgroup_registration_lifecycle() {
+        // H1: ลงทะเบียน/ถอน cgroup scope ต้องสะท้อนใน snapshot ทันที
+        let mut attachment = LsmAttachment::new();
+        assert!(!attachment.is_agent_cgroup(42));
+
+        attachment
+            .register_agent_cgroup(42)
+            .expect("register should succeed");
+        assert!(attachment.is_agent_cgroup(42));
+        assert!(attachment.agent_cgroups().contains(&42));
+
+        attachment
+            .unregister_agent_cgroup(42)
+            .expect("unregister should succeed");
+        assert!(!attachment.is_agent_cgroup(42));
+        assert!(attachment.agent_cgroups().is_empty());
+    }
+
+    #[test]
+    fn allow_pid_populates_allow_list_and_deny_pid_withdraws_it() {
+        // H1: allow_pid ต้องใส่ PID เข้า allow-list (เงื่อนไขผ่าน default-DENY
+        // ใน agent cgroup) และ deny_pid ต้องถอนออกพร้อม quarantine
+        let mut attachment = LsmAttachment::new();
+        assert!(!attachment.is_pid_allow_listed(7));
+
+        attachment.allow_pid(7).expect("allow should succeed");
+        assert!(attachment.is_pid_allow_listed(7));
+
+        attachment.deny_pid(7).expect("deny should succeed");
+        assert!(!attachment.is_pid_allow_listed(7));
+        assert!(!attachment.allows_pid(7));
+    }
+
+    #[test]
+    fn withdraw_pid_removes_allow_list_without_quarantine() {
+        // rollback path: ถอน allow-list โดยไม่ block — PID กลับสู่สถานะ
+        // ก่อน authorize (โลกของ host) ไม่ใช่โดนลงโทษ
+        let mut attachment = LsmAttachment::new();
+        attachment.allow_pid(9).expect("allow should succeed");
+        assert!(attachment.is_pid_allow_listed(9));
+
+        attachment.withdraw_pid(9);
+        assert!(!attachment.is_pid_allow_listed(9));
+        assert!(attachment.allows_pid(9), "withdraw must not quarantine");
+    }
+
+    #[test]
+    fn detach_clears_cgroup_scope_state() {
+        let mut attachment = LsmAttachment::new();
+        attachment
+            .register_agent_cgroup(1234)
+            .expect("register should succeed");
+        attachment.allow_pid(55).expect("allow should succeed");
+
+        attachment.detach();
+        assert!(!attachment.is_agent_cgroup(1234));
+        assert!(!attachment.is_pid_allow_listed(55));
     }
 
     #[test]

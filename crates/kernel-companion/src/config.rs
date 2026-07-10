@@ -910,6 +910,13 @@ pub struct LsmConfig {
     #[serde(default = "default_lsm_profiles")]
     /// ข้อมูล `profiles` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub profiles: BTreeMap<String, LsmProfileConfig>,
+    #[serde(default)]
+    /// path ของ cgroup (v2) ที่ใช้เป็น agent scope (Hardening H1) เช่น
+    /// `/sys/fs/cgroup/ank-agents` — เมื่อกำหนด daemon จะสร้าง/ลงทะเบียน
+    /// cgroup นี้ตอน boot และย้าย PID ที่ authorize ผ่านเข้าไป ทำให้ agent
+    /// อยู่ใต้ default-DENY ของ kernel hook โดยไม่กระทบ process ของ host
+    /// (ไม่กำหนด = enforcement แบบ block-list อย่างเดียวเหมือนเดิม)
+    pub agent_cgroup_path: Option<String>,
 }
 
 impl Default for LsmConfig {
@@ -917,6 +924,7 @@ impl Default for LsmConfig {
         Self {
             active_profile: default_lsm_profile(),
             profiles: default_lsm_profiles(),
+            agent_cgroup_path: None,
         }
     }
 }
