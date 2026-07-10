@@ -723,7 +723,7 @@ gantt
             <li>✅ Capability/LSM policy path ตัดสินใจภายใน 1 ms ใน host-side validation path</li>
             <li>✅ Audit Log บันทึก security decisions แบบ append-only พร้อม hash-chain validation</li>
             <li>✅ ผ่าน chaos / pipeline / integration tests สำหรับ Failure Domains ที่อยู่ใน workspace ปัจจุบัน</li>
-            <li>⚠️ Qdrant-backed ignored tests ต้อง re-run กับ endpoint ที่ reachable เพื่อยืนยัน semantic path</li>
+            <li>✅ Qdrant-backed ignored tests (4 ตัว: semantic store ×3 + SFS ×1) ผ่านกับ Qdrant จริง 1.18.2 (podman, 10 ก.ค. 2026) — semantic path ยืนยันแล้ว</li>
             <li>✅ eBPF/LSM real attach พร้อม fallback disabled ผ่านการ validate บน privileged host (kernel 7.0.0-27, 10 ก.ค. 2026) รวม H1 cgroup-scoped default-DENY end-to-end</li>
             <li>✅ <code>cargo clippy --all-targets --all-features -- -D warnings</code> และ <code>cargo audit</code> เป็น baseline validation ของ repo ปัจจุบัน</li>
         </ul>
