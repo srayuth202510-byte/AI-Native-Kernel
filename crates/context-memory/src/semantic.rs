@@ -396,9 +396,18 @@ mod tests {
 
     async fn check_qdrant_online() -> bool {
         let (host, port) = qdrant_host_port();
-        tokio::net::TcpStream::connect((host.as_str(), port))
+        let online = tokio::net::TcpStream::connect((host.as_str(), port))
             .await
-            .is_ok()
+            .is_ok();
+        // CI ที่สปิน Qdrant service ตั้ง QDRANT_REQUIRED=1 — ถ้า endpoint
+        // หลุดกลางทางต้อง fail ให้เห็น ไม่ใช่ self-skip เป็นเขียวหลอก
+        if !online && std::env::var("QDRANT_REQUIRED").is_ok() {
+            panic!(
+                "QDRANT_REQUIRED is set but Qdrant is not reachable at {}",
+                qdrant_url()
+            );
+        }
+        online
     }
 
     #[test]

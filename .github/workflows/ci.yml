@@ -63,6 +63,50 @@ jobs:
           echo "BPF objects in target/bpf/:"
           ls -la crates/kernel-companion/target/bpf/ 2>/dev/null || echo "(none — runtime generation not available)"
 
+  qdrant-integration:
+    # รัน integration tests ของ semantic store กับ Qdrant จริง (ปกติ #[ignore]
+    # เพราะต้องมี endpoint) — ปิดช่องว่างที่ gRPC upsert/search path ไม่มี
+    # regression coverage อัตโนมัติ pin เวอร์ชันให้ตรงกับที่ validate ด้วยมือ
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_TERM_COLOR: always
+      # run-qdrant-tests.sh เห็น QDRANT_URL แล้วใช้ endpoint นี้ (ไม่สตาร์ท mock)
+      QDRANT_URL: http://localhost:6334
+      # บังคับให้ ignored tests hard-fail แทน self-skip ถ้า endpoint หลุด
+      QDRANT_REQUIRED: "1"
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.18.2
+        ports:
+          - 6333:6333
+          - 6334:6334
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-06-25
+          override: true
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # run-qdrant-tests.sh มี wait loop รอ endpoint พร้อม แล้วรัน
+      # `cargo test -p context-memory --lib -- --ignored` ครอบทั้ง 4 ตัว
+      # (semantic store x3 + semantic file system x1)
+      - name: Run Qdrant-backed integration tests
+        run: bash scripts/run-qdrant-tests.sh
+
   security-audit:
     runs-on: ubuntu-24.04
     steps:
