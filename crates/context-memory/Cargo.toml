@@ -47,3 +47,7 @@ required-features = ["rocksdb-warm"]
 [[bench]]
 name = "memory_bench"
 harness = false
+
+[[bench]]
+name = "mesh_bench"
+harness = false
