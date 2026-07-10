@@ -681,7 +681,7 @@ gantt
                 <td><strong>H2</strong></td>
                 <td><strong>Agent identity ที่ปลอมไม่ได้</strong></td>
                 <td>การผูก agent กับ PID ตรง ๆ มีช่องโหว่ PID reuse — process ใหม่อาจสวมสิทธิ์ PID เดิม</td>
-                <td>ใช้ pidfd หรือ tuple <code>(start_time, pid)</code> ใน BPF map เพื่อผูก capability token กับ process instance จริง <strong>✅ implemented ก.ค. 2026</strong> (allow-list เก็บ start ticks จาก <code>/proc/&lt;pid&gt;/stat</code> เทียบกับ <code>start_boottime</code> ใน kernel; deny path ผ่าน validation แล้ว — allow path ที่ start time ตรงยังต้องทดสอบผ่าน UDS authorize flow จริง)</td>
+                <td>ใช้ pidfd หรือ tuple <code>(start_time, pid)</code> ใน BPF map เพื่อผูก capability token กับ process instance จริง <strong>✅ implemented + validated end-to-end 10 ก.ค. 2026</strong> (allow-list เก็บ start ticks จาก <code>/proc/&lt;pid&gt;/stat</code> เทียบกับ <code>start_boottime</code> ใน kernel; ทั้งขา allow และ deny ผ่าน <code>tests/privileged_h1_h2.rs</code> ที่ขับ authorize flow จริงกับ child process จริงบน privileged host)</td>
                 <td>Phase 1.5</td>
             </tr>
             <tr>
