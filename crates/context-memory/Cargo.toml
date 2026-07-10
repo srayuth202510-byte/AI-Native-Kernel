@@ -28,6 +28,7 @@ futures = { workspace = true }
 fastrand = "2.3.0"
 notify = "7"
 sha2 = "0.10"
+zeroize = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

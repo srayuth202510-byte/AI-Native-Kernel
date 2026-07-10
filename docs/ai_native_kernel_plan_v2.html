@@ -705,6 +705,13 @@ gantt
                 <td>Implement cudaMemcpy/hipMemcpy device↔host จริง — ต้องมีเครื่อง CUDA/ROCm สำหรับทดสอบ (ตรงกับ p2a ใน Gantt) <strong>✅ implemented ก.ค. 2026</strong> (<code>migrate_to_cpu</code> ทำ DtoH จริงรักษาข้อมูล + เพิ่ม <code>migrate_to_gpu</code> คู่กัน HtoD; round-trip test ในโหมด simulation ผ่าน; real-GPU byte-for-byte round-trip test พร้อมรันบนเครื่องที่มี CUDA — ⚠️ ยังรอ hardware validation)</td>
                 <td>Phase 2</td>
             </tr>
+            <tr>
+                <td><strong>H6</strong></td>
+                <td><strong>P2P mesh mutual auth + integrity</strong></td>
+                <td>mesh transport เป็น raw TCP + JSON plaintext ไม่ auth peer — ใครต่อ TCP มาถึง port ก็ยัด record ปลอม/ปลอมเป็น node trust สูง/ดักอ่าน/replay ได้ ขัด Zero-Trust ของโปรเจกต์เอง</td>
+                <td>เซ็นทุกข้อความด้วย HMAC-SHA256 (pre-shared key ต่อ mesh) + ปฏิเสธ replay (timestamp window + nonce dedup) <strong>✅ implemented + validated ก.ค. 2026</strong> (module <code>mesh_auth</code>: seal/open; wire ทุกจุดใน p2p_mesh; companion fail closed ตอน boot ถ้าเปิด mesh โดยไม่ตั้ง key; E2E ผ่าน TCP loopback ยืนยัน matching-key เชื่อมได้/wrong-key ถูกปฏิเสธ; ยังไม่เข้ารหัสสาย — mTLS เป็นเฟสถัดไป)</td>
+                <td>Phase 4</td>
+            </tr>
         </tbody>
     </table>
 

@@ -764,6 +764,8 @@ async fn int_p2p_mesh_discovery_pipeline() {
         format!("/tmp/p2p-test-a-{}.sock", uuid::Uuid::new_v4());
     config_a.context_memory.p2p_enabled = true;
     config_a.context_memory.p2p_listen_addr = format!("127.0.0.1:{}", port_a);
+    // H6: ทั้ง mesh ต้องใช้ pre-shared key เดียวกัน ไม่งั้น boot fail closed
+    config_a.context_memory.p2p_mesh_key_hex = Some("00112233445566778899aabbccddeeff".to_string());
     config_a.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
     config_a.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
 
@@ -773,6 +775,7 @@ async fn int_p2p_mesh_discovery_pipeline() {
     config_b.context_memory.p2p_enabled = true;
     config_b.context_memory.p2p_listen_addr = format!("127.0.0.1:{}", port_b);
     config_b.context_memory.p2p_bootstrap_nodes = vec![format!("127.0.0.1:{}", port_a)];
+    config_b.context_memory.p2p_mesh_key_hex = Some("00112233445566778899aabbccddeeff".to_string());
     config_b.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
     config_b.ebpf.enable_fallback = true; // test/dev: allow simulation on unprivileged host
 

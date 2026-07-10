@@ -10,6 +10,8 @@ pub mod fs;
 /// Hot tier — เก็บใน RAM สำหรับข้อมูลที่ใช้บ่อยที่สุด
 pub mod hot;
 pub mod indexer;
+/// Mutual auth + integrity (HMAC + replay guard) สำหรับ P2P mesh (H6)
+pub mod mesh_auth;
 /// P2P mesh สำหรับ replicate context ข้ามเครื่อง
 pub mod p2p_mesh;
 /// Vector store + semantic embedding ของ context

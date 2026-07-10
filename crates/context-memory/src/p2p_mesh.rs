@@ -1,3 +1,4 @@
+use crate::mesh_auth::MeshAuth;
 use crate::swim::FailureDetector;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -160,6 +161,9 @@ pub struct P2PMeshManager {
     telemetries: Arc<RwLock<HashMap<String, NodeTelemetry>>>,
     /// ตัวตรวจจับ node ล้มเหลวแบบ SWIM (alive/suspect/dead)
     pub failure_detector: FailureDetector,
+    /// ตัวเซ็น/ตรวจข้อความด้วย HMAC + replay guard (H6) — `None` = โหมด
+    /// unauthenticated (dev/test เท่านั้น; production ต้องตั้ง key)
+    auth: Option<Arc<MeshAuth>>,
 }
 
 impl P2PMeshManager {
@@ -201,6 +205,30 @@ impl P2PMeshManager {
             pending_fetches: Arc::new(RwLock::new(HashMap::new())),
             telemetries: Arc::new(RwLock::new(HashMap::new())),
             failure_detector,
+            auth: None,
+        }
+    }
+
+    /// เปิดใช้ mutual authentication + integrity ด้วย pre-shared key ต่อ mesh
+    /// (H6) — ทุกข้อความขาออกจะถูกเซ็น HMAC และขาเข้าจะถูกตรวจ/กัน replay
+    /// node ที่ไม่ถือ key เดียวกันจะคุยด้วยไม่ได้
+    #[must_use]
+    pub fn with_mesh_key(mut self, key: Vec<u8>) -> Self {
+        self.auth = Some(Arc::new(MeshAuth::new(key)));
+        self
+    }
+
+    /// `true` หาก mesh นี้เปิด authentication อยู่
+    #[must_use]
+    pub fn is_authenticated(&self) -> bool {
+        self.auth.is_some()
+    }
+
+    /// ห่อ+เซ็นข้อความเป็น wire line (หรือ plain JSON ถ้าไม่มี key)
+    fn seal_wire(&self, msg: &P2PMessage) -> Result<String> {
+        match &self.auth {
+            Some(auth) => Ok(auth.seal(msg)?),
+            None => Ok(serde_json::to_string(msg)?),
         }
     }
 
@@ -302,7 +330,7 @@ impl P2PMeshManager {
             timestamp_millis: now_millis(),
         };
 
-        let payload = serde_json::to_string(&msg)?;
+        let payload = self.seal_wire(&msg)?;
         let peers = self.peers.read().await;
         for (node_id, tx) in peers.iter() {
             if *node_id != self.local_node.id {
@@ -486,7 +514,7 @@ impl P2PMeshManager {
     }
 
     async fn broadcast_message(&self, message: P2PMessage) -> Result<()> {
-        let payload = serde_json::to_string(&message)?;
+        let payload = self.seal_wire(&message)?;
         let peers = self.peers.read().await;
         for (node_id, tx) in peers.iter() {
             if *node_id != self.local_node.id {
@@ -507,12 +535,38 @@ struct SharedState {
     local_id: String,
     local_addr: SocketAddr,
     failure_detector: FailureDetector,
+    auth: Option<Arc<MeshAuth>>,
+}
+
+impl SharedState {
+    /// ห่อ+เซ็นข้อความเป็น wire line (หรือ plain JSON ถ้าไม่มี key)
+    fn seal_wire(&self, msg: &P2PMessage) -> Result<String> {
+        match &self.auth {
+            Some(auth) => Ok(auth.seal(msg)?),
+            None => Ok(serde_json::to_string(msg)?),
+        }
+    }
+
+    /// ตรวจ+แกะ wire line เป็น [`P2PMessage`] — คืน `None` ถ้า auth ไม่ผ่าน
+    /// (signature ผิด/replay/stale) หรือ parse ไม่ได้ ผู้เรียกต้องทิ้งข้อความ
+    fn open_wire(&self, line: &str) -> Option<P2PMessage> {
+        match &self.auth {
+            Some(auth) => match auth.open(line) {
+                Ok(msg) => Some(msg),
+                Err(e) => {
+                    warn!(error = %e, "P2P: rejecting message that failed mesh authentication");
+                    None
+                }
+            },
+            None => serde_json::from_str::<P2PMessage>(line.trim()).ok(),
+        }
+    }
 }
 
 async fn on_message(line: &str, node_id: &str, state: &SharedState) {
     state.failure_detector.record_ack(node_id).await;
 
-    if let Ok(msg) = serde_json::from_str::<P2PMessage>(line.trim()) {
+    if let Some(msg) = state.open_wire(line) {
         // Enforce Zero-Trust: reject messages from nodes with trust score < 50
         let sender_trust = state
             .known_nodes
@@ -654,7 +708,7 @@ async fn on_message(line: &str, node_id: &str, state: &SharedState) {
                     data: serde_json::to_vec(&response).unwrap_or_default(),
                     timestamp_millis: now_millis(),
                 };
-                if let Ok(payload) = serde_json::to_string(&envelope) {
+                if let Ok(payload) = state.seal_wire(&envelope) {
                     if let Some(peer_tx) = state.peers.read().await.get(&msg.from).cloned() {
                         let _ = peer_tx.send(payload);
                     }
@@ -740,6 +794,7 @@ async fn handle_connection(
         local_id: mgr.local_node.id.clone(),
         local_addr: mgr.local_node.addr,
         failure_detector: mgr.failure_detector.clone(),
+        auth: mgr.auth.clone(),
     };
 
     if is_inbound {
@@ -750,7 +805,9 @@ async fn handle_connection(
         timeout(RW_TIMEOUT, reader.read_line(&mut line))
             .await
             .context("P2P: handshake read timeout")??;
-        let hs: P2PMessage = serde_json::from_str(line.trim())?;
+        let hs = state
+            .open_wire(&line)
+            .context("P2P: inbound handshake failed mesh authentication")?;
         if hs.msg_type != MessageType::Handshake {
             anyhow::bail!("expected Handshake, got {:?}", hs.msg_type);
         }
@@ -790,7 +847,7 @@ async fn handle_connection(
             data: Vec::new(),
             timestamp_millis: now_millis(),
         };
-        let resp_json = serde_json::to_string(&resp)?;
+        let resp_json = state.seal_wire(&resp)?;
         timeout(RW_TIMEOUT, owned_writer.write_all(resp_json.as_bytes()))
             .await
             .context("P2P: handshake write timeout")??;
@@ -865,7 +922,7 @@ async fn handle_connection(
             data: Vec::new(),
             timestamp_millis: now_millis(),
         };
-        let hs_json = serde_json::to_string(&hs)?;
+        let hs_json = state.seal_wire(&hs)?;
         timeout(RW_TIMEOUT, owned_writer.write_all(hs_json.as_bytes()))
             .await
             .context("P2P: outbound handshake write timeout")??;
@@ -880,7 +937,9 @@ async fn handle_connection(
         timeout(RW_TIMEOUT, reader.read_line(&mut line))
             .await
             .context("P2P: outbound handshake read timeout")??;
-        let hs_resp: P2PMessage = serde_json::from_str(line.trim())?;
+        let hs_resp = state
+            .open_wire(&line)
+            .context("P2P: outbound handshake response failed mesh authentication")?;
         if hs_resp.msg_type != MessageType::Handshake {
             anyhow::bail!("expected Handshake response, got {:?}", hs_resp.msg_type);
         }
@@ -1120,6 +1179,7 @@ mod tests {
             local_id: "local".to_string(),
             local_addr: test_addr(9059),
             failure_detector: FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None)),
+            auth: None,
         };
         let node = make_node("target", 9060);
         state.failure_detector.register("target").await;
@@ -1163,6 +1223,7 @@ mod tests {
             local_id: "local".to_string(),
             local_addr: test_addr(9069),
             failure_detector: FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None)),
+            auth: None,
         };
         known_nodes
             .write()
@@ -1449,6 +1510,7 @@ mod tests {
             local_id: "local".to_string(),
             local_addr: test_addr(9098),
             failure_detector: FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None)),
+            auth: None,
         };
         let telemetry = NodeTelemetry {
             node_id: "node-telemetry".to_string(),
@@ -1503,6 +1565,7 @@ mod tests {
             local_id: "local".to_string(),
             local_addr: test_addr(9099),
             failure_detector: FailureDetector::new(Arc::new(|_| None), Arc::new(|_, _| None)),
+            auth: None,
         };
 
         // Setup nodes with different trust scores
@@ -1610,5 +1673,88 @@ mod tests {
             records.read().await.get("key1").unwrap().value,
             b"val-high-v2".to_vec()
         );
+    }
+
+    // ── H6: mutual authentication over real TCP loopback ──
+
+    fn loopback() -> SocketAddr {
+        // port 0 = ให้ OS เลือก port ว่างเอง
+        "127.0.0.1:0".parse().unwrap()
+    }
+
+    async fn bound_manager(node: &str, key: Option<&[u8]>) -> Arc<P2PMeshManager> {
+        // bind ก่อนเพื่อรู้ port จริง แล้วสร้าง manager ด้วย addr นั้น
+        let listener = TcpListener::bind(loopback()).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut mgr = P2PMeshManager::new_with_node_config(addr, node.to_string(), vec![]);
+        if let Some(k) = key {
+            mgr = mgr.with_mesh_key(k.to_vec());
+        }
+        let mgr = Arc::new(mgr);
+        let listener_mgr = Arc::clone(&mgr);
+        tokio::spawn(async move {
+            let _ = listener_mgr.start_listener().await;
+        });
+        // ให้ listener bind เสร็จก่อนคืน
+        sleep(Duration::from_millis(50)).await;
+        mgr
+    }
+
+    #[tokio::test]
+    async fn authenticated_peers_with_matching_key_connect() {
+        let key = b"shared-mesh-secret";
+        let a = bound_manager("node-a", Some(key)).await;
+        let b = bound_manager("node-b", Some(key)).await;
+        assert!(a.is_authenticated());
+
+        Arc::clone(&a)
+            .connect_to_peer(b.local_node.addr)
+            .await
+            .expect("connect");
+
+        // handshake สำเร็จ → ต่างฝ่ายต่างรู้จักกัน
+        let connected = wait_until(2000, || async {
+            a.is_connected("node-b").await && b.is_connected("node-a").await
+        })
+        .await;
+        assert!(
+            connected,
+            "peers with matching keys must complete handshake"
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_with_wrong_key_is_rejected() {
+        let a = bound_manager("node-a", Some(b"correct-key")).await;
+        let b = bound_manager("node-b", Some(b"WRONG-key")).await;
+
+        let _ = Arc::clone(&a).connect_to_peer(b.local_node.addr).await;
+
+        // handshake ต้อง fail mesh auth → ไม่มีใครลงทะเบียนใครเป็น peer
+        let connected = wait_until(1500, || async {
+            a.is_connected("node-b").await || b.is_connected("node-a").await
+        })
+        .await;
+        assert!(
+            !connected,
+            "a peer holding the wrong key must never be admitted"
+        );
+    }
+
+    /// poll เงื่อนไขทุก 25ms จนจริงหรือหมดเวลา (คืน true ถ้าจริงทัน)
+    async fn wait_until<F, Fut>(timeout_ms: u64, mut cond: F) -> bool
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+        while std::time::Instant::now() < deadline {
+            if cond().await {
+                return true;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        cond().await
     }
 }

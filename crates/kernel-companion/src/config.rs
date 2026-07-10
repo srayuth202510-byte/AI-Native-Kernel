@@ -575,6 +575,12 @@ pub struct ContextMemoryConfig {
     #[serde(default = "default_p2p_bootstrap")]
     /// ข้อมูล `p2p_bootstrap_nodes` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub p2p_bootstrap_nodes: Vec<String>,
+    #[serde(default)]
+    /// pre-shared key (hex) สำหรับ mutual authentication ของ P2P mesh (H6)
+    /// — ทุก node ใน mesh เดียวกันต้องใช้ค่าเดียวกัน เมื่อ `p2p_enabled`
+    /// เป็น true ต้องกำหนดค่านี้ ไม่งั้น daemon จะ fail closed ตอน boot
+    /// (mesh ที่ไม่ auth เปิดรับ context poisoning/node spoofing ข้ามเครือข่าย)
+    pub p2p_mesh_key_hex: Option<String>,
     #[serde(default = "default_warm_store_path")]
     /// ข้อมูล `warm_store_path` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub warm_store_path: String,
@@ -597,6 +603,7 @@ impl Default for ContextMemoryConfig {
             p2p_enabled: default_p2p_enabled(),
             p2p_listen_addr: default_p2p_listen_addr(),
             p2p_bootstrap_nodes: default_p2p_bootstrap(),
+            p2p_mesh_key_hex: None,
             warm_store_path: default_warm_store_path(),
             sfs_enabled: default_sfs_enabled(),
             sfs_root_path: default_sfs_root_path(),

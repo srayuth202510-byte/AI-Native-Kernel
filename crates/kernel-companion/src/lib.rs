@@ -110,6 +110,25 @@ async fn apply_immune_revocation(
     }
 }
 
+/// แปลง hex string เป็น key bytes สำหรับ P2P mesh HMAC (H6) — ต้องยาว
+/// อย่างน้อย 16 ไบต์ (32 hex chars) เพื่อความแข็งแรงของ key
+fn decode_hex_key(hex: &str) -> Result<Vec<u8>, String> {
+    let hex = hex.trim();
+    if hex.len() % 2 != 0 {
+        return Err("hex string must have an even number of digits".to_string());
+    }
+    if hex.len() < 32 {
+        return Err("mesh key must be at least 16 bytes (32 hex digits)".to_string());
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|_| format!("invalid hex at position {i}"))
+        })
+        .collect()
+}
+
 fn infer_bridge_addr(
     peer_addr: std::net::SocketAddr,
     local_bridge_addr: &str,
@@ -871,11 +890,26 @@ impl KernelCompanion {
                     .p2p_listen_addr
                     .parse::<std::net::SocketAddr>()
                 {
-                    let p2p_mgr = Arc::new(P2PMeshManager::new_with_node_config(
-                        addr,
-                        self.config.agent_scheduler.local_node_id.clone(),
-                        Vec::new(),
-                    ));
+                    // H6: mesh ที่เปิดต้องมี pre-shared key เสมอ — mesh ที่ไม่
+                    // auth เปิดรับ context poisoning/node spoofing ข้ามเครือข่าย
+                    // ซึ่งขัด Zero-Trust ของโปรเจกต์ จึง fail closed ตอน boot
+                    let mesh_key = match &self.config.context_memory.p2p_mesh_key_hex {
+                        Some(hex) => decode_hex_key(hex).map_err(|e| {
+                            anyhow::anyhow!("invalid context_memory.p2p_mesh_key_hex: {e}")
+                        })?,
+                        None => anyhow::bail!(
+                            "P2P mesh is enabled but context_memory.p2p_mesh_key_hex is not set — \
+                             refusing to run an unauthenticated mesh (set a shared key on every node)"
+                        ),
+                    };
+                    let p2p_mgr = Arc::new(
+                        P2PMeshManager::new_with_node_config(
+                            addr,
+                            self.config.agent_scheduler.local_node_id.clone(),
+                            Vec::new(),
+                        )
+                        .with_mesh_key(mesh_key),
+                    );
                     let p2p_listener_mgr = Arc::clone(&p2p_mgr);
                     let p2p_gossip_mgr = Arc::clone(&p2p_mgr);
 
@@ -1485,6 +1519,54 @@ impl Default for KernelCompanion {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn decode_hex_key_accepts_valid_and_rejects_weak() {
+        // H6: key ต้องยาวพอ (≥16 ไบต์) และเป็น hex ที่ถูกต้อง
+        let key = decode_hex_key("0123456789abcdef0123456789abcdef").expect("valid 16-byte key");
+        assert_eq!(key.len(), 16);
+        assert_eq!(key[0], 0x01);
+
+        assert!(
+            decode_hex_key("abcd").is_err(),
+            "too short must be rejected"
+        );
+        assert!(
+            decode_hex_key("0123456789abcdef0123456789abcde").is_err(),
+            "odd length must be rejected"
+        );
+        assert!(
+            decode_hex_key("zzzz56789abcdef0123456789abcdef0").is_err(),
+            "non-hex must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn boot_fails_closed_when_p2p_enabled_without_mesh_key() {
+        // H6: เปิด mesh โดยไม่มี key ต้องปฏิเสธ boot ไม่ใช่รัน mesh ที่ไม่ auth
+        let mut config = Config::default();
+        config.kernel_companion.uds_socket_path =
+            format!("/tmp/ank-test-{}.sock", uuid::Uuid::new_v4());
+        config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+        config.ebpf.enable_fallback = true;
+        config.context_memory.p2p_enabled = true;
+        config.context_memory.p2p_listen_addr = "127.0.0.1:0".to_string();
+        config.context_memory.p2p_mesh_key_hex = None;
+
+        let mut companion = KernelCompanion::with_config(&config);
+        let result = companion.boot().await;
+        assert!(
+            result.is_err(),
+            "boot must fail closed when P2P is enabled without a mesh key"
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("unauthenticated mesh") || msg.contains("p2p_mesh_key_hex"),
+            "error must explain the missing mesh key, got: {msg}"
+        );
+        companion.shutdown().await;
+        let _ = tokio::fs::remove_file(&config.kernel_companion.uds_socket_path).await;
+    }
 
     #[test]
     fn classify_intent_returns_expected_queue_class() {
