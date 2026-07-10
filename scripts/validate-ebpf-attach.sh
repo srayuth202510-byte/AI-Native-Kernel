@@ -8,6 +8,13 @@
 # จริง (mode="real") ไม่ใช่ degrade ไป simulation — จากนั้น shutdown สะอาด
 # และรายงาน PASS/FAIL พร้อม exit code (0 = attach จริงยืนยันแล้ว)
 #
+# นอกจากนี้ยังตรวจ H1 (cgroup-scoped default-DENY) แบบ end-to-end เมื่อรัน
+# ด้วย root บนเครื่องที่ mount cgroup v2:
+#   1. boot daemon ด้วย --agent-cgroup ชี้ cgroup ทดสอบชั่วคราว
+#   2. probe process ย้ายตัวเองเข้า cgroup แล้วพยายาม exec — ต้องโดน EPERM
+#      (ไม่ได้ authorize = default-DENY)
+#   3. process ของ host (script เอง) ต้องยังทำงานได้ปกติ (host untouched)
+#
 # ต้องรันบน host ที่มีสิทธิ์ (root / CAP_BPF+CAP_SYS_ADMIN+CAP_PERFMON) และ
 # kernel prerequisites ครบ — รันใน 環境 ที่ไม่มีสิทธิ์จะ FAIL อย่างถูกต้อง
 #
@@ -42,6 +49,7 @@ done
 METRICS_URL="http://127.0.0.1:${METRICS_PORT}/metrics"
 DAEMON_PID=""
 LOG_FILE="$(mktemp -t ank-ebpf-validate.XXXXXX.log)"
+AGENT_CGROUP="/sys/fs/cgroup/ank-h1-validate-$$"
 
 cleanup() {
     if [[ -n "$DAEMON_PID" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
@@ -52,6 +60,9 @@ cleanup() {
         done
         kill -KILL "$DAEMON_PID" 2>/dev/null || true
     fi
+    # ลบ cgroup ทดสอบ (ว่างแล้วเพราะ probe จบไปแล้ว) — ต้องทำหลัง daemon
+    # ตายเพื่อให้ hook ถูกปลดก่อน
+    [[ -d "$AGENT_CGROUP" ]] && rmdir "$AGENT_CGROUP" 2>/dev/null || true
     rm -f "$LOG_FILE"
 }
 trap cleanup EXIT
@@ -90,8 +101,21 @@ fi
 info "binary: $BINARY"
 
 # 4. Boot the daemon with simulation fallback DISABLED ------------------------
+# เปิด H1 cgroup scope เฉพาะเมื่อเป็น root + cgroup v2 พร้อม (ต้องสร้าง
+# cgroup dir ได้จริง ไม่งั้น daemon จะ fail closed ตอน boot)
+H1_ENABLED=0
+H1_ARGS=()
+if [[ "$(id -u)" -eq 0 && -f /sys/fs/cgroup/cgroup.procs ]]; then
+    H1_ENABLED=1
+    H1_ARGS=(--agent-cgroup "$AGENT_CGROUP")
+    info "H1 validation enabled — agent cgroup: $AGENT_CGROUP"
+else
+    info "H1 validation skipped (need root + cgroup v2 at /sys/fs/cgroup)"
+fi
+
 info "booting companion with --no-bpf-fallback"
 "$BINARY" --no-bpf-fallback --metrics-addr "127.0.0.1:${METRICS_PORT}" \
+    "${H1_ARGS[@]}" \
     >"$LOG_FILE" 2>&1 &
 DAEMON_PID=$!
 
@@ -122,16 +146,44 @@ while [[ "$(date +%s)" -lt "$deadline" ]]; do
     sleep 1
 done
 
-# 6. Report -------------------------------------------------------------------
+# 6. H1 enforcement probe ------------------------------------------------------
+# probe ย้ายตัวเองเข้า agent cgroup (เขียน cgroup.procs ก่อนย้าย = ยังเป็น
+# host จึงเขียนได้) แล้วพยายาม exec /bin/true — จากใน cgroup ที่ไม่ได้
+# authorize ต้องโดน default-DENY (EPERM ที่ bprm_check_security)
+h1_deny_ok=-1
+h1_host_ok=-1
+if [[ "$H1_ENABLED" -eq 1 && "$lsm_real" -eq 1 ]]; then
+    info "running H1 default-DENY probe in $AGENT_CGROUP"
+    if bash -c "echo \$\$ > '$AGENT_CGROUP/cgroup.procs' && exec /bin/true" 2>/dev/null; then
+        h1_deny_ok=0   # exec สำเร็จ = enforcement ไม่เกิด
+    else
+        h1_deny_ok=1   # โดนปฏิเสธตามคาด
+    fi
+    # host ต้องไม่ได้รับผลกระทบ: exec จากนอก cgroup ต้องยังทำงานได้
+    if /bin/true 2>/dev/null; then h1_host_ok=1; else h1_host_ok=0; fi
+fi
+
+# 7. Report -------------------------------------------------------------------
 echo "----- results -----"
 [[ "$tracer_real" -eq 1 ]] && pass "syscall tracer attached in REAL mode" \
                            || fail "syscall tracer did NOT reach real mode"
 [[ "$lsm_real" -eq 1 ]]    && pass "LSM hook attached in REAL mode" \
                            || fail "LSM hook did NOT reach real mode"
+case "$h1_deny_ok" in
+    1)  pass "H1: unauthorized process in agent cgroup was DENIED (default-DENY)" ;;
+    0)  fail "H1: unauthorized process in agent cgroup was NOT denied" ;;
+    *)  info "H1: enforcement probe skipped" ;;
+esac
+case "$h1_host_ok" in
+    1)  pass "H1: host process outside agent cgroup unaffected" ;;
+    0)  fail "H1: host process was affected by agent-cgroup enforcement!" ;;
+esac
 
-if [[ "$tracer_real" -eq 1 && "$lsm_real" -eq 1 ]]; then
+if [[ "$tracer_real" -eq 1 && "$lsm_real" -eq 1 \
+      && "$h1_deny_ok" -ne 0 && "$h1_host_ok" -ne 0 ]]; then
     echo
     echo "==> PASS — real eBPF/LSM attach validated (fallback disabled)"
+    [[ "$h1_deny_ok" -eq 1 ]] && echo "    H1 cgroup-scoped default-DENY validated end-to-end"
     exit 0
 fi
 

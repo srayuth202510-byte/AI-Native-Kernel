@@ -59,6 +59,10 @@ struct Cli {
     #[arg(long = "lsm-profile", env = "ANK_LSM_PROFILE")]
     lsm_profile: Option<String>,
 
+    /// Agent cgroup (v2) path — default-DENY scope for managed agents (H1)
+    #[arg(long = "agent-cgroup", env = "ANK_AGENT_CGROUP_PATH")]
+    agent_cgroup: Option<String>,
+
     /// Disable eBPF fallback simulation
     #[arg(long = "no-bpf-fallback")]
     no_bpf_fallback: bool,
@@ -102,6 +106,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(profile) = cli.lsm_profile {
         config.lsm.active_profile = profile;
+    }
+    if let Some(cgroup_path) = cli.agent_cgroup {
+        config.lsm.agent_cgroup_path = Some(cgroup_path);
     }
     if cli.no_bpf_fallback {
         config.ebpf.enable_fallback = false;

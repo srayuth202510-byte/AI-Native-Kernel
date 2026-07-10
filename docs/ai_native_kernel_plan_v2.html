@@ -674,14 +674,14 @@ gantt
                 <td><strong>H1</strong></td>
                 <td><strong>cgroup-scoped allow-list</strong></td>
                 <td>LSM gate เป็น PID block-list (default-ALLOW) — ทางแก้ชั่วคราวจาก <code>d728095d</code> ไม่ใช่ design ที่ตั้งใจ</td>
-                <td>รัน agent ทุกตัวใน cgroup เฉพาะ แล้วให้ eBPF เช็ค cgroup id แทน PID — ได้ default-DENY เต็มรูปแบบเฉพาะโลกของ agent โดยไม่แตะ process ของ host (host ไม่มีทางค้าง)</td>
+                <td>รัน agent ทุกตัวใน cgroup เฉพาะ แล้วให้ eBPF เช็ค cgroup id แทน PID — ได้ default-DENY เต็มรูปแบบเฉพาะโลกของ agent โดยไม่แตะ process ของ host (host ไม่มีทางค้าง) <strong>✅ implemented + validated end-to-end บน privileged host 10 ก.ค. 2026</strong> (opt-in ผ่าน <code>lsm.agent_cgroup_path</code>; probe ยืนยัน default-DENY ใน agent cgroup และ host ไม่กระทบ ผ่าน <code>scripts/validate-ebpf-attach.sh</code>)</td>
                 <td>Phase 1.5</td>
             </tr>
             <tr>
                 <td><strong>H2</strong></td>
                 <td><strong>Agent identity ที่ปลอมไม่ได้</strong></td>
                 <td>การผูก agent กับ PID ตรง ๆ มีช่องโหว่ PID reuse — process ใหม่อาจสวมสิทธิ์ PID เดิม</td>
-                <td>ใช้ pidfd หรือ tuple <code>(start_time, pid)</code> ใน BPF map เพื่อผูก capability token กับ process instance จริง</td>
+                <td>ใช้ pidfd หรือ tuple <code>(start_time, pid)</code> ใน BPF map เพื่อผูก capability token กับ process instance จริง <strong>✅ implemented ก.ค. 2026</strong> (allow-list เก็บ start ticks จาก <code>/proc/&lt;pid&gt;/stat</code> เทียบกับ <code>start_boottime</code> ใน kernel; deny path ผ่าน validation แล้ว — allow path ที่ start time ตรงยังต้องทดสอบผ่าน UDS authorize flow จริง)</td>
                 <td>Phase 1.5</td>
             </tr>
             <tr>
@@ -724,7 +724,7 @@ gantt
             <li>✅ Audit Log บันทึก security decisions แบบ append-only พร้อม hash-chain validation</li>
             <li>✅ ผ่าน chaos / pipeline / integration tests สำหรับ Failure Domains ที่อยู่ใน workspace ปัจจุบัน</li>
             <li>⚠️ Qdrant-backed ignored tests ต้อง re-run กับ endpoint ที่ reachable เพื่อยืนยัน semantic path</li>
-            <li>⚠️ eBPF/LSM real attach พร้อม fallback disabled ต้อง re-validate บน privileged Linux host</li>
+            <li>✅ eBPF/LSM real attach พร้อม fallback disabled ผ่านการ validate บน privileged host (kernel 7.0.0-27, 10 ก.ค. 2026) รวม H1 cgroup-scoped default-DENY end-to-end</li>
             <li>✅ <code>cargo clippy --all-targets --all-features -- -D warnings</code> และ <code>cargo audit</code> เป็น baseline validation ของ repo ปัจจุบัน</li>
         </ul>
     </div>
