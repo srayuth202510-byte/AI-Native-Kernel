@@ -943,6 +943,8 @@ mod tests {
             "blocked_pids",
             "agent_cgroups",
             "allowed_pids",
+            "pid_scope_flags",
+            "pid_path_prefix",
             "allowed_syscalls",
         ];
         for name in maps {

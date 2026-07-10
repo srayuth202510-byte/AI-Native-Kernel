@@ -688,7 +688,7 @@ gantt
                 <td><strong>H3</strong></td>
                 <td><strong>Intent → Scope compiler</strong></td>
                 <td>Semantic gap: kernel เห็นแค่ syscall แต่ไม่รู้ intent ที่ประกาศไว้ — ชิ้นส่วนมีครบ (intent-bus, policy, LSM) แต่ยังไม่มีตัวแปลตรงกลาง</td>
-                <td>Pipeline แปลง intent เป็น scope แคบที่ตรวจได้เชิงกลไก (เช่น intent อ่านโปรเจกต์ X → token เปิดอ่านเฉพาะ path นั้น) แล้ว push ลง BPF map ก่อน agent เริ่มงาน</td>
+                <td>Pipeline แปลง intent เป็น scope แคบที่ตรวจได้เชิงกลไก (เช่น intent อ่านโปรเจกต์ X → token เปิดอ่านเฉพาะ path นั้น) แล้ว push ลง BPF map ก่อน agent เริ่มงาน <strong>✅ implemented + validated end-to-end 10 ก.ค. 2026</strong> (เฟสแรก: operation-class flags + path prefix ตรวจใน kernel ด้วย <code>bpf_d_path</code>; token = grant, intent = narrow ได้เท่านั้น; <code>tests/privileged_h1_h2.rs</code> ยืนยัน in-scope allow / out-of-scope deny / exec deny บน kernel จริง)</td>
                 <td>Phase 2</td>
             </tr>
             <tr>

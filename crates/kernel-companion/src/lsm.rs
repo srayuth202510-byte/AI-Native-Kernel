@@ -247,6 +247,10 @@ pub struct LsmAttachment {
     /// time (USER_HZ ticks) ของ process ที่ผูก authorization ไว้ (H2:
     /// กัน PID reuse — PID เดิมแต่ start time ไม่ตรง = โดน DENY)
     allowed_pids: Option<BpfHashMap<MapData, u32, u64>>,
+    /// map สำหรับ sync scope flags ราย PID (H3: operation-class scope)
+    pid_scope_flags: Option<BpfHashMap<MapData, u32, u32>>,
+    /// map สำหรับ sync path prefix ราย PID (H3: จำกัด file_open ใต้ path)
+    pid_path_prefix: Option<BpfHashMap<MapData, u32, [u8; crate::scope::PATH_PREFIX_MAX]>>,
     /// map สำหรับ sync syscall allowlist runtime เข้ากับ kernel hook
     allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
     /// บ่งชี้ว่ายังคงแนบอยู่กับ Kernel หรือไม่
@@ -257,6 +261,8 @@ pub struct LsmAttachment {
     agent_cgroup_cache: HashSet<u64>,
     /// snapshot ฝั่ง userspace ของ PID → start ticks ที่อยู่ใน allow-list
     allowed_pid_cache: std::collections::HashMap<u32, u64>,
+    /// snapshot ฝั่ง userspace ของ PID → scope ที่ compile จาก intent (H3)
+    pid_scope_cache: std::collections::HashMap<u32, crate::scope::IntentScope>,
 }
 
 impl LsmAttachment {
@@ -269,22 +275,28 @@ impl LsmAttachment {
             blocked_pids: None,
             agent_cgroups: None,
             allowed_pids: None,
+            pid_scope_flags: None,
+            pid_path_prefix: None,
             allowed_syscalls: None,
             attached: true,
             blocked_pid_cache: HashSet::new(),
             agent_cgroup_cache: HashSet::new(),
             allowed_pid_cache: std::collections::HashMap::new(),
+            pid_scope_cache: std::collections::HashMap::new(),
         }
     }
 
     /// สร้าง LsmAttachment จาก aya::Bpf จริง
     /// โปรแกรม LSM จะทำงานใน kernel จนกว่าจะเรียก detach()
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_bpf(
         bpf: aya::Bpf,
         blocked_pids: Option<BpfHashMap<MapData, u32, u32>>,
         agent_cgroups: Option<BpfHashMap<MapData, u64, u32>>,
         allowed_pids: Option<BpfHashMap<MapData, u32, u64>>,
+        pid_scope_flags: Option<BpfHashMap<MapData, u32, u32>>,
+        pid_path_prefix: Option<BpfHashMap<MapData, u32, [u8; crate::scope::PATH_PREFIX_MAX]>>,
         allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
         blocked_pid_cache: HashSet<u32>,
     ) -> Self {
@@ -293,11 +305,14 @@ impl LsmAttachment {
             blocked_pids,
             agent_cgroups,
             allowed_pids,
+            pid_scope_flags,
+            pid_path_prefix,
             allowed_syscalls,
             attached: true,
             blocked_pid_cache,
             agent_cgroup_cache: HashSet::new(),
             allowed_pid_cache: std::collections::HashMap::new(),
+            pid_scope_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -308,11 +323,14 @@ impl LsmAttachment {
         self.blocked_pids = None;
         self.agent_cgroups = None;
         self.allowed_pids = None;
+        self.pid_scope_flags = None;
+        self.pid_path_prefix = None;
         self.allowed_syscalls = None;
         self.attached = false;
         self.blocked_pid_cache.clear();
         self.agent_cgroup_cache.clear();
         self.allowed_pid_cache.clear();
+        self.pid_scope_cache.clear();
     }
 
     /// ตรวจสอบสถานะว่า LSM Hook ยังทำงานอยู่หรือไม่
@@ -371,6 +389,7 @@ impl LsmAttachment {
             let _ = map.remove(&pid);
         }
         self.allowed_pid_cache.remove(&pid);
+        self.clear_pid_scope(pid);
         Ok(())
     }
 
@@ -397,6 +416,48 @@ impl LsmAttachment {
             let _ = map.remove(&pid);
         }
         self.allowed_pid_cache.remove(&pid);
+        self.clear_pid_scope(pid);
+    }
+
+    /// ผูก scope ที่ compile จาก intent เข้ากับ PID (H3) — ต้องเรียกหลัง
+    /// `allow_pid` และก่อนปล่อย agent เริ่มงาน จึงจะไม่มีหน้าต่างที่ agent
+    /// วิ่งแบบไร้ขอบเขต
+    ///
+    /// # Errors
+    ///
+    /// ส่งคืนข้อผิดพลาดหากเขียน BPF map ไม่สำเร็จ
+    pub fn set_pid_scope(&mut self, pid: u32, scope: &crate::scope::IntentScope) -> Result<()> {
+        if let Some(map) = self.pid_scope_flags.as_mut() {
+            map.insert(pid, scope.class_flags, 0)?;
+        }
+        if let Some(prefix) = scope.path_prefix_bytes() {
+            if let Some(map) = self.pid_path_prefix.as_mut() {
+                map.insert(pid, prefix, 0)?;
+            }
+        } else if let Some(map) = self.pid_path_prefix.as_mut() {
+            let _ = map.remove(&pid);
+        }
+        self.pid_scope_cache.insert(pid, scope.clone());
+        Ok(())
+    }
+
+    /// ถอน scope ของ PID ออกจากทั้ง BPF maps และ cache — เรียกอัตโนมัติ
+    /// จาก `deny_pid`/`withdraw_pid` เพื่อไม่ให้ scope ตกค้างไปจำกัด PID
+    /// ที่ถูกแจกใหม่ให้ process อื่น
+    pub fn clear_pid_scope(&mut self, pid: u32) {
+        if let Some(map) = self.pid_scope_flags.as_mut() {
+            let _ = map.remove(&pid);
+        }
+        if let Some(map) = self.pid_path_prefix.as_mut() {
+            let _ = map.remove(&pid);
+        }
+        self.pid_scope_cache.remove(&pid);
+    }
+
+    #[must_use]
+    /// คืนค่า scope ที่ผูกกับ PID นี้อยู่ (`None` = ไม่มีการจำกัดจาก intent)
+    pub fn pid_scope(&self, pid: u32) -> Option<crate::scope::IntentScope> {
+        self.pid_scope_cache.get(&pid).cloned()
     }
 
     #[must_use]
@@ -556,6 +617,22 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
         None
     };
 
+    // ── H3 scope maps ──
+    // ว่างเปล่าตอน attach — daemon เขียน scope ที่ compile จาก intent
+    // ผ่าน set_pid_scope ก่อนปล่อย agent เริ่มงาน
+    let pid_scope_flags = if let Some(map) = bpf.take_map("pid_scope_flags") {
+        Some(BpfHashMap::<_, u32, u32>::try_from(map)?)
+    } else {
+        warn!("LSM eBPF: could not create HashMap from pid_scope_flags map");
+        None
+    };
+    let pid_path_prefix = if let Some(map) = bpf.take_map("pid_path_prefix") {
+        Some(BpfHashMap::<_, u32, [u8; crate::scope::PATH_PREFIX_MAX]>::try_from(map)?)
+    } else {
+        warn!("LSM eBPF: could not create HashMap from pid_path_prefix map");
+        None
+    };
+
     // ── populate allowed_syscalls eBPF map ──
     // เติม syscall numbers ที่ LsmPolicyEngine อนุญาต
     let mut allowed_syscalls = if let Some(map) = bpf.take_map("allowed_syscalls") {
@@ -583,6 +660,8 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
         blocked_pids,
         agent_cgroups,
         allowed_pids,
+        pid_scope_flags,
+        pid_path_prefix,
         allowed_syscalls,
         blocked_pid_cache,
     ))
@@ -616,7 +695,9 @@ pub fn attach_lsm_hooks(
                 error = %e,
                 "LSM real eBPF attachment failed and fallback is disabled — refusing to run in userspace simulation"
             );
-            Err(LsmError::AttachmentFailed.into())
+            // พ่วง LsmError ไว้บนสุด (ให้ downcast ได้) โดยคง source chain
+            // ของ aya ไว้ — verifier log อยู่ในนั้น ถ้าตัดทิ้งจะ debug ไม่ได้
+            Err(e.context(LsmError::AttachmentFailed))
         }
         Err(e) => {
             metrics.record_attach_attempt("lsm", "fallback");
@@ -780,6 +861,45 @@ mod tests {
         attachment.withdraw_pid(9);
         assert!(!attachment.is_pid_allow_listed(9));
         assert!(attachment.allows_pid(9), "withdraw must not quarantine");
+    }
+
+    #[test]
+    fn intent_scope_binds_and_clears_with_pid() {
+        // H3: scope ต้องถูกถอนพร้อม authorization เสมอ — ไม่งั้น PID ที่ถูก
+        // แจกใหม่จะโดนขอบเขตของ agent เก่าจำกัดอย่างไม่ตั้งใจ
+        let mut attachment = LsmAttachment::new();
+        let scope = crate::scope::IntentScope {
+            class_flags: crate::scope::SCOPE_FILE_OPEN,
+            path_prefix: Some("/data".to_string()),
+        };
+
+        attachment.allow_pid(77).expect("allow should succeed");
+        attachment
+            .set_pid_scope(77, &scope)
+            .expect("set scope should succeed");
+        assert_eq!(attachment.pid_scope(77), Some(scope));
+
+        attachment.withdraw_pid(77);
+        assert!(
+            attachment.pid_scope(77).is_none(),
+            "withdraw must clear the scope too"
+        );
+
+        attachment.allow_pid(78).expect("allow should succeed");
+        attachment
+            .set_pid_scope(
+                78,
+                &crate::scope::IntentScope {
+                    class_flags: 0,
+                    path_prefix: None,
+                },
+            )
+            .expect("set scope should succeed");
+        attachment.deny_pid(78).expect("deny should succeed");
+        assert!(
+            attachment.pid_scope(78).is_none(),
+            "deny must clear the scope too"
+        );
     }
 
     #[test]

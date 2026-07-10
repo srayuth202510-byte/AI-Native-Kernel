@@ -52,6 +52,8 @@ pub mod proc_identity;
 /// โมดูล `retry_telemetry` จัดการการ retry/backoff และ TTL ของ telemetry
 /// โมดูล `retry_telemetry` จัดการการ retry/backoff และ TTL ของ telemetry
 pub mod retry_telemetry;
+/// Intent → Scope compiler — แปลง intent เป็นขอบเขตที่ kernel ตรวจได้เชิงกลไก (H3)
+pub mod scope;
 /// โมดูล `uds` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `uds` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod uds;
@@ -59,6 +61,7 @@ pub mod uds;
 pub use cgroup::{AgentCgroup, cgroup_id_of};
 pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
 pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
+pub use scope::{IntentScope, ScopeError};
 
 fn infer_bridge_addr(
     peer_addr: std::net::SocketAddr,
@@ -1336,6 +1339,59 @@ impl KernelCompanion {
         }
 
         Ok(allowed)
+    }
+
+    /// เหมือน `authorize_process_token` แต่ผูก scope ที่ compile จาก intent
+    /// เข้ากับ PID ด้วย (Hardening H3): token กำหนด operation class ที่เปิดได้
+    /// intent บีบให้แคบลงได้เท่านั้น แล้ว scope ถูก push ลง BPF maps ก่อน
+    /// คืนค่า — agent ไม่มีหน้าต่างที่วิ่งแบบไร้ขอบเขต
+    ///
+    /// # Errors
+    ///
+    /// ส่งคืนข้อผิดพลาดเมื่อ validate token ล้มเหลว, compile scope ไม่ผ่าน
+    /// (`scope_path` ไม่ถูกต้อง), เขียน BPF map ไม่สำเร็จ, หรือย้าย PID เข้า
+    /// agent cgroup ไม่ได้ (rollback แล้ว fail closed เหมือน authorize ปกติ)
+    pub async fn authorize_process_token_with_scope(
+        &mut self,
+        pid: u32,
+        token_id: u64,
+        secret: &[u8; 32],
+        capability: &str,
+        intent: Option<&Intent>,
+    ) -> anyhow::Result<bool> {
+        // compile ก่อน authorize — intent ที่ scope ไม่ผ่านการตรวจต้องล้ม
+        // ตั้งแต่ยังไม่แตะ allow-list (fail closed)
+        let capabilities: Vec<String> = self
+            .capability_security
+            .get_tokens()
+            .into_iter()
+            .find(|t| t.id == token_id)
+            .map(|t| t.capabilities.clone())
+            .unwrap_or_default();
+        let scope = scope::IntentScope::compile(&capabilities, intent)?;
+
+        let allowed = self
+            .authorize_process_token(pid, token_id, secret, capability)
+            .await?;
+        if !allowed {
+            return Ok(false);
+        }
+
+        if let Some(attachment) = self.attachment.lock().as_mut() {
+            if let Err(e) = attachment.set_pid_scope(pid, &scope) {
+                // scope เขียนไม่สำเร็จ = ปล่อยไปจะได้ agent ไร้ขอบเขต —
+                // ถอน authorization ทั้งหมดแล้ว fail closed
+                attachment.withdraw_pid(pid);
+                tracing::error!(
+                    pid,
+                    error = %e,
+                    "cannot bind compiled intent scope — authorization rolled back"
+                );
+                return Err(e);
+            }
+        }
+
+        Ok(true)
     }
 
     /// คืนค่า `true` หาก PID นี้ไม่ได้ถูกบล็อกโดย LSM (kernel default-allow):

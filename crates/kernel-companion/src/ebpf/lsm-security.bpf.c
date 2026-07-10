@@ -119,6 +119,47 @@ struct {
  * โดย USER_HZ ตรึงเป็น 100 ใน userspace ABI → ตัวหาร = 10^7 */
 #define START_TIME_TICK_NS 10000000ULL
 
+/* ── Hardening H3: intent-derived scope ──
+ * Operation-class bits — must mirror kernel-companion/src/scope.rs. */
+#define SCOPE_FILE_OPEN 1u
+#define SCOPE_EXEC      2u
+#define SCOPE_SOCKET    4u
+
+#define PATH_PREFIX_MAX 128
+#define PATH_BUF_MAX    256
+
+/* ── eBPF hash map for per-PID scope flags (H3) ──
+ * Key:   u32 PID (tgid) of an allow-listed agent
+ * Value: u32 bitmask of permitted operation classes (SCOPE_*)
+ *
+ * Absent entry = no class restriction (the allow-list alone governs, as
+ * before H3). Present entry = the hook's class bit must be set. Entries
+ * are written by the daemon from the compiled IntentScope BEFORE the
+ * agent starts work, and removed together with the allow-list entry.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u32);
+    __type(value, u32);
+} pid_scope_flags SEC(".maps");
+
+/* ── eBPF hash map for per-PID file path prefix (H3) ──
+ * Key:   u32 PID (tgid) of an allow-listed agent
+ * Value: NUL-terminated absolute path prefix (no trailing slash)
+ *
+ * When present, file_open is permitted only for paths equal to the
+ * prefix or strictly under it (next byte '/'). Resolved with bpf_d_path,
+ * so the comparison uses the kernel's own view of the path — symlink
+ * tricks in userspace cannot dodge it. Absent = no path restriction.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u32);
+    __type(value, char[PATH_PREFIX_MAX]);
+} pid_path_prefix SEC(".maps");
+
 /* ── eBPF hash map for syscall allowlist ──
  * Key:   u64 syscall number
  * Value: u32 allowed flag (1 = allowed, 0 = denied)
@@ -136,20 +177,25 @@ struct {
 } allowed_syscalls SEC(".maps");
 
 /* ── Helper: cgroup-scoped access gate ──
- * Shared decision logic for every hook. Returns 0 (allow) or -EPERM:
+ * Shared decision logic for every hook. Return values:
  *
+ *   0      → host world: allow, and NO scoped checks apply (a recycled
+ *            PID outside the agent cgroup must never inherit agent
+ *            restrictions).
+ *   1      → agent world, allowed so far: caller may apply further
+ *            scoped checks (e.g. the file path prefix).
+ *   -EPERM → deny.
+ *
+ * Decision order:
  *   1. Quarantined PID (blocked_pids)      → deny, wins everywhere.
- *   2. Cgroup not registered (host world)  → allow, host untouched.
- *   3. Agent cgroup + PID allow-listed AND start time matches (H2)
- *                                          → allow (valid token, same
- *                                            process instance).
- *   4. Agent cgroup otherwise              → deny (fail-closed), including
- *                                            a recycled PID whose start
- *                                            time no longer matches.
- *
- * Extracted as a static inline to keep all hooks on identical policy.
+ *   2. Cgroup not registered (host world)  → 0, host untouched.
+ *   3. PID not allow-listed or start time mismatch (H2, recycled PID)
+ *                                          → deny (fail-closed).
+ *   4. Scope flags present but hook's operation class not granted (H3)
+ *                                          → deny. Absent entry = no
+ *                                            class restriction.
  */
-static __always_inline int lsm_gate(void)
+static __always_inline int lsm_gate(u32 scope_class)
 {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
 
@@ -173,7 +219,15 @@ static __always_inline int lsm_gate(void)
      * verifier-checked reads. */
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
     u64 start_ticks = task->group_leader->start_boottime / START_TIME_TICK_NS;
-    return (*expected_start == start_ticks) ? 0 : -EPERM;
+    if (*expected_start != start_ticks)
+        return -EPERM;
+
+    /* H3: intent-derived operation-class scope */
+    u32 *flags = bpf_map_lookup_elem(&pid_scope_flags, &pid);
+    if (flags && (*flags & scope_class) == 0)
+        return -EPERM;
+
+    return 1;
 }
 
 /* ── LSM: security_file_open ──
@@ -185,9 +239,48 @@ static __always_inline int lsm_gate(void)
  * Syscall-level policy (e.g., whether `openat` itself is allowed) is
  * evaluated in userspace via the tracepoint channel.
  */
+/* หมายเหตุ: hook ทุกตัวต้องประกาศผ่าน BPF_PROG — ctx ของ LSM program คือ
+ * อาร์เรย์ u64 ของ args, การประกาศ `int f(struct file *file)` ตรงๆ จะทำให้
+ * compiler มอง ctx pointer เป็น struct pointer แล้วคำนวณ offset ผิดทั้งหมด
+ * (verifier ปฏิเสธ: "R1 type=ctx expected=ptr_") */
 SEC("lsm/file_open")
-int lsm_file_open(struct file *file) {
-    return lsm_gate();
+int BPF_PROG(lsm_file_open, struct file *file)
+{
+    int gate = lsm_gate(SCOPE_FILE_OPEN);
+    if (gate <= 0)
+        return gate;
+
+    /* H3: path-prefix scope — เฉพาะ agent ที่ถูกจำกัด path เท่านั้น
+     * (gate == 1 การันตีว่าเป็น agent world; PID ของ host ที่บังเอิญชน
+     * key ใน map จะไม่ถึงจุดนี้เพราะ gate คืน 0 ไปก่อนแล้ว) */
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    char *prefix = bpf_map_lookup_elem(&pid_path_prefix, &pid);
+    if (!prefix)
+        return 0;
+
+    /* bpf_d_path ใช้ได้ใน security_file_open (hook นี้อยู่ในชุด sleepable
+     * LSM hooks ที่ helper อนุญาต) — ได้ path จากมุมมองของ kernel เอง
+     * เลี่ยง symlink trick จาก userspace ทั้งหมด; resolve ไม่ได้ = fail
+     * closed. buffer ต้อง zero-init: arg ของ helper เป็น ARG_PTR_TO_MEM
+     * ซึ่ง verifier บังคับให้ stack ถูก initialize ก่อนเรียก */
+    char path[PATH_BUF_MAX] = {};
+    long len = bpf_d_path(&file->f_path, path, sizeof(path));
+    if (len < 0)
+        return -EPERM;
+
+    int i;
+    for (i = 0; i < PATH_PREFIX_MAX; i++) {
+        char p = prefix[i];
+        if (p == '\0')
+            break;
+        if (i >= PATH_BUF_MAX - 1 || path[i] != p)
+            return -EPERM;
+    }
+    /* ผ่านเมื่อ path เท่ากับ prefix พอดี หรืออยู่ใต้ prefix เท่านั้น —
+     * กัน /tmp/foo ไปจับคู่ /tmp/foobar ด้วยการเช็ค byte ถัดไป */
+    if (i < PATH_BUF_MAX && (path[i] == '\0' || path[i] == '/'))
+        return 0;
+    return -EPERM;
 }
 
 /* ── LSM: security_bprm_check ──
@@ -201,8 +294,10 @@ int lsm_file_open(struct file *file) {
  * in userspace via the tracepoint channel.
  */
 SEC("lsm/bprm_check_security")
-int lsm_bprm_check(struct linux_binprm *bprm) {
-    return lsm_gate();
+int BPF_PROG(lsm_bprm_check, struct linux_binprm *bprm)
+{
+    int gate = lsm_gate(SCOPE_EXEC);
+    return gate > 0 ? 0 : gate;
 }
 
 /* ── LSM: security_socket_create ──
@@ -210,7 +305,8 @@ int lsm_bprm_check(struct linux_binprm *bprm) {
  * as file open and exec.
  */
 SEC("lsm/socket_create")
-int lsm_socket_create(int family, int type, int protocol, int kern)
+int BPF_PROG(lsm_socket_create, int family, int type, int protocol, int kern)
 {
-    return lsm_gate();
+    int gate = lsm_gate(SCOPE_SOCKET);
+    return gate > 0 ? 0 : gate;
 }
