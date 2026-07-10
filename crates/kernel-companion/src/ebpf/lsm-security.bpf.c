@@ -93,20 +93,31 @@ struct {
 } agent_cgroups SEC(".maps");
 
 /* ── eBPF hash map for agent PID allow-list ──
- * Key:   u32 PID of a managed agent process
- * Value: u32 allowed flag (1 = holds a valid capability token)
+ * Key:   u32 PID (tgid) of a managed agent process
+ * Value: u64 expected process start time, in USER_HZ ticks since boot
+ *        (the same value userspace reads from /proc/<pid>/stat field 22)
  *
  * Consulted ONLY for processes inside a registered agent cgroup. The
  * companion daemon inserts a PID when `authorize_process_token` validates
  * its capability token, and removes it on revocation/expiry. An agent-
  * cgroup process absent from this map is denied (default-DENY).
+ *
+ * Hardening H2 — unforgeable identity: the stored start time binds the
+ * authorization to the process *instance*, not the bare PID. If the agent
+ * dies and the kernel recycles its PID for a new process (in the same
+ * cgroup), the new process has a different start time and is denied.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
     __type(key, u32);
-    __type(value, u32);
+    __type(value, u64);
 } allowed_pids SEC(".maps");
+
+/* แปลง start_boottime (ns) เป็น USER_HZ ticks ให้ตรงกับ /proc/<pid>/stat
+ * field 22: kernel ใช้ nsec_to_clock_t(x) = x / (NSEC_PER_SEC / USER_HZ)
+ * โดย USER_HZ ตรึงเป็น 100 ใน userspace ABI → ตัวหาร = 10^7 */
+#define START_TIME_TICK_NS 10000000ULL
 
 /* ── eBPF hash map for syscall allowlist ──
  * Key:   u64 syscall number
@@ -129,8 +140,12 @@ struct {
  *
  *   1. Quarantined PID (blocked_pids)      → deny, wins everywhere.
  *   2. Cgroup not registered (host world)  → allow, host untouched.
- *   3. Agent cgroup + PID allow-listed     → allow (valid token).
- *   4. Agent cgroup otherwise              → deny (fail-closed).
+ *   3. Agent cgroup + PID allow-listed AND start time matches (H2)
+ *                                          → allow (valid token, same
+ *                                            process instance).
+ *   4. Agent cgroup otherwise              → deny (fail-closed), including
+ *                                            a recycled PID whose start
+ *                                            time no longer matches.
  *
  * Extracted as a static inline to keep all hooks on identical policy.
  */
@@ -147,8 +162,18 @@ static __always_inline int lsm_gate(void)
     if (!agent_scope || *agent_scope == 0)
         return 0;
 
-    u32 *allowed = bpf_map_lookup_elem(&allowed_pids, &pid);
-    return (allowed && *allowed != 0) ? 0 : -EPERM;
+    u64 *expected_start = bpf_map_lookup_elem(&allowed_pids, &pid);
+    if (!expected_start)
+        return -EPERM;
+
+    /* H2: bind the allow-list entry to the process instance. Use the
+     * thread-group leader so every thread of the agent shares one start
+     * time — pid here is the tgid, matching /proc/<tgid>/stat. LSM
+     * programs are BTF-typed, so direct task_struct dereferences are
+     * verifier-checked reads. */
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    u64 start_ticks = task->group_leader->start_boottime / START_TIME_TICK_NS;
+    return (*expected_start == start_ticks) ? 0 : -EPERM;
 }
 
 /* ── LSM: security_file_open ──

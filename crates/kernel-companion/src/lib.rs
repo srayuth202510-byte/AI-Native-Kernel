@@ -47,6 +47,8 @@ pub mod nlp;
 /// โมดูล `observability` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `observability` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod observability;
+/// อัตลักษณ์ process ที่ปลอมไม่ได้ — ผูกสิทธิ์กับ (PID, start_time) กัน PID reuse
+pub mod proc_identity;
 /// โมดูล `retry_telemetry` จัดการการ retry/backoff และ TTL ของ telemetry
 /// โมดูล `retry_telemetry` จัดการการ retry/backoff และ TTL ของ telemetry
 pub mod retry_telemetry;

@@ -243,8 +243,10 @@ pub struct LsmAttachment {
     blocked_pids: Option<BpfHashMap<MapData, u32, u32>>,
     /// map สำหรับ sync cgroup id ของ agent scope เข้ากับ kernel hook
     agent_cgroups: Option<BpfHashMap<MapData, u64, u32>>,
-    /// map สำหรับ sync PID allow-list (token valid) เข้ากับ kernel hook
-    allowed_pids: Option<BpfHashMap<MapData, u32, u32>>,
+    /// map สำหรับ sync PID allow-list เข้ากับ kernel hook — ค่าคือ start
+    /// time (USER_HZ ticks) ของ process ที่ผูก authorization ไว้ (H2:
+    /// กัน PID reuse — PID เดิมแต่ start time ไม่ตรง = โดน DENY)
+    allowed_pids: Option<BpfHashMap<MapData, u32, u64>>,
     /// map สำหรับ sync syscall allowlist runtime เข้ากับ kernel hook
     allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
     /// บ่งชี้ว่ายังคงแนบอยู่กับ Kernel หรือไม่
@@ -253,8 +255,8 @@ pub struct LsmAttachment {
     blocked_pid_cache: HashSet<u32>,
     /// snapshot ฝั่ง userspace ของ cgroup id ที่ลงทะเบียนเป็น agent scope
     agent_cgroup_cache: HashSet<u64>,
-    /// snapshot ฝั่ง userspace ของ PID ที่อยู่ใน allow-list
-    allowed_pid_cache: HashSet<u32>,
+    /// snapshot ฝั่ง userspace ของ PID → start ticks ที่อยู่ใน allow-list
+    allowed_pid_cache: std::collections::HashMap<u32, u64>,
 }
 
 impl LsmAttachment {
@@ -271,7 +273,7 @@ impl LsmAttachment {
             attached: true,
             blocked_pid_cache: HashSet::new(),
             agent_cgroup_cache: HashSet::new(),
-            allowed_pid_cache: HashSet::new(),
+            allowed_pid_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -282,7 +284,7 @@ impl LsmAttachment {
         bpf: aya::Bpf,
         blocked_pids: Option<BpfHashMap<MapData, u32, u32>>,
         agent_cgroups: Option<BpfHashMap<MapData, u64, u32>>,
-        allowed_pids: Option<BpfHashMap<MapData, u32, u32>>,
+        allowed_pids: Option<BpfHashMap<MapData, u32, u64>>,
         allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
         blocked_pid_cache: HashSet<u32>,
     ) -> Self {
@@ -295,7 +297,7 @@ impl LsmAttachment {
             attached: true,
             blocked_pid_cache,
             agent_cgroup_cache: HashSet::new(),
-            allowed_pid_cache: HashSet::new(),
+            allowed_pid_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -328,15 +330,33 @@ impl LsmAttachment {
     /// อนุญาต PID นี้: ลบออกจาก block-list และเพิ่มเข้า PID allow-list
     /// สำหรับ agent ใน cgroup ที่ลงทะเบียนแล้ว การอยู่ใน allow-list คือ
     /// เงื่อนไขเดียวที่ทำให้ syscall ผ่าน (default-DENY ในโลกของ agent)
+    ///
+    /// H2: authorization ผูกกับ `(PID, start_time)` — อ่าน start time จาก
+    /// `/proc/<pid>/stat` ณ ตอนอนุญาต ถ้า PID ถูกแจกใหม่ให้ process อื่น
+    /// start time จะไม่ตรงและ kernel hook จะ DENY เอง
+    ///
+    /// # Errors
+    ///
+    /// โหมด real eBPF: ส่งคืนข้อผิดพลาดหากอ่าน `/proc/<pid>/stat` ไม่ได้
+    /// (ระบุตัว process ไม่ได้ = fail closed ห้ามอนุญาต) หรือเขียน BPF map
+    /// ไม่สำเร็จ
     pub fn allow_pid(&mut self, pid: u32) -> Result<()> {
         if let Some(map) = self.blocked_pids.as_mut() {
             let _ = map.remove(&pid);
         }
         self.blocked_pid_cache.remove(&pid);
+
+        // โหมด real ต้องระบุ process instance ได้จริง (fail closed) —
+        // โหมดจำลองไม่มี kernel enforcement จึงยอมรับ PID สมมุติในเทสต์ได้
+        let start_ticks = if self.allowed_pids.is_some() {
+            crate::proc_identity::process_start_ticks(pid)?
+        } else {
+            crate::proc_identity::process_start_ticks(pid).unwrap_or(0)
+        };
         if let Some(map) = self.allowed_pids.as_mut() {
-            map.insert(pid, 1, 0)?;
+            map.insert(pid, start_ticks, 0)?;
         }
-        self.allowed_pid_cache.insert(pid);
+        self.allowed_pid_cache.insert(pid, start_ticks);
         Ok(())
     }
 
@@ -366,7 +386,7 @@ impl LsmAttachment {
     /// คืนค่า `true` หาก PID นี้อยู่ใน allow-list (ถือ token ที่ valid) —
     /// เงื่อนไขจำเป็นสำหรับ process ใน agent cgroup ที่ลงทะเบียนแล้ว
     pub fn is_pid_allow_listed(&self, pid: u32) -> bool {
-        self.allowed_pid_cache.contains(&pid)
+        self.allowed_pid_cache.contains_key(&pid)
     }
 
     /// ถอน PID ออกจาก allow-list โดยไม่เพิ่มเข้า block-list — ใช้ rollback
@@ -528,8 +548,9 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
     // ── allowed_pids eBPF map ──
     // ว่างเปล่าตอน attach — PID จะถูกเพิ่มเมื่อ authorize_process_token
     // ตรวจ capability token ผ่าน และถูกถอนเมื่อ token หมดอายุ/ถูกเพิกถอน
+    // ค่าใน map คือ start ticks ของ process instance (H2)
     let allowed_pids = if let Some(map) = bpf.take_map("allowed_pids") {
-        Some(BpfHashMap::<_, u32, u32>::try_from(map)?)
+        Some(BpfHashMap::<_, u32, u64>::try_from(map)?)
     } else {
         warn!("LSM eBPF: could not create HashMap from allowed_pids map");
         None
@@ -902,15 +923,23 @@ mod tests {
                 "denied PID should be in block-list"
             );
 
-            attachment
-                .allow_pid(99999)
-                .expect("allow_pid should succeed");
+            // H2: real mode ต้อง fail closed เมื่อระบุ process instance
+            // ไม่ได้ — PID 99999 ไม่มี /proc entry จึงห้ามอนุญาต
             assert!(
-                attachment.allows_pid(99999),
-                "re-allowed PID should be removed from block-list"
+                attachment.allow_pid(99999).is_err(),
+                "allow_pid must fail closed for a PID without /proc identity"
             );
 
-            eprintln!("LSM: PID block-list operations verified");
+            // ขา allow ปกติ: ใช้ PID ตัวเองซึ่งมี /proc/<pid>/stat จริง
+            attachment
+                .allow_pid(own_pid)
+                .expect("allow_pid should succeed for a live process");
+            assert!(
+                attachment.is_pid_allow_listed(own_pid),
+                "live PID should be allow-listed with its start time"
+            );
+
+            eprintln!("LSM: PID block-list + identity-bound allow-list verified");
         }
 
         // Detach
