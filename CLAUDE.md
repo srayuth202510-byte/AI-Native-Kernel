@@ -65,7 +65,8 @@ ai-native-kernel/
 │   │       ├── warm.rs        # NVMe layer (RocksDB)
 │   │       ├── cold.rs        # Disk file fallback
 │   │       ├── p2p_mesh.rs    # Cross-node context mesh (gossip + trust)
-│   │       └── mesh_auth.rs   # P2P HMAC signing + replay guard (H6)
+│   │       ├── mesh_auth.rs   # P2P HMAC signing + replay guard (H6)
+│   │       └── mesh_tls.rs    # P2P mTLS (PSK-derived cert, no PKI) (H7)
 │   ├── compute-scheduler/     # Cost function + adaptive weights
 │   │   └── src/
 │   │       ├── lib.rs

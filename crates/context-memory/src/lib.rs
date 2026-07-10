@@ -12,6 +12,8 @@ pub mod hot;
 pub mod indexer;
 /// Mutual auth + integrity (HMAC + replay guard) สำหรับ P2P mesh (H6)
 pub mod mesh_auth;
+/// mTLS (PSK-derived cert) เข้ารหัสสายของ P2P mesh (H7)
+pub mod mesh_tls;
 /// P2P mesh สำหรับ replicate context ข้ามเครื่อง
 pub mod p2p_mesh;
 /// Vector store + semantic embedding ของ context

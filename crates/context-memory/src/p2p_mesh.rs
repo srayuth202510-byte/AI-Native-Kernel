@@ -1,4 +1,5 @@
 use crate::mesh_auth::MeshAuth;
+use crate::mesh_tls::MeshTls;
 use crate::swim::FailureDetector;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::time::{Duration, sleep, timeout};
@@ -164,6 +165,8 @@ pub struct P2PMeshManager {
     /// ตัวเซ็น/ตรวจข้อความด้วย HMAC + replay guard (H6) — `None` = โหมด
     /// unauthenticated (dev/test เท่านั้น; production ต้องตั้ง key)
     auth: Option<Arc<MeshAuth>>,
+    /// TLS acceptor/connector เข้ารหัสสาย (H7) — derive จาก PSK เดียวกับ H6
+    tls: Option<Arc<MeshTls>>,
 }
 
 impl P2PMeshManager {
@@ -206,22 +209,35 @@ impl P2PMeshManager {
             telemetries: Arc::new(RwLock::new(HashMap::new())),
             failure_detector,
             auth: None,
+            tls: None,
         }
     }
 
-    /// เปิดใช้ mutual authentication + integrity ด้วย pre-shared key ต่อ mesh
-    /// (H6) — ทุกข้อความขาออกจะถูกเซ็น HMAC และขาเข้าจะถูกตรวจ/กัน replay
-    /// node ที่ไม่ถือ key เดียวกันจะคุยด้วยไม่ได้
-    #[must_use]
-    pub fn with_mesh_key(mut self, key: Vec<u8>) -> Self {
+    /// เปิดใช้ mutual authentication + integrity (H6) และ mTLS เข้ารหัสสาย
+    /// (H7) ด้วย pre-shared key เดียวต่อ mesh — HMAC เซ็นทุกข้อความ, TLS
+    /// เข้ารหัส transport ด้วย cert ที่ derive จาก PSK เดียวกัน node ที่ไม่ถือ
+    /// key เดียวกันจะ handshake TLS ไม่ผ่านและคุยด้วยไม่ได้
+    ///
+    /// # Errors
+    /// คืน error หาก build TLS config จาก PSK ไม่สำเร็จ
+    pub fn with_mesh_key(mut self, key: Vec<u8>) -> Result<Self> {
+        let tls = MeshTls::from_psk(&key)
+            .map_err(|e| anyhow::anyhow!("cannot build mesh TLS from key: {e}"))?;
+        self.tls = Some(Arc::new(tls));
         self.auth = Some(Arc::new(MeshAuth::new(key)));
-        self
+        Ok(self)
     }
 
     /// `true` หาก mesh นี้เปิด authentication อยู่
     #[must_use]
     pub fn is_authenticated(&self) -> bool {
         self.auth.is_some()
+    }
+
+    /// `true` หาก mesh นี้เปิด TLS เข้ารหัสสายอยู่
+    #[must_use]
+    pub fn is_encrypted(&self) -> bool {
+        self.tls.is_some()
     }
 
     /// ห่อ+เซ็นข้อความเป็น wire line (หรือ plain JSON ถ้าไม่มี key)
@@ -293,7 +309,22 @@ impl P2PMeshManager {
             debug!(%peer_addr, "P2P: inbound connection");
             let this = Arc::clone(&self);
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, peer_addr, &this, true).await {
+                // H7: ห่อ TLS ก่อนถ้าเปิด mesh key — ไม่งั้นใช้ TCP plaintext
+                if let Some(tls) = this.tls.clone() {
+                    match timeout(CONNECTION_TIMEOUT, tls.acceptor().accept(stream)).await {
+                        Ok(Ok(tls_stream)) => {
+                            if let Err(e) =
+                                handle_connection(tls_stream, peer_addr, &this, true).await
+                            {
+                                warn!(%peer_addr, error = %e, "P2P: inbound handler error");
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            warn!(%peer_addr, error = %e, "P2P: inbound TLS handshake rejected")
+                        }
+                        Err(_) => warn!(%peer_addr, "P2P: inbound TLS handshake timeout"),
+                    }
+                } else if let Err(e) = handle_connection(stream, peer_addr, &this, true).await {
                     warn!(%peer_addr, error = %e, "P2P: inbound handler error");
                 }
             });
@@ -310,7 +341,26 @@ impl P2PMeshManager {
         debug!(%peer_addr, "P2P: outbound connection established");
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, peer_addr, &self, false).await {
+            // H7: ห่อ TLS ก่อนถ้าเปิด mesh key — ไม่งั้นใช้ TCP plaintext
+            if let Some(tls) = self.tls.clone() {
+                match timeout(
+                    CONNECTION_TIMEOUT,
+                    tls.connector().connect(MeshTls::server_name(), stream),
+                )
+                .await
+                {
+                    Ok(Ok(tls_stream)) => {
+                        if let Err(e) = handle_connection(tls_stream, peer_addr, &self, false).await
+                        {
+                            warn!(%peer_addr, error = %e, "P2P: outbound handler error");
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        warn!(%peer_addr, error = %e, "P2P: outbound TLS handshake rejected")
+                    }
+                    Err(_) => warn!(%peer_addr, "P2P: outbound TLS handshake timeout"),
+                }
+            } else if let Err(e) = handle_connection(stream, peer_addr, &self, false).await {
                 warn!(%peer_addr, error = %e, "P2P: outbound handler error");
             }
         });
@@ -777,13 +827,17 @@ async fn on_message(line: &str, node_id: &str, state: &SharedState) {
 }
 
 /// จัดการ connection: handshake → อ่าน/เขียนข้อความ
-async fn handle_connection(
-    stream: TcpStream,
+async fn handle_connection<S>(
+    stream: S,
     peer_addr: SocketAddr,
     mgr: &P2PMeshManager,
     is_inbound: bool,
-) -> Result<()> {
-    let (owned_reader, mut owned_writer) = stream.into_split();
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    // tokio::io::split รองรับทั้ง TcpStream (plaintext) และ TlsStream (H7)
+    let (owned_reader, mut owned_writer) = tokio::io::split(stream);
 
     let state = SharedState {
         known_nodes: Arc::clone(&mgr.known_nodes),
@@ -1689,7 +1743,7 @@ mod tests {
         drop(listener);
         let mut mgr = P2PMeshManager::new_with_node_config(addr, node.to_string(), vec![]);
         if let Some(k) = key {
-            mgr = mgr.with_mesh_key(k.to_vec());
+            mgr = mgr.with_mesh_key(k.to_vec()).expect("build mesh key");
         }
         let mgr = Arc::new(mgr);
         let listener_mgr = Arc::clone(&mgr);
@@ -1706,21 +1760,22 @@ mod tests {
         let key = b"shared-mesh-secret";
         let a = bound_manager("node-a", Some(key)).await;
         let b = bound_manager("node-b", Some(key)).await;
-        assert!(a.is_authenticated());
+        assert!(a.is_authenticated(), "H6 HMAC auth active");
+        assert!(a.is_encrypted(), "H7 mTLS active");
 
         Arc::clone(&a)
             .connect_to_peer(b.local_node.addr)
             .await
             .expect("connect");
 
-        // handshake สำเร็จ → ต่างฝ่ายต่างรู้จักกัน
+        // handshake (ผ่าน TLS + HMAC) สำเร็จ → ต่างฝ่ายต่างรู้จักกัน
         let connected = wait_until(2000, || async {
             a.is_connected("node-b").await && b.is_connected("node-a").await
         })
         .await;
         assert!(
             connected,
-            "peers with matching keys must complete handshake"
+            "peers with matching keys must complete the TLS + handshake"
         );
     }
 
@@ -1731,7 +1786,8 @@ mod tests {
 
         let _ = Arc::clone(&a).connect_to_peer(b.local_node.addr).await;
 
-        // handshake ต้อง fail mesh auth → ไม่มีใครลงทะเบียนใครเป็น peer
+        // wrong key → TLS cert (derive จาก PSK) ไม่ตรง → handshake ถูก
+        // ปฏิเสธที่ชั้น TLS ก่อนถึง HMAC ด้วยซ้ำ → ไม่มีใครลงทะเบียนเป็น peer
         let connected = wait_until(1500, || async {
             a.is_connected("node-b").await || b.is_connected("node-a").await
         })

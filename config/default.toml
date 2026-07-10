@@ -47,9 +47,10 @@ warm_capacity = 1024
 p2p_enabled = false
 p2p_listen_addr = "127.0.0.1:9091"
 p2p_bootstrap_nodes = []
-# pre-shared key (hex, อย่างน้อย 16 ไบต์ = 32 hex chars) สำหรับ mutual auth
-# ของ P2P mesh (H6) — ทุก node ใน mesh เดียวกันต้องใช้ค่าเดียวกัน บังคับ
-# เมื่อ p2p_enabled = true (ไม่ตั้ง = daemon fail closed ตอน boot)
+# pre-shared key (hex, อย่างน้อย 16 ไบต์ = 32 hex chars) สำหรับ P2P mesh —
+# ขับทั้ง mutual auth/integrity (H6, HMAC) และ mTLS เข้ารหัสสาย (H7, cert
+# derive จาก key นี้) ทุก node ใน mesh เดียวกันต้องใช้ค่าเดียวกัน บังคับเมื่อ
+# p2p_enabled = true (ไม่ตั้ง = daemon fail closed ตอน boot)
 # p2p_mesh_key_hex = "0123456789abcdef0123456789abcdef"
 warm_store_path = "/tmp/ank-warm-store"
 sfs_enabled = false

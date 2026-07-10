@@ -709,7 +709,14 @@ gantt
                 <td><strong>H6</strong></td>
                 <td><strong>P2P mesh mutual auth + integrity</strong></td>
                 <td>mesh transport เป็น raw TCP + JSON plaintext ไม่ auth peer — ใครต่อ TCP มาถึง port ก็ยัด record ปลอม/ปลอมเป็น node trust สูง/ดักอ่าน/replay ได้ ขัด Zero-Trust ของโปรเจกต์เอง</td>
-                <td>เซ็นทุกข้อความด้วย HMAC-SHA256 (pre-shared key ต่อ mesh) + ปฏิเสธ replay (timestamp window + nonce dedup) <strong>✅ implemented + validated ก.ค. 2026</strong> (module <code>mesh_auth</code>: seal/open; wire ทุกจุดใน p2p_mesh; companion fail closed ตอน boot ถ้าเปิด mesh โดยไม่ตั้ง key; E2E ผ่าน TCP loopback ยืนยัน matching-key เชื่อมได้/wrong-key ถูกปฏิเสธ; ยังไม่เข้ารหัสสาย — mTLS เป็นเฟสถัดไป)</td>
+                <td>เซ็นทุกข้อความด้วย HMAC-SHA256 (pre-shared key ต่อ mesh) + ปฏิเสธ replay (timestamp window + nonce dedup) <strong>✅ implemented + validated ก.ค. 2026</strong> (module <code>mesh_auth</code>: seal/open; wire ทุกจุดใน p2p_mesh; companion fail closed ตอน boot ถ้าเปิด mesh โดยไม่ตั้ง key; E2E ผ่าน TCP loopback ยืนยัน matching-key เชื่อมได้/wrong-key ถูกปฏิเสธ)</td>
+                <td>Phase 4</td>
+            </tr>
+            <tr>
+                <td><strong>H7</strong></td>
+                <td><strong>P2P mesh confidentiality (mTLS)</strong></td>
+                <td>H6 ให้ integrity + authenticity + anti-replay แต่ payload ยังวิ่ง plaintext บนสาย ดักอ่าน (passive eavesdropping) และ active MITM แอบอ่านได้</td>
+                <td>เข้ารหัสสายด้วย TLS 1.3 โดยไม่ต้องมี PKI: <strong>derive cert/key แบบ deterministic จาก PSK เดียวกับ H6</strong> แล้ว pin peer cert ให้ตรง identity นั้น (module <code>mesh_tls</code>: rustls custom verifier + rcgen; wrap TLS ใน start_listener/connect_to_peer) <strong>✅ implemented + validated ก.ค. 2026</strong> (E2E: matching-PSK handshake ผ่าน, wrong-PSK ถูกปฏิเสธที่ชั้น TLS; operator จัดการ secret เดียวเหมือนเดิม)</td>
                 <td>Phase 4</td>
             </tr>
         </tbody>

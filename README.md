@@ -205,14 +205,15 @@ QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
 
 ### 8.3 P2P Gossip Mesh พร้อมโมเดลความน่าเชื่อถือและการขจัดความขัดแย้ง (Trust + Conflict Model)
 ระบบแชร์ความจำบริบทข้ามเครื่อง (Cross-Machine Memory Plane) ได้รับการยกระดับความปลอดภัยและความทนทาน:
-- **Mutual Authentication + Integrity (Hardening H6)**: ทุกข้อความใน mesh ถูกเซ็นด้วย **HMAC-SHA256** จาก pre-shared key ต่อ mesh — ผู้รับตรวจ tag ก่อนประมวลผล ปฏิเสธข้อความปลอม/ถูกแก้ และกัน replay (timestamp window + nonce dedup) ทำให้ `trust_score` มีความหมายจริงเพราะ identity ปลอมไม่ได้ (ต้องถือ key จึงเซ็นในนาม node ได้) ตั้ง key ผ่าน `context_memory.p2p_mesh_key_hex` และ daemon จะ **fail-closed** ตอน boot ถ้าเปิด mesh โดยไม่ตั้ง key (ยังไม่เข้ารหัสสาย — mTLS เป็นเฟสถัดไป)
+- **Mutual Authentication + Integrity (Hardening H6)**: ทุกข้อความใน mesh ถูกเซ็นด้วย **HMAC-SHA256** จาก pre-shared key ต่อ mesh — ผู้รับตรวจ tag ก่อนประมวลผล ปฏิเสธข้อความปลอม/ถูกแก้ และกัน replay (timestamp window + nonce dedup) ทำให้ `trust_score` มีความหมายจริงเพราะ identity ปลอมไม่ได้ (ต้องถือ key จึงเซ็นในนาม node ได้) ตั้ง key ผ่าน `context_memory.p2p_mesh_key_hex` และ daemon จะ **fail-closed** ตอน boot ถ้าเปิด mesh โดยไม่ตั้ง key
+- **Confidentiality via mTLS (Hardening H7)**: เข้ารหัสสายด้วย **TLS 1.3** โดยไม่ต้องมี PKI — derive cert/key แบบ deterministic จาก PSK เดียวกับ H6 แล้ว pin peer cert ให้ตรง identity นั้น กัน active MITM ดักอ่าน context data; peer ที่ไม่ถือ PSK จะ handshake TLS ไม่ผ่าน (ถูกปฏิเสธก่อนถึงชั้น HMAC) โดย operator ยังจัดการ secret เดียวเหมือนเดิม
 - **Zero-Trust Connection**: แต่ละ Node จะรักษาคะแนนความน่าเชื่อถือ (`trust_score` ตั้งแต่ 0–100) ของเพื่อนบ้าน โดยหาก Node ใดมีคะแนนต่ำกว่า `50` คะแนน ระบบจะปฏิเสธการเชื่อมต่อ TCP Handshake หรือทำการตัดการเชื่อมต่อ (Sever connection) ทันที รวมถึงละทิ้ง (Drop) ทุกข้อความที่ส่งมาจาก Node นั้นๆ
 - **ระบบจัดลำดับและแก้ปัญหาข้อมูลชนกัน (Conflict Resolution)**: เมื่อได้รับข้อความซิงก์รายการซ้อนทับกัน ระบบจะคัดกรองตามลำดับความสำคัญ:
   1. เปรียบเทียบ **Trust Score** ของ Node ผู้เขียน (Node ที่มีค่าความน่าเชื่อถือสูงกว่าจะทับข้อมูล Node ที่น่าเชื่อถือน้อยกว่าได้เสมอ)
   2. หากมีระดับความน่าเชื่อถือเท่ากัน จะเปรียบเทียบ **Version** ของข้อมูล (เวอร์ชันล่าสุดที่มี timestamp มากกว่าเป็นฝ่ายชนะ)
   3. หากเท่ากันทุกอย่าง จะตัดสินอย่างเด็ดขาดและแน่นอน (Deterministic) ด้วยการคัดเลือก Node ID ตามลำดับตัวอักษร (Lexicographically smaller Node ID wins)
 
-### 8.4 Security Hardening Backlog (H1–H6)
+### 8.4 Security Hardening Backlog (H1–H7)
 
 ย้าย trust boundary ลงชั้นที่ปลอมไม่ได้จริง ครบทั้ง host และ network (แผนเต็ม: `docs/ai_native_kernel_plan_v2.html` §9.1):
 
@@ -224,6 +225,7 @@ QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
 | **H4** | ตัดสิทธิ์ที่ kernel ทันทีเมื่อ immune system สั่ง quarantine | ✅ unit-tested (รอ syscall load จริง) |
 | **H5** | VRAM tier migration ไม่ทำข้อมูลหาย (DtoH/HtoD จริง) | ✅ simulation (รอ GPU จริง) |
 | **H6** | P2P mesh mutual auth + integrity (HMAC + replay guard) | ✅ validated (E2E loopback) |
+| **H7** | P2P mesh confidentiality — mTLS (PSK-derived cert, ไม่ต้องมี PKI) | ✅ validated (E2E loopback) |
 
 Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `scripts/run-privileged.sh cargo test -p kernel-companion --test privileged_h1_h2` (H2/H3).
 

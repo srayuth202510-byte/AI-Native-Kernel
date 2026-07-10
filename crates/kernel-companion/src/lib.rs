@@ -908,7 +908,8 @@ impl KernelCompanion {
                             self.config.agent_scheduler.local_node_id.clone(),
                             Vec::new(),
                         )
-                        .with_mesh_key(mesh_key),
+                        .with_mesh_key(mesh_key)
+                        .map_err(|e| anyhow::anyhow!("P2P mesh key setup failed: {e}"))?,
                     );
                     let p2p_listener_mgr = Arc::clone(&p2p_mgr);
                     let p2p_gossip_mgr = Arc::clone(&p2p_mgr);
