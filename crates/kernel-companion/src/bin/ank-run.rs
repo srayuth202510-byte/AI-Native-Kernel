@@ -113,6 +113,10 @@ async fn main() -> Result<()> {
     let mut config = Config::default();
     config.kernel_companion.uds_socket_path = format!("/tmp/ank-run-{}.sock", std::process::id());
     config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    // audit log เฉพาะ invocation นี้ — path กลาง (/tmp/ank-audit.log) เขียน
+    // ไม่ได้เมื่อรันเป็น root ถ้าไฟล์เป็นของ user อื่น (fs.protected_regular)
+    config.capability_security.audit_log_path =
+        format!("/tmp/ank-run-{}-audit.log", std::process::id());
     config.context_memory.p2p_enabled = false;
     config.context_memory.sfs_enabled = false;
     config.ebpf.enable_fallback = !args.no_fallback;
