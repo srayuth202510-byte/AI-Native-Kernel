@@ -719,6 +719,13 @@ gantt
                 <td>เข้ารหัสสายด้วย TLS 1.3 โดยไม่ต้องมี PKI: <strong>derive cert/key แบบ deterministic จาก PSK เดียวกับ H6</strong> แล้ว pin peer cert ให้ตรง identity นั้น (module <code>mesh_tls</code>: rustls custom verifier + rcgen; wrap TLS ใน start_listener/connect_to_peer) <strong>✅ implemented + validated ก.ค. 2026</strong> (E2E: matching-PSK handshake ผ่าน, wrong-PSK ถูกปฏิเสธที่ชั้น TLS; operator จัดการ secret เดียวเหมือนเดิม)</td>
                 <td>Phase 4</td>
             </tr>
+            <tr>
+                <td><strong>H8</strong></td>
+                <td><strong>Capability-scoped skill manifests</strong></td>
+                <td>"แบ่งความถนัด" ของ agent (specialization) ยังเป็นแค่แนวคิด — ไม่มีวิธีประกาศ specialist พร้อมขอบเขตสิทธิ์ที่ kernel บังคับได้</td>
+                <td>skill.md-style manifest (frontmatter TOML) ประกาศพร้อมกันทั้ง routing (<code>description</code>), placement (<code>model</code>/<code>compute</code>) และ capability scope (<code>[capabilities]</code>) — manifest เป็น "สัญญาที่ kernel ตรวจ" ไม่ใช่คำแนะนำ; scope ที่ประกาศ compile ผ่าน H3 (narrow เท่านั้น) แล้ว kernel บังคับ (module <code>skill</code>: parser + registry + routing) <strong>✅ implemented + validated ก.ค. 2026</strong> (unit: parse/narrow/route; E2E บน kernel จริง: authorize agent จาก skill manifest → in-scope เปิดได้/out-of-scope+exec โดนปฏิเสธตามที่ skill ประกาศ)</td>
+                <td>Phase 3</td>
+            </tr>
         </tbody>
     </table>
 

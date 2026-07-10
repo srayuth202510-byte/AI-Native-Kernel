@@ -54,6 +54,8 @@ pub mod proc_identity;
 pub mod retry_telemetry;
 /// Intent → Scope compiler — แปลง intent เป็นขอบเขตที่ kernel ตรวจได้เชิงกลไก (H3)
 pub mod scope;
+/// Capability-scoped skill manifests — specialist + least-privilege ต่อความถนัด (H8)
+pub mod skill;
 /// โมดูล `uds` จัดการระบบย่อยที่เกี่ยวข้อง
 /// โมดูล `uds` จัดการระบบย่อยที่เกี่ยวข้อง
 pub mod uds;
@@ -62,6 +64,7 @@ pub use cgroup::{AgentCgroup, cgroup_id_of};
 pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
 pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
 pub use scope::{IntentScope, ScopeError};
+pub use skill::{Skill, SkillRegistry};
 
 /// H4: ตัดสิทธิ์ PID ที่ระดับ kernel ทันทีเมื่อ immune system ตัดสิน
 /// quarantine/kill — เขียน `blocked_pids` BPF map แบบ synchronous ก่อน

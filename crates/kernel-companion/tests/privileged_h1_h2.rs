@@ -257,3 +257,124 @@ async fn e2e_h3_intent_scope_enforced_in_kernel() {
 
     eprintln!("PASS: H3 intent scope enforced in kernel (path prefix + exec class)");
 }
+
+/// H8: capability-scoped skill manifest — โหลด skill.md ที่ประกาศ scope
+/// (file-only + path prefix) แล้ว authorize agent ผ่าน scope ที่ compile จาก
+/// manifest จริง → kernel บังคับตามที่ skill ประกาศ (in-scope อ่านได้,
+/// out-of-scope + exec โดนปฏิเสธ) พิสูจน์ว่า "ความถนัด = ขอบเขตที่ kernel
+/// บังคับได้" ไม่ใช่แค่ instructions
+#[tokio::test]
+async fn e2e_h8_skill_manifest_scope_enforced_in_kernel() {
+    let run_pid = std::process::id();
+    let cgroup_path = format!("/sys/fs/cgroup/ank-h8-e2e-{run_pid}");
+    let data_dir = format!("/tmp/ank-h8-e2e-{run_pid}");
+    let skills_dir = format!("/tmp/ank-h8-skills-{run_pid}");
+
+    let run_id = uuid::Uuid::new_v4();
+    let mut config = kernel_companion::config::Config::default();
+    config.kernel_companion.uds_socket_path = format!("/tmp/ank-h8-e2e-{run_id}.sock");
+    config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+    config.capability_security.audit_log_path = format!("/tmp/ank-h8-e2e-{run_id}-audit.log");
+    config.ebpf.enable_fallback = false;
+    config.lsm.agent_cgroup_path = Some(cgroup_path.clone());
+
+    let mut companion = kernel_companion::KernelCompanion::with_config(&config);
+    if let Err(e) = companion.boot().await {
+        eprintln!("SKIP e2e_h8_skill_manifest_scope_enforced_in_kernel: {e:#}");
+        return;
+    }
+
+    // ── เขียน skill manifest ที่ประกาศ scope: file-only ใต้ data_dir ──
+    std::fs::create_dir_all(&skills_dir).expect("create skills dir");
+    let manifest = format!(
+        "+++\n\
+         name = \"file-summarizer\"\n\
+         description = \"summarize project files\"\n\
+         [capabilities]\n\
+         scope_path = \"{data_dir}\"\n\
+         allow = [\"file\"]\n\
+         +++\n\
+         Read files under the project and summarize.\n"
+    );
+    std::fs::write(format!("{skills_dir}/file-summarizer.md"), manifest).expect("write skill");
+
+    let (registry, errors) =
+        kernel_companion::SkillRegistry::load_dir(std::path::Path::new(&skills_dir))
+            .expect("load skills dir");
+    assert!(errors.is_empty(), "skill manifest must parse cleanly");
+    let skill = registry.get("file-summarizer").expect("skill loaded");
+
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+    let allowed_file = format!("{data_dir}/notes.txt");
+    std::fs::write(&allowed_file, "in-scope data\n").expect("write data file");
+
+    let mut child = Command::new("bash")
+        .arg("-c")
+        .arg(PROBE_SCRIPT)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn probe child");
+    let child_pid = child.id().expect("child must have a PID");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("child stdout")).lines();
+
+    // token grant กว้าง (read+exec+net) — skill ต้อง narrow ลงเหลือแค่ file+path
+    let token = CapabilityToken::new(
+        7003,
+        Scope::Process(child_pid),
+        vec!["read".to_string(), "exec".to_string(), "net".to_string()],
+        Duration::from_secs(60),
+        [0x7C; 32],
+    );
+    companion
+        .capability_security()
+        .issue_token(token.clone())
+        .await
+        .expect("issue token");
+
+    // authorize ผ่าน intent ที่ compile จาก skill manifest จริง
+    let allowed = companion
+        .authorize_process_token_with_scope(
+            child_pid,
+            token.id,
+            &[0x7C; 32],
+            "read",
+            Some(&skill.to_intent()),
+        )
+        .await
+        .expect("skill-scoped authorize must not error");
+    assert!(allowed, "valid token must authorize");
+
+    // 1. ไฟล์ใต้ scope_path ของ skill → เปิดได้
+    assert_eq!(
+        probe(&mut stdin, &mut stdout, &format!("probe {allowed_file}")).await,
+        "OK",
+        "in-scope file must open (skill declared this path)"
+    );
+    // 2. นอก scope_path → โดนปฏิเสธ
+    assert_eq!(
+        probe(&mut stdin, &mut stdout, "probe /etc/hostname").await,
+        "DENIED",
+        "out-of-scope file must be denied per skill manifest"
+    );
+    // 3. exec → skill ไม่ได้ประกาศ exec (แม้ token ให้) → ถูก narrow ออก → ปฏิเสธ
+    assert_eq!(
+        probe(&mut stdin, &mut stdout, "execprobe").await,
+        "EXECDENIED",
+        "exec must be denied — skill did not declare the exec class"
+    );
+
+    let _ = stdin.write_all(b"quit\n").await;
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    companion.shutdown().await;
+    let _ = tokio::fs::remove_file(&config.kernel_companion.uds_socket_path).await;
+    let _ = tokio::fs::remove_file(&config.capability_security.audit_log_path).await;
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let _ = std::fs::remove_dir_all(&skills_dir);
+    let _ = std::fs::remove_dir(&cgroup_path);
+
+    eprintln!("PASS: H8 skill-manifest scope enforced in kernel (declared capabilities only)");
+}
