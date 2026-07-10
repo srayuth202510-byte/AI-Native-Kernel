@@ -152,11 +152,15 @@ async fn e2e_h2_allow_path_through_real_authorize_flow() {
 /// token ให้แค่ `read` + intent จำกัด `scope_path` → agent เปิดไฟล์ใต้
 /// prefix ได้, นอก prefix โดนปฏิเสธ (bpf_d_path), และ exec โดนปฏิเสธ
 /// เพราะ token ไม่ได้ให้ class นั้น
+///
+/// H3 v2: scope_path เป็นชุด (คั่น newline) — ไฟล์ใต้ prefix ตัวที่สอง
+/// ต้องเปิดได้ด้วย พิสูจน์ว่า BPF matcher วนเทียบทุก slot จริงบน kernel
 #[tokio::test]
 async fn e2e_h3_intent_scope_enforced_in_kernel() {
     let run_pid = std::process::id();
     let cgroup_path = format!("/sys/fs/cgroup/ank-h3-e2e-{run_pid}");
     let data_dir = format!("/tmp/ank-h3-e2e-{run_pid}");
+    let data_dir2 = format!("/tmp/ank-h3-e2e-second-{run_pid}");
 
     let run_id = uuid::Uuid::new_v4();
     let mut config = kernel_companion::config::Config::default();
@@ -177,6 +181,9 @@ async fn e2e_h3_intent_scope_enforced_in_kernel() {
     std::fs::create_dir_all(&data_dir).expect("create data dir");
     let allowed_file = format!("{data_dir}/allowed.txt");
     std::fs::write(&allowed_file, "in-scope data\n").expect("write data file");
+    std::fs::create_dir_all(&data_dir2).expect("create second data dir");
+    let allowed_file2 = format!("{data_dir2}/also-allowed.txt");
+    std::fs::write(&allowed_file2, "in-scope data too\n").expect("write second data file");
 
     let mut child = Command::new("bash")
         .arg("-c")
@@ -212,9 +219,10 @@ async fn e2e_h3_intent_scope_enforced_in_kernel() {
         "e2e-test",
     );
     let mut intent = intent;
+    // H3 v2: ประกาศสอง prefix คั่นด้วย newline
     intent
         .metadata
-        .insert("scope_path".to_string(), data_dir.clone());
+        .insert("scope_path".to_string(), format!("{data_dir}\n{data_dir2}"));
 
     let allowed = companion
         .authorize_process_token_with_scope(child_pid, token.id, &[0x6B; 32], "read", Some(&intent))
@@ -227,6 +235,13 @@ async fn e2e_h3_intent_scope_enforced_in_kernel() {
         probe(&mut stdin, &mut stdout, &format!("probe {allowed_file}")).await,
         "OK",
         "in-scope file must open (H3 allow within prefix)"
+    );
+
+    // 1b. ไฟล์ใต้ prefix ตัวที่สองของชุด — ต้องผ่านเช่นกัน (H3 v2)
+    assert_eq!(
+        probe(&mut stdin, &mut stdout, &format!("probe {allowed_file2}")).await,
+        "OK",
+        "file under the second prefix of the set must open (H3 v2 multi-prefix)"
     );
 
     // 2. เปิดไฟล์นอก prefix — kernel เทียบ bpf_d_path แล้วต้องปฏิเสธ
@@ -253,9 +268,10 @@ async fn e2e_h3_intent_scope_enforced_in_kernel() {
     let _ = tokio::fs::remove_file(&config.kernel_companion.uds_socket_path).await;
     let _ = tokio::fs::remove_file(&config.capability_security.audit_log_path).await;
     let _ = std::fs::remove_dir_all(&data_dir);
+    let _ = std::fs::remove_dir_all(&data_dir2);
     let _ = std::fs::remove_dir(&cgroup_path);
 
-    eprintln!("PASS: H3 intent scope enforced in kernel (path prefix + exec class)");
+    eprintln!("PASS: H3 intent scope enforced in kernel (multi-prefix path set + exec class)");
 }
 
 /// H8: capability-scoped skill manifest — โหลด skill.md ที่ประกาศ scope

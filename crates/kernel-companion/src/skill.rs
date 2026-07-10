@@ -36,9 +36,15 @@ pub enum SkillError {
 /// ขอบเขตสิทธิ์ที่ skill ประกาศ (map ตรงกับ scope ที่ H3 บังคับ)
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 pub struct SkillCapabilities {
-    /// จำกัด file_open ใต้ path นี้ (`None` = ไม่จำกัด path)
+    /// จำกัด file_open ใต้ path นี้ (`None` = ไม่จำกัด path) — รูปย่อของ
+    /// `scope_paths` สำหรับ skill ที่มี path เดียว ใช้ร่วมกันได้ (รวมชุด)
     #[serde(default)]
     pub scope_path: Option<String>,
+    /// จำกัด file_open ใต้ path เหล่านี้ (H3 v2: เปิดได้เมื่ออยู่ใต้ตัวใด
+    /// ตัวหนึ่ง) — สูงสุด [`crate::scope::MAX_PATH_PREFIXES`] ตัวรวม
+    /// `scope_path`
+    #[serde(default)]
+    pub scope_paths: Vec<String>,
     /// operation class ที่ skill ต้องการ: `file`, `exec`, `net`
     /// (ค่าอื่นถูกละเว้น) — class ที่ไม่อยู่ในนี้จะถูกถอนออกจาก token grant
     #[serde(default)]
@@ -137,8 +143,18 @@ impl Skill {
         if !wants_net {
             intent = intent.with_metadata("scope_no_net", "1");
         }
-        if let Some(path) = &self.manifest.capabilities.scope_path {
-            intent = intent.with_metadata("scope_path", path.clone());
+        // รวม scope_path (เอกพจน์) + scope_paths (ชุด) เป็น metadata เดียว
+        // คั่นด้วย newline ตาม convention ของ H3 v2 (scope.rs เป็นคน
+        // validate/dedupe/จำกัดจำนวนตอน compile)
+        let caps = &self.manifest.capabilities;
+        let all_paths: Vec<&str> = caps
+            .scope_path
+            .iter()
+            .map(String::as_str)
+            .chain(caps.scope_paths.iter().map(String::as_str))
+            .collect();
+        if !all_paths.is_empty() {
+            intent = intent.with_metadata("scope_path", all_paths.join("\n"));
         }
         intent
     }
@@ -299,7 +315,26 @@ You are a file summarizer. Read files under the project and produce a concise su
             scope.class_flags, SCOPE_FILE_OPEN,
             "only file_open must survive the skill's narrowing"
         );
-        assert_eq!(scope.path_prefix.as_deref(), Some("/srv/project-x"));
+        assert_eq!(scope.path_prefixes, vec!["/srv/project-x".to_string()]);
+    }
+
+    #[test]
+    fn scope_paths_array_merges_with_scope_path() {
+        // H3 v2: skill ประกาศได้ทั้ง scope_path เดี่ยวและ scope_paths ชุด —
+        // ต้องรวมกันแล้ว compile เป็นชุด prefix เดียว
+        use crate::scope::IntentScope;
+        let manifest = r#"+++
+name = "multi-path"
+description = "works across data and cache dirs"
+[capabilities]
+scope_path = "/srv/data"
+scope_paths = ["/var/cache/ank", "/srv/data"]
+allow = ["file"]
++++
+body"#;
+        let skill = Skill::parse(manifest).expect("parse");
+        let scope = IntentScope::compile(&["read"], Some(&skill.to_intent())).expect("compile");
+        assert_eq!(scope.path_prefixes, vec!["/srv/data", "/var/cache/ank"]);
     }
 
     #[test]

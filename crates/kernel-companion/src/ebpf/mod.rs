@@ -944,7 +944,7 @@ mod tests {
             "agent_cgroups",
             "allowed_pids",
             "pid_scope_flags",
-            "pid_path_prefix",
+            "pid_path_prefixes",
             "allowed_syscalls",
         ];
         for name in maps {

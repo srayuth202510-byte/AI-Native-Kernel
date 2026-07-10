@@ -22,9 +22,18 @@ use nix::unistd::Pid;
 use std::process::Stdio;
 use std::time::Duration;
 
+/// read-only system prefixes ที่ launcher เติมให้ path-scoped skill โดย
+/// อัตโนมัติ — จำเป็นต่อการโหลด dynamically-linked binary หลัง enroll
+/// (/usr/bin/<cmd>, libc, ld.so cache) โดยที่ /home, /etc/shadow, โปรเจกต์
+/// อื่นยังถูกปิดตาม default-DENY เดิม ปิดได้ด้วย --no-system-paths
+/// (พฤติกรรม strict แบบ H3 v1 — ใช้ได้กับ static binary หรือ probe
+/// ที่โหลดทุกอย่างมาก่อน enroll แล้ว)
+const SYSTEM_PATH_PREFIXES: &[&str] = &["/usr", "/lib", "/lib64", "/etc/ld.so.cache"];
+
 fn usage() -> ! {
     eprintln!(
-        "Usage: ank-run --skill <manifest.md> [--cgroup <path>] [--no-fallback] -- <cmd> [args...]"
+        "Usage: ank-run --skill <manifest.md> [--cgroup <path>] [--no-fallback] \
+         [--no-system-paths] -- <cmd> [args...]"
     );
     std::process::exit(2);
 }
@@ -33,6 +42,7 @@ struct Args {
     skill_path: String,
     cgroup_path: String,
     no_fallback: bool,
+    no_system_paths: bool,
     command: Vec<String>,
 }
 
@@ -40,6 +50,7 @@ fn parse_args() -> Args {
     let mut skill_path = None;
     let mut cgroup_path = format!("/sys/fs/cgroup/ank-run-{}", std::process::id());
     let mut no_fallback = false;
+    let mut no_system_paths = false;
     let mut command = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -51,6 +62,7 @@ fn parse_args() -> Args {
                 }
             }
             "--no-fallback" => no_fallback = true,
+            "--no-system-paths" => no_system_paths = true,
             "--" => {
                 command.extend(it.by_ref());
                 break;
@@ -74,6 +86,7 @@ fn parse_args() -> Args {
         skill_path,
         cgroup_path,
         no_fallback,
+        no_system_paths,
         command,
     }
 }
@@ -186,14 +199,25 @@ async fn main() -> Result<()> {
         .issue_token(token.clone())
         .await
         .context("issue token")?;
+    // H3 v2: skill ที่จำกัด path จะบล็อกแม้แต่การโหลด binary/lib ของ
+    // target เอง (ank-run exec target หลัง enroll) — เติม read-only system
+    // prefixes เข้าไปในชุด เว้นแต่สั่ง --no-system-paths
+    let mut intent = skill.to_intent();
+    if !args.no_system_paths
+        && let Some(paths) = intent.metadata.get_mut("scope_path")
+    {
+        for sys in SYSTEM_PATH_PREFIXES {
+            paths.push('\n');
+            paths.push_str(sys);
+        }
+        eprintln!(
+            "ank-run: path-scoped skill — adding system prefixes {} for binary/lib loading \
+             (disable with --no-system-paths)",
+            SYSTEM_PATH_PREFIXES.join(", ")
+        );
+    }
     let allowed = companion
-        .authorize_process_token_with_scope(
-            child_pid,
-            token.id,
-            &secret,
-            "read",
-            Some(&skill.to_intent()),
-        )
+        .authorize_process_token_with_scope(child_pid, token.id, &secret, "read", Some(&intent))
         .await
         .context("authorize child under skill scope")?;
     if !allowed {

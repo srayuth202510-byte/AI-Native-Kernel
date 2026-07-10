@@ -11,11 +11,14 @@
 //!    → exec, `net`/`socket` → socket)
 //! 2. **Narrow จาก intent**: metadata ของ Intent บีบ scope ให้แคบลงได้
 //!    เท่านั้น — **ห้ามขยาย** เกินที่ token ให้ (zero-trust composition):
-//!    - `scope_path`   = จำกัด file_open ใต้ path นี้ (absolute, ไม่มี `..`)
+//!    - `scope_path`   = จำกัด file_open ใต้ path เหล่านี้ (absolute, ไม่มี
+//!      `..`) — หลาย path คั่นด้วย newline ได้สูงสุด [`MAX_PATH_PREFIXES`]
+//!      ตัว (H3 v2: ชุด prefix ทำให้ launcher เติม system paths ที่จำเป็น
+//!      ต่อการโหลด binary/lib ควบคู่กับ data path ของ skill ได้)
 //!    - `scope_no_exec`, `scope_no_net`, `scope_no_file` = ปิด class นั้นๆ
 //!
 //! ผลลัพธ์ผูกกับ PID ผ่าน `LsmAttachment::set_pid_scope` ซึ่งเขียนลง
-//! `pid_scope_flags` / `pid_path_prefix` maps ให้ `lsm_gate()` ใช้ตัดสิน
+//! `pid_scope_flags` / `pid_path_prefixes` maps ให้ `lsm_gate()` ใช้ตัดสิน
 
 use intent_bus::Intent;
 use thiserror::Error;
@@ -31,12 +34,26 @@ pub const SCOPE_SOCKET: u32 = 4;
 /// ใน lsm-security.bpf.c
 pub const PATH_PREFIX_MAX: usize = 128;
 
+/// จำนวน path prefix สูงสุดต่อ scope — ต้องตรงกับ `MAX_PATH_PREFIXES`
+/// ใน lsm-security.bpf.c (H3 v2)
+pub const MAX_PATH_PREFIXES: usize = 8;
+
+/// ขนาด buffer ของชุด prefix ทั้งชุดใน BPF map slot — ต้องตรงกับ
+/// `struct path_prefix_set` ใน lsm-security.bpf.c
+pub const PATH_SET_LEN: usize = MAX_PATH_PREFIXES * PATH_PREFIX_MAX;
+
 /// ข้อผิดพลาดจากการ compile intent เป็น scope
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ScopeError {
     /// path ที่ประกาศใน intent ไม่ผ่านการตรวจเชิงกลไก
     #[error("invalid scope path: {0}")]
     InvalidPath(String),
+    /// ประกาศ path prefix เกินจำนวน slot ใน BPF map
+    #[error("too many scope paths: {count} declared, max {MAX_PATH_PREFIXES}")]
+    TooManyPaths {
+        /// จำนวน prefix ที่ประกาศมา
+        count: usize,
+    },
 }
 
 /// Scope ที่ตรวจได้เชิงกลไก — ผลลัพธ์ของการ compile intent + token caps
@@ -44,8 +61,9 @@ pub enum ScopeError {
 pub struct IntentScope {
     /// bitmask ของ operation class ที่อนุญาต (`SCOPE_*`)
     pub class_flags: u32,
-    /// จำกัด file_open เฉพาะ path นี้และใต้มัน (`None` = ไม่จำกัด path)
-    pub path_prefix: Option<String>,
+    /// จำกัด file_open เฉพาะ path เหล่านี้และใต้มัน — เปิดไฟล์ได้เมื่อ path
+    /// อยู่ใต้ prefix **ตัวใดตัวหนึ่ง** ในชุด (ว่าง = ไม่จำกัด path)
+    pub path_prefixes: Vec<String>,
 }
 
 impl IntentScope {
@@ -57,8 +75,10 @@ impl IntentScope {
     ///
     /// # Errors
     ///
-    /// ส่งคืน [`ScopeError::InvalidPath`] เมื่อ `scope_path` ไม่ absolute,
-    /// มี `..`, มี NUL, หรือยาวเกิน [`PATH_PREFIX_MAX`]
+    /// ส่งคืน [`ScopeError::InvalidPath`] เมื่อ path ใดใน `scope_path`
+    /// (คั่นด้วย newline) ไม่ absolute, มี `..`, มี NUL, หรือยาวเกิน
+    /// [`PATH_PREFIX_MAX`] และ [`ScopeError::TooManyPaths`] เมื่อประกาศ
+    /// เกิน [`MAX_PATH_PREFIXES`] ตัว
     pub fn compile<S: AsRef<str>>(
         capabilities: &[S],
         intent: Option<&Intent>,
@@ -74,7 +94,7 @@ impl IntentScope {
             }
         }
 
-        let mut path_prefix = None;
+        let mut path_prefixes = Vec::new();
 
         // 2. narrow จาก intent metadata (clear bit ได้อย่างเดียว)
         if let Some(intent) = intent {
@@ -88,14 +108,34 @@ impl IntentScope {
             if meta.contains_key("scope_no_net") {
                 class_flags &= !SCOPE_SOCKET;
             }
-            if let Some(path) = meta.get("scope_path") {
-                path_prefix = Some(validate_scope_path(path)?);
+            if let Some(paths) = meta.get("scope_path") {
+                // หลาย path คั่นด้วย newline (path ที่มี newline ในตัวจะถูก
+                // ตีความเป็นหลาย prefix — แต่ละชิ้นยังต้องผ่าน validation
+                // เชิงกลไกเหมือนกัน จึงไม่มีทางหลุดกรอบ token)
+                for path in paths.split('\n').filter(|p| !p.trim().is_empty()) {
+                    let validated = validate_scope_path(path)?;
+                    if !path_prefixes.contains(&validated) {
+                        path_prefixes.push(validated);
+                    }
+                }
+                // ประกาศ scope_path มาแต่ไม่มี path จริง — ปฏิเสธ ไม่ใช่
+                // ตีความเป็น "ไม่จำกัด" (fail closed)
+                if path_prefixes.is_empty() {
+                    return Err(ScopeError::InvalidPath(
+                        "scope_path declared but empty".to_string(),
+                    ));
+                }
+                if path_prefixes.len() > MAX_PATH_PREFIXES {
+                    return Err(ScopeError::TooManyPaths {
+                        count: path_prefixes.len(),
+                    });
+                }
             }
         }
 
         Ok(Self {
             class_flags,
-            path_prefix,
+            path_prefixes,
         })
     }
 
@@ -105,18 +145,27 @@ impl IntentScope {
     pub fn unrestricted() -> Self {
         Self {
             class_flags: SCOPE_FILE_OPEN | SCOPE_EXEC | SCOPE_SOCKET,
-            path_prefix: None,
+            path_prefixes: Vec::new(),
         }
     }
 
-    /// แปลง path prefix เป็น buffer ขนาดคงที่แบบ NUL-terminated สำหรับเขียน
-    /// ลง BPF map — คืน `None` เมื่อ scope นี้ไม่จำกัด path
+    /// แปลงชุด path prefix เป็น buffer ขนาดคงที่ (layout ตรงกับ
+    /// `struct path_prefix_set` ใน BPF) สำหรับเขียนลง map — slot ละ
+    /// [`PATH_PREFIX_MAX`] ไบต์ NUL-terminated เติมจากหน้าไปหลัง, slot ที่
+    /// เหลือเป็น NUL ล้วน (BPF matcher หยุดที่ slot ว่างตัวแรก)
+    /// คืน `None` เมื่อ scope นี้ไม่จำกัด path
     #[must_use]
-    pub fn path_prefix_bytes(&self) -> Option<[u8; PATH_PREFIX_MAX]> {
-        let prefix = self.path_prefix.as_ref()?;
-        let mut buf = [0u8; PATH_PREFIX_MAX];
-        // validate_scope_path การันตีความยาว < PATH_PREFIX_MAX แล้ว
-        buf[..prefix.len()].copy_from_slice(prefix.as_bytes());
+    pub fn path_set_bytes(&self) -> Option<[u8; PATH_SET_LEN]> {
+        if self.path_prefixes.is_empty() {
+            return None;
+        }
+        let mut buf = [0u8; PATH_SET_LEN];
+        // compile การันตีจำนวน ≤ MAX_PATH_PREFIXES และความยาวแต่ละตัว
+        // < PATH_PREFIX_MAX แล้ว
+        for (slot, prefix) in self.path_prefixes.iter().enumerate() {
+            let start = slot * PATH_PREFIX_MAX;
+            buf[start..start + prefix.len()].copy_from_slice(prefix.as_bytes());
+        }
         Some(buf)
     }
 }
@@ -179,7 +228,7 @@ mod tests {
     fn token_caps_grant_classes() {
         let scope = IntentScope::compile(&["read", "net"], None).expect("compile");
         assert_eq!(scope.class_flags, SCOPE_FILE_OPEN | SCOPE_SOCKET);
-        assert_eq!(scope.path_prefix, None);
+        assert!(scope.path_prefixes.is_empty());
     }
 
     #[test]
@@ -206,7 +255,7 @@ mod tests {
         let ok = intent_with(&[("scope_path", "/srv/project-x/")]);
         let scope = IntentScope::compile(&["read"], Some(&ok)).expect("compile");
         // trailing slash ถูกตัดให้ตรง BPF matcher (เทียบ prefix + '/' เอง)
-        assert_eq!(scope.path_prefix.as_deref(), Some("/srv/project-x"));
+        assert_eq!(scope.path_prefixes, vec!["/srv/project-x".to_string()]);
 
         for bad in ["relative/path", "/srv/../etc", "/x\0y"] {
             let intent = intent_with(&[("scope_path", bad)]);
@@ -222,13 +271,46 @@ mod tests {
     }
 
     #[test]
-    fn path_prefix_bytes_is_nul_terminated_fixed_buffer() {
-        let intent = intent_with(&[("scope_path", "/data")]);
+    fn multi_path_scope_compiles_and_dedupes() {
+        // H3 v2: หลาย path คั่น newline — ทุกตัวต้องผ่าน validation,
+        // ตัวซ้ำถูกรวบ, ลำดับคงเดิม
+        let intent = intent_with(&[("scope_path", "/srv/data\n/usr\n/srv/data\n\n/lib/")]);
         let scope = IntentScope::compile(&["read"], Some(&intent)).expect("compile");
-        let buf = scope.path_prefix_bytes().expect("prefix present");
+        assert_eq!(scope.path_prefixes, vec!["/srv/data", "/usr", "/lib"]);
+
+        // ตัวใดตัวหนึ่งไม่ผ่าน = ทั้ง scope ไม่ผ่าน (fail closed)
+        let intent = intent_with(&[("scope_path", "/srv/data\nrelative")]);
+        assert!(IntentScope::compile(&["read"], Some(&intent)).is_err());
+
+        // ประกาศ scope_path แต่ว่างเปล่า = ปฏิเสธ ไม่ใช่ "ไม่จำกัด"
+        let intent = intent_with(&[("scope_path", "\n\n")]);
+        assert!(IntentScope::compile(&["read"], Some(&intent)).is_err());
+    }
+
+    #[test]
+    fn more_than_max_prefixes_is_rejected() {
+        let many: Vec<String> = (0..=MAX_PATH_PREFIXES).map(|i| format!("/p{i}")).collect();
+        let joined = many.join("\n");
+        let intent = intent_with(&[("scope_path", joined.as_str())]);
+        assert!(matches!(
+            IntentScope::compile(&["read"], Some(&intent)),
+            Err(ScopeError::TooManyPaths { count }) if count == MAX_PATH_PREFIXES + 1
+        ));
+    }
+
+    #[test]
+    fn path_set_bytes_matches_bpf_slot_layout() {
+        let intent = intent_with(&[("scope_path", "/data\n/usr")]);
+        let scope = IntentScope::compile(&["read"], Some(&intent)).expect("compile");
+        let buf = scope.path_set_bytes().expect("prefixes present");
         assert_eq!(&buf[..5], b"/data");
-        assert!(buf[5..].iter().all(|&b| b == 0), "padding must be NUL");
-        assert_eq!(IntentScope::unrestricted().path_prefix_bytes(), None);
+        assert!(buf[5..PATH_PREFIX_MAX].iter().all(|&b| b == 0));
+        assert_eq!(&buf[PATH_PREFIX_MAX..PATH_PREFIX_MAX + 4], b"/usr");
+        assert!(
+            buf[PATH_PREFIX_MAX + 4..].iter().all(|&b| b == 0),
+            "unused slots must stay NUL so the BPF matcher stops there"
+        );
+        assert_eq!(IntentScope::unrestricted().path_set_bytes(), None);
     }
 
     #[test]

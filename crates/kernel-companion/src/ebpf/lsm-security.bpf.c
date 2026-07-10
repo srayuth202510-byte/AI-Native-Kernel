@@ -125,8 +125,15 @@ struct {
 #define SCOPE_EXEC      2u
 #define SCOPE_SOCKET    4u
 
-#define PATH_PREFIX_MAX 128
-#define PATH_BUF_MAX    256
+#define PATH_PREFIX_MAX   128
+#define PATH_BUF_MAX      256
+#define MAX_PATH_PREFIXES 8
+
+/* ชุด path prefix ต่อ PID — slot ถูกเติมจากหน้าไปหลัง, slot แรกที่ขึ้นต้น
+ * ด้วย NUL คือจุดสิ้นสุดของชุด (userspace ไม่เคยเขียนชุดว่าง) */
+struct path_prefix_set {
+    char prefix[MAX_PATH_PREFIXES][PATH_PREFIX_MAX];
+};
 
 /* ── eBPF hash map for per-PID scope flags (H3) ──
  * Key:   u32 PID (tgid) of an allow-listed agent
@@ -144,21 +151,26 @@ struct {
     __type(value, u32);
 } pid_scope_flags SEC(".maps");
 
-/* ── eBPF hash map for per-PID file path prefix (H3) ──
+/* ── eBPF hash map for per-PID file path prefix set (H3 v2) ──
  * Key:   u32 PID (tgid) of an allow-listed agent
- * Value: NUL-terminated absolute path prefix (no trailing slash)
+ * Value: set of NUL-terminated absolute path prefixes (no trailing
+ *        slash), filled from the front; the first empty slot ends the set
  *
- * When present, file_open is permitted only for paths equal to the
- * prefix or strictly under it (next byte '/'). Resolved with bpf_d_path,
- * so the comparison uses the kernel's own view of the path — symlink
- * tricks in userspace cannot dodge it. Absent = no path restriction.
+ * When present, file_open is permitted only for paths equal to ANY
+ * prefix in the set or strictly under one (next byte '/'). Resolved with
+ * bpf_d_path, so the comparison uses the kernel's own view of the path —
+ * symlink tricks in userspace cannot dodge it. Absent = no path
+ * restriction. Multiple prefixes exist so a launcher (ank-run) can admit
+ * read-only system paths (/usr, /lib, ld.so.cache) alongside the skill's
+ * data path — a single prefix cannot even load a dynamically-linked
+ * binary after enrollment (H3 v2).
  */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
     __type(key, u32);
-    __type(value, char[PATH_PREFIX_MAX]);
-} pid_path_prefix SEC(".maps");
+    __type(value, struct path_prefix_set);
+} pid_path_prefixes SEC(".maps");
 
 /* ── eBPF hash map for syscall allowlist ──
  * Key:   u64 syscall number
@@ -254,8 +266,8 @@ int BPF_PROG(lsm_file_open, struct file *file)
      * (gate == 1 การันตีว่าเป็น agent world; PID ของ host ที่บังเอิญชน
      * key ใน map จะไม่ถึงจุดนี้เพราะ gate คืน 0 ไปก่อนแล้ว) */
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    char *prefix = bpf_map_lookup_elem(&pid_path_prefix, &pid);
-    if (!prefix)
+    struct path_prefix_set *set = bpf_map_lookup_elem(&pid_path_prefixes, &pid);
+    if (!set)
         return 0;
 
     /* bpf_d_path ใช้ได้ใน security_file_open (hook นี้อยู่ในชุด sleepable
@@ -268,18 +280,31 @@ int BPF_PROG(lsm_file_open, struct file *file)
     if (len < 0)
         return -EPERM;
 
-    int i;
-    for (i = 0; i < PATH_PREFIX_MAX; i++) {
-        char p = prefix[i];
-        if (p == '\0')
-            break;
-        if (i >= PATH_BUF_MAX - 1 || path[i] != p)
-            return -EPERM;
+    /* H3 v2: path ต้องเท่ากับ prefix ใดสักตัวในชุด หรืออยู่ใต้มัน — ไม่ตรง
+     * สักตัวเดียว = DENY (fail closed). loop มีขอบเขตชัด (8×128) verifier
+     * เดินครบทุก branch ได้สบาย */
+    int j;
+    for (j = 0; j < MAX_PATH_PREFIXES; j++) {
+        const char *prefix = set->prefix[j];
+        if (prefix[0] == '\0')
+            break; /* slot ว่าง = จบชุด (เติมจากหน้าไปหลังเสมอ) */
+
+        int i;
+        int mismatch = 0;
+        for (i = 0; i < PATH_PREFIX_MAX; i++) {
+            char p = prefix[i];
+            if (p == '\0')
+                break;
+            if (i >= PATH_BUF_MAX - 1 || path[i] != p) {
+                mismatch = 1;
+                break;
+            }
+        }
+        /* ผ่านเมื่อ path เท่ากับ prefix พอดี หรืออยู่ใต้ prefix เท่านั้น —
+         * กัน /tmp/foo ไปจับคู่ /tmp/foobar ด้วยการเช็ค byte ถัดไป */
+        if (!mismatch && i < PATH_BUF_MAX && (path[i] == '\0' || path[i] == '/'))
+            return 0;
     }
-    /* ผ่านเมื่อ path เท่ากับ prefix พอดี หรืออยู่ใต้ prefix เท่านั้น —
-     * กัน /tmp/foo ไปจับคู่ /tmp/foobar ด้วยการเช็ค byte ถัดไป */
-    if (i < PATH_BUF_MAX && (path[i] == '\0' || path[i] == '/'))
-        return 0;
     return -EPERM;
 }
 

@@ -249,8 +249,9 @@ pub struct LsmAttachment {
     allowed_pids: Option<BpfHashMap<MapData, u32, u64>>,
     /// map สำหรับ sync scope flags ราย PID (H3: operation-class scope)
     pid_scope_flags: Option<BpfHashMap<MapData, u32, u32>>,
-    /// map สำหรับ sync path prefix ราย PID (H3: จำกัด file_open ใต้ path)
-    pid_path_prefix: Option<BpfHashMap<MapData, u32, [u8; crate::scope::PATH_PREFIX_MAX]>>,
+    /// map สำหรับ sync ชุด path prefix ราย PID (H3 v2: จำกัด file_open ใต้
+    /// prefix ตัวใดตัวหนึ่งในชุด)
+    pid_path_prefixes: Option<BpfHashMap<MapData, u32, [u8; crate::scope::PATH_SET_LEN]>>,
     /// map สำหรับ sync syscall allowlist runtime เข้ากับ kernel hook
     allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
     /// บ่งชี้ว่ายังคงแนบอยู่กับ Kernel หรือไม่
@@ -276,7 +277,7 @@ impl LsmAttachment {
             agent_cgroups: None,
             allowed_pids: None,
             pid_scope_flags: None,
-            pid_path_prefix: None,
+            pid_path_prefixes: None,
             allowed_syscalls: None,
             attached: true,
             blocked_pid_cache: HashSet::new(),
@@ -296,7 +297,7 @@ impl LsmAttachment {
         agent_cgroups: Option<BpfHashMap<MapData, u64, u32>>,
         allowed_pids: Option<BpfHashMap<MapData, u32, u64>>,
         pid_scope_flags: Option<BpfHashMap<MapData, u32, u32>>,
-        pid_path_prefix: Option<BpfHashMap<MapData, u32, [u8; crate::scope::PATH_PREFIX_MAX]>>,
+        pid_path_prefixes: Option<BpfHashMap<MapData, u32, [u8; crate::scope::PATH_SET_LEN]>>,
         allowed_syscalls: Option<BpfHashMap<MapData, u64, u32>>,
         blocked_pid_cache: HashSet<u32>,
     ) -> Self {
@@ -306,7 +307,7 @@ impl LsmAttachment {
             agent_cgroups,
             allowed_pids,
             pid_scope_flags,
-            pid_path_prefix,
+            pid_path_prefixes,
             allowed_syscalls,
             attached: true,
             blocked_pid_cache,
@@ -324,7 +325,7 @@ impl LsmAttachment {
         self.agent_cgroups = None;
         self.allowed_pids = None;
         self.pid_scope_flags = None;
-        self.pid_path_prefix = None;
+        self.pid_path_prefixes = None;
         self.allowed_syscalls = None;
         self.attached = false;
         self.blocked_pid_cache.clear();
@@ -430,11 +431,11 @@ impl LsmAttachment {
         if let Some(map) = self.pid_scope_flags.as_mut() {
             map.insert(pid, scope.class_flags, 0)?;
         }
-        if let Some(prefix) = scope.path_prefix_bytes() {
-            if let Some(map) = self.pid_path_prefix.as_mut() {
-                map.insert(pid, prefix, 0)?;
+        if let Some(set) = scope.path_set_bytes() {
+            if let Some(map) = self.pid_path_prefixes.as_mut() {
+                map.insert(pid, set, 0)?;
             }
-        } else if let Some(map) = self.pid_path_prefix.as_mut() {
+        } else if let Some(map) = self.pid_path_prefixes.as_mut() {
             let _ = map.remove(&pid);
         }
         self.pid_scope_cache.insert(pid, scope.clone());
@@ -448,7 +449,7 @@ impl LsmAttachment {
         if let Some(map) = self.pid_scope_flags.as_mut() {
             let _ = map.remove(&pid);
         }
-        if let Some(map) = self.pid_path_prefix.as_mut() {
+        if let Some(map) = self.pid_path_prefixes.as_mut() {
             let _ = map.remove(&pid);
         }
         self.pid_scope_cache.remove(&pid);
@@ -626,10 +627,10 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
         warn!("LSM eBPF: could not create HashMap from pid_scope_flags map");
         None
     };
-    let pid_path_prefix = if let Some(map) = bpf.take_map("pid_path_prefix") {
-        Some(BpfHashMap::<_, u32, [u8; crate::scope::PATH_PREFIX_MAX]>::try_from(map)?)
+    let pid_path_prefixes = if let Some(map) = bpf.take_map("pid_path_prefixes") {
+        Some(BpfHashMap::<_, u32, [u8; crate::scope::PATH_SET_LEN]>::try_from(map)?)
     } else {
-        warn!("LSM eBPF: could not create HashMap from pid_path_prefix map");
+        warn!("LSM eBPF: could not create HashMap from pid_path_prefixes map");
         None
     };
 
@@ -661,7 +662,7 @@ fn try_attach_real_lsm(engine: &LsmPolicyEngine) -> Result<LsmAttachment> {
         agent_cgroups,
         allowed_pids,
         pid_scope_flags,
-        pid_path_prefix,
+        pid_path_prefixes,
         allowed_syscalls,
         blocked_pid_cache,
     ))
@@ -870,7 +871,7 @@ mod tests {
         let mut attachment = LsmAttachment::new();
         let scope = crate::scope::IntentScope {
             class_flags: crate::scope::SCOPE_FILE_OPEN,
-            path_prefix: Some("/data".to_string()),
+            path_prefixes: vec!["/data".to_string()],
         };
 
         attachment.allow_pid(77).expect("allow should succeed");
@@ -891,7 +892,7 @@ mod tests {
                 78,
                 &crate::scope::IntentScope {
                     class_flags: 0,
-                    path_prefix: None,
+                    path_prefixes: Vec::new(),
                 },
             )
             .expect("set scope should succeed");
