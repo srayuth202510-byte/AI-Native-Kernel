@@ -226,6 +226,7 @@ QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
 | **H5** | VRAM tier migration ไม่ทำข้อมูลหาย (DtoH/HtoD จริง) | ✅ simulation (รอ GPU จริง) |
 | **H6** | P2P mesh mutual auth + integrity (HMAC + replay guard) | ✅ validated (E2E loopback) |
 | **H7** | P2P mesh confidentiality — mTLS (PSK-derived cert, ไม่ต้องมี PKI) | ✅ validated (E2E loopback) |
+| **H8** | capability-scoped skill manifests (specialization = kernel-enforced least-privilege) | ✅ validated บน kernel จริง |
 
 Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `scripts/run-privileged.sh cargo test -p kernel-companion --test privileged_h1_h2` (H2/H3).
 

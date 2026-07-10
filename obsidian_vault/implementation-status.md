@@ -2,7 +2,7 @@
 
 This note tracks the current repository state as implemented and locally validated in this workspace, not only the target architecture described in `docs/ai_native_kernel_plan_v2.html`.
 
-Last verified: 2026-07-10 — **510 tests pass** (4 ignored, Qdrant-backed — now also run against a real Qdrant in CI), clippy clean, cargo audit clean. Hardening backlog H1–H7 complete (see §"Hardening Round 2026-07-10").
+Last verified: 2026-07-10 — **516 tests pass** (4 ignored, Qdrant-backed — now also run against a real Qdrant in CI), clippy clean, cargo audit clean. Hardening backlog H1–H8 complete (see §"Hardening Round 2026-07-10"); H1/H2/H3/H8 + H6/H7 validated end-to-end.
 
 ## Current Baseline
 
@@ -126,6 +126,7 @@ Last verified: 2026-07-10 — **510 tests pass** (4 ignored, Qdrant-backed — n
 - **[H5] VRAM tier lossless migration** — `compute-scheduler/src/gpu_pool.rs`: `migrate_to_cpu` ทำ DtoH copy จริงรักษาข้อมูล (เดิม free ทิ้ง = data loss) + เพิ่ม `migrate_to_gpu` คู่กัน HtoD. **✅ simulation round-trip**; real-GPU byte-for-byte test พร้อมรัน รอเครื่อง CUDA/ROCm.
 - **[H6] P2P mesh mutual auth + integrity** — `context-memory/src/mesh_auth.rs`: HMAC-SHA256 (pre-shared key ต่อ mesh) + replay guard (timestamp window + nonce dedup) ทุกข้อความ; companion fail closed ถ้าเปิด mesh โดยไม่ตั้ง `p2p_mesh_key_hex`. **✅ validated** (E2E TCP loopback: matching-key เชื่อมได้/wrong-key ถูกปฏิเสธ).
 - **[H7] P2P mesh confidentiality (mTLS)** — `context-memory/src/mesh_tls.rs`: เข้ารหัสสายด้วย TLS 1.3 โดยไม่ต้องมี PKI — derive cert/key แบบ deterministic จาก PSK เดียวกับ H6 (SHA256 seed → Ed25519 → rcgen self-signed) แล้ว pin peer cert ด้วย rustls custom verifier; wrap TLS ใน `start_listener`/`connect_to_peer`. **✅ validated** (E2E: matching-PSK handshake ผ่าน, wrong-PSK ถูกปฏิเสธที่ชั้น TLS ก่อนถึง HMAC). Operator ยังจัดการ secret เดียว (`p2p_mesh_key_hex`).
+- **[H8] capability-scoped skill manifests** — `kernel-companion/src/skill.rs`: skill.md-style manifest (TOML frontmatter, `+++`) ประกาศ routing (`description`) + placement (`model`/`compute`) + capability scope (`[capabilities]`) ในไฟล์เดียว; `to_intent()` แปลง `allow` เป็น H3 narrow-only (skill ลดสิทธิ์ token ได้อย่างเดียว); `SkillRegistry` โหลด+route. ต่อ `authorize_process_token_with_scope` (H3) โดยไม่มี enforcement code ใหม่. **✅ validated end-to-end บน kernel 7.0.0-27** — agent จาก skill file-only เปิด in-scope ได้ / out-of-scope + exec โดนปฏิเสธตามที่ manifest ประกาศ. "ความถนัด = kernel-enforced least-privilege".
 <!-- IMPLEMENTED_NOW_END -->
 
 ## Not Implemented Yet
