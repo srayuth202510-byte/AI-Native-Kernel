@@ -702,7 +702,7 @@ gantt
                 <td><strong>H5</strong></td>
                 <td><strong>VRAM tier จริง</strong></td>
                 <td><code>gpu_pool.rs</code> ยังเป็น stub (<code>TODO: real cudaMemcpy</code>) — ชั้น GPU ของ context paging ยังไม่ต่อจริง</td>
-                <td>Implement cudaMemcpy/hipMemcpy device↔host จริง — ต้องมีเครื่อง CUDA/ROCm สำหรับทดสอบ (ตรงกับ p2a ใน Gantt)</td>
+                <td>Implement cudaMemcpy/hipMemcpy device↔host จริง — ต้องมีเครื่อง CUDA/ROCm สำหรับทดสอบ (ตรงกับ p2a ใน Gantt) <strong>✅ implemented ก.ค. 2026</strong> (<code>migrate_to_cpu</code> ทำ DtoH จริงรักษาข้อมูล + เพิ่ม <code>migrate_to_gpu</code> คู่กัน HtoD; round-trip test ในโหมด simulation ผ่าน; real-GPU byte-for-byte round-trip test พร้อมรันบนเครื่องที่มี CUDA — ⚠️ ยังรอ hardware validation)</td>
                 <td>Phase 2</td>
             </tr>
         </tbody>

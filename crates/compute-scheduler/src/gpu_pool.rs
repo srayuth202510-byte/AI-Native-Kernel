@@ -219,29 +219,104 @@ impl GpuMemoryPool {
         Ok(())
     }
 
-    /// Migrate บล็อกจาก GPU ไปยัง CPU
+    /// Migrate บล็อกจาก GPU (Hot/VRAM tier) ไปยัง CPU host memory (Warm tier)
+    ///
+    /// คัดลอกข้อมูลจาก device → host จริงด้วย cuMemcpyDtoH / hipMemcpy ก่อน
+    /// ปล่อย device memory เพื่อ **รักษาเนื้อหาของบล็อกไว้** (ก่อนหน้านี้ปล่อย
+    /// device memory ทิ้งโดยไม่ copy → ข้อมูลหาย) ใช้ `migrate_to_gpu` เพื่อ
+    /// ย้ายกลับพร้อมเนื้อหาเดิม
     ///
     /// # Errors
     /// คืน `PoolError::BlockNotFound` ถ้าไม่พบบล็อก
+    /// คืน `PoolError::CudaError` ถ้า GPU copy ล้มเหลว (data loss ป้องกันได้)
     pub fn migrate_to_cpu(&self, id: &str) -> Result<(), PoolError> {
         let mut blocks = self.blocks.write();
         let block = blocks
             .get_mut(id)
             .ok_or_else(|| PoolError::BlockNotFound(id.to_string()))?;
 
-        if block.state == BlockState::Allocated && self.real_mode {
+        if block.state != BlockState::Allocated {
+            debug!(id = %id, state = ?block.state, "Block not Allocated, skipping migrate-to-cpu");
+            return Ok(());
+        }
+
+        let size = block.requested_size;
+        let mut host_buf = vec![0u8; size];
+
+        if self.real_mode {
             if let Some(ptr) = block.device_ptr {
-                // TODO: real cudaMemcpy / hipMemcpy for device → host
                 match self.platform {
-                    GpuPlatform::Cuda => Self::cuda_free(ptr as *mut std::ffi::c_void),
-                    GpuPlatform::Rocm => Self::rocm_free(ptr as *mut std::ffi::c_void),
+                    GpuPlatform::Cuda => {
+                        cuda_ffi::memcpy_dtoh(&mut host_buf, ptr).map_err(PoolError::CudaError)?;
+                        Self::cuda_free(ptr as *mut std::ffi::c_void);
+                    }
+                    GpuPlatform::Rocm => {
+                        rocm_ffi::memcpy_dtoh(&mut host_buf, ptr).map_err(PoolError::CudaError)?;
+                        Self::rocm_free(ptr as *mut std::ffi::c_void);
+                    }
                 }
                 block.device_ptr = None;
             }
+            block.is_pinned = false;
+        } else {
+            // Simulated mode: preserve device_ptr for a later migrate-to-gpu
+            block.is_pinned = false;
         }
 
         block.state = BlockState::MigratedToCpu;
-        info!(id = %id, "GPU block migrated to CPU");
+        self.swapped_data.write().insert(id.to_string(), host_buf);
+        info!(id = %id, size = %size, "GPU block migrated to CPU (data preserved)");
+        Ok(())
+    }
+
+    /// Migrate บล็อกจาก CPU host memory กลับขึ้น GPU (Warm → Hot/VRAM tier)
+    ///
+    /// จัดสรร device memory ใหม่แล้วคัดลอก host → device จริงด้วย
+    /// cuMemcpyHtoD / hipMemcpy คืนเนื้อหาที่ `migrate_to_cpu` เก็บไว้กลับสู่ VRAM
+    ///
+    /// # Errors
+    /// คืน `PoolError::BlockNotFound` ถ้าไม่พบบล็อก
+    /// คืน `PoolError::CudaError` ถ้า GPU alloc หรือ copy ล้มเหลว
+    pub fn migrate_to_gpu(&self, id: &str) -> Result<(), PoolError> {
+        let mut blocks = self.blocks.write();
+        let block = blocks
+            .get_mut(id)
+            .ok_or_else(|| PoolError::BlockNotFound(id.to_string()))?;
+
+        if block.state != BlockState::MigratedToCpu {
+            debug!(id = %id, state = ?block.state, "Block not MigratedToCpu, skipping migrate-to-gpu");
+            return Ok(());
+        }
+
+        let host_buf = self
+            .swapped_data
+            .write()
+            .remove(id)
+            .unwrap_or_else(|| vec![0u8; block.requested_size]);
+
+        if self.real_mode {
+            let ptr = match self.platform {
+                GpuPlatform::Cuda => Self::cuda_alloc(block.requested_size)?,
+                GpuPlatform::Rocm => Self::rocm_alloc(block.requested_size)?,
+            };
+            block.device_ptr = Some(ptr as u64);
+            block.is_pinned = true;
+
+            match self.platform {
+                GpuPlatform::Cuda => {
+                    cuda_ffi::memcpy_htod(ptr as u64, &host_buf).map_err(PoolError::CudaError)?;
+                }
+                GpuPlatform::Rocm => {
+                    rocm_ffi::memcpy_htod(ptr as u64, &host_buf).map_err(PoolError::CudaError)?;
+                }
+            }
+        } else {
+            // Simulated mode: device_ptr was preserved during migrate-to-cpu
+            block.is_pinned = false;
+        }
+
+        block.state = BlockState::Allocated;
+        info!(id = %id, size = %block.requested_size, "GPU block migrated back to GPU (data restored)");
         Ok(())
     }
 
@@ -655,6 +730,40 @@ mod tests {
     }
 
     #[test]
+    fn pool_migrate_round_trip_restores_allocated_state() {
+        // H5: migrate CPU→GPU ต้องคืนบล็อกสู่สถานะ Allocated พร้อมเนื้อหา
+        // (host buffer ถูกเก็บไว้ตอน migrate_to_cpu แล้วปล่อยตอน migrate_to_gpu)
+        let pool = GpuMemoryPool::new(GpuPlatform::Cuda, 1024 * 1024, false);
+        pool.allocate("ctx-page".into(), 8192).unwrap();
+
+        pool.migrate_to_cpu("ctx-page").unwrap();
+        assert_eq!(
+            pool.get_block("ctx-page").unwrap().state,
+            BlockState::MigratedToCpu
+        );
+        assert_eq!(pool.allocated_count(), 0, "migrated block frees VRAM");
+
+        pool.migrate_to_gpu("ctx-page").unwrap();
+        let block = pool.get_block("ctx-page").unwrap();
+        assert_eq!(block.state, BlockState::Allocated, "restored to VRAM");
+        assert!(block.device_ptr.is_some(), "device pointer re-established");
+        assert_eq!(pool.allocated_count(), 1);
+    }
+
+    #[test]
+    fn pool_migrate_to_cpu_is_idempotent_on_non_allocated() {
+        // เรียกซ้ำบนบล็อกที่ migrate ไปแล้วต้องไม่ error และไม่เปลี่ยนสถานะ
+        let pool = GpuMemoryPool::new(GpuPlatform::Rocm, 1024 * 1024, false);
+        pool.allocate("blk".into(), 4096).unwrap();
+        pool.migrate_to_cpu("blk").unwrap();
+        pool.migrate_to_cpu("blk").unwrap();
+        assert_eq!(
+            pool.get_block("blk").unwrap().state,
+            BlockState::MigratedToCpu
+        );
+    }
+
+    #[test]
     fn pool_has_capacity_check() {
         let pool = GpuMemoryPool::new(GpuPlatform::Rocm, 500, false);
         assert!(pool.has_capacity(400));
@@ -795,5 +904,56 @@ mod tests {
         pool.swap_out("x").unwrap();
         assert_eq!(pool.allocated_count(), 2);
         assert_eq!(pool.total_block_count(), 3);
+    }
+
+    /// Real-hardware validation: migrate a block to CPU and back on an
+    /// actual GPU, verifying the DtoH→HtoD round-trip preserves data byte
+    /// for byte. Skips gracefully when no CUDA runtime is present.
+    #[test]
+    fn validate_real_gpu_migrate_round_trip_preserves_bytes() {
+        if !cuda_ffi::is_available() {
+            eprintln!("SKIP validate_real_gpu_migrate_round_trip_preserves_bytes: no CUDA runtime");
+            return;
+        }
+
+        let pool = GpuMemoryPool::new(GpuPlatform::Cuda, 1024 * 1024, true);
+        let size = 4096usize;
+        let block = match pool.allocate("real-ctx".into(), size) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP validate_real_gpu_migrate_round_trip_preserves_bytes: alloc {e}");
+                return;
+            }
+        };
+        let ptr = block
+            .device_ptr
+            .expect("real allocation must have a device pointer");
+
+        // เขียน pattern ที่รู้ค่าลง VRAM แล้ว migrate ลง CPU (DtoH copy จริง)
+        let pattern: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        cuda_ffi::memcpy_htod(ptr, &pattern).expect("seed VRAM with a known pattern");
+
+        pool.migrate_to_cpu("real-ctx")
+            .expect("migrate to CPU must copy data back");
+        assert_eq!(
+            pool.get_block("real-ctx").unwrap().state,
+            BlockState::MigratedToCpu
+        );
+
+        // migrate กลับขึ้น GPU (HtoD copy จริง) แล้วอ่านกลับมาเทียบ byte
+        pool.migrate_to_gpu("real-ctx")
+            .expect("migrate back to GPU must restore data");
+        let restored_ptr = pool
+            .get_block("real-ctx")
+            .unwrap()
+            .device_ptr
+            .expect("restored block must have a device pointer");
+
+        let mut readback = vec![0u8; size];
+        cuda_ffi::memcpy_dtoh(&mut readback, restored_ptr).expect("read VRAM back to host");
+        assert_eq!(readback, pattern, "round-trip must preserve every byte");
+
+        pool.deallocate("real-ctx").ok();
+        eprintln!("PASS: real GPU migrate round-trip preserved {size} bytes");
     }
 }
