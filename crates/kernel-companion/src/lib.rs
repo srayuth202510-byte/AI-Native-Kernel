@@ -63,6 +63,53 @@ pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
 pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
 pub use scope::{IntentScope, ScopeError};
 
+/// H4: ตัดสิทธิ์ PID ที่ระดับ kernel ทันทีเมื่อ immune system ตัดสิน
+/// quarantine/kill — เขียน `blocked_pids` BPF map แบบ synchronous ก่อน
+/// เพิกถอน token ที่ผูกกับ PID (เพื่อไม่ให้ re-authorize ได้อีก)
+///
+/// แยกเป็นฟังก์ชันเพื่อทดสอบเส้นทาง real-time cut ได้โดยตรง — ลำดับสำคัญ:
+/// deny_pid ก่อน (ปิดหน้าต่าง syscall ให้เร็วที่สุด) แล้วค่อย revoke ที่ช้ากว่า
+async fn apply_immune_revocation(
+    attachment: &Arc<parking_lot::Mutex<Option<LsmAttachment>>>,
+    capability_security: &Arc<CapabilitySecurityManager>,
+    pid: u32,
+) {
+    // ตัด syscall ที่ระดับ kernel *ทันที* — lock ถูกปล่อยก่อน revoke_token
+    // (ซึ่ง callback จะ lock attachment ซ้ำ) เพื่อเลี่ยง deadlock บน parking_lot
+    {
+        if let Some(attachment) = attachment.lock().as_mut() {
+            if let Err(e) = attachment.deny_pid(pid) {
+                tracing::error!(
+                    pid,
+                    error = %e,
+                    "H4: failed to block PID at kernel on immune-system decision"
+                );
+            } else {
+                warn!(
+                    pid,
+                    "H4: PID blocked at kernel immediately on immune-system decision"
+                );
+            }
+        }
+    }
+
+    // เพิกถอน token ที่ผูกกับ PID นี้ให้ capability layer สอดคล้องกัน —
+    // callback จะเรียก deny_pid ซ้ำแบบ idempotent
+    for token in capability_security.get_tokens() {
+        if let Scope::Process(p) = token.scope {
+            if p == pid {
+                if let Err(e) = capability_security.revoke_token(token.id).await {
+                    tracing::error!(
+                        token_id = token.id,
+                        error = %e,
+                        "H4: failed to revoke token for quarantined PID"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn infer_bridge_addr(
     peer_addr: std::net::SocketAddr,
     local_bridge_addr: &str,
@@ -530,6 +577,7 @@ impl KernelCompanion {
             let tcell = Arc::clone(&self.tcell);
             let capability_security = Arc::clone(&self.capability_security);
             let intent_bus_for_tcell = Arc::clone(&self.intent_bus);
+            let attachment_for_tcell = Arc::clone(&self.attachment);
             let audit_logger = AuditLogger::new(std::path::PathBuf::from(
                 &self.config.capability_security.audit_log_path,
             ));
@@ -551,6 +599,17 @@ impl KernelCompanion {
                             let decision = tcell.observe_syscall(event.pid, &event.syscall_name, denied).await;
 
                             if decision == ThreatDecision::Quarantine || decision == ThreatDecision::Kill {
+                                // ── H4: real-time revocation ──
+                                // ตัด syscall ที่ระดับ kernel ทันทีก่อน audit/broadcast
+                                // ที่ช้ากว่า — ปิดหน้าต่างที่ agent ยิง syscall ต่อได้
+                                // ระหว่างรอ token expiry (poll 500ms + TTL)
+                                apply_immune_revocation(
+                                    &attachment_for_tcell,
+                                    &capability_security,
+                                    event.pid,
+                                )
+                                .await;
+
                                 if decision == ThreatDecision::Quarantine {
                                     tcell.quarantine(event.pid).await;
                                 }
@@ -1504,5 +1563,64 @@ mod tests {
         assert!(found, "agent should be spawned within 1s");
 
         companion.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn immune_revocation_blocks_pid_at_kernel_and_revokes_token() {
+        // H4: immune-system decision ต้องตัดสิทธิ์ที่ระดับ kernel ทันที
+        // (ไม่รอ token expiry) และเพิกถอน token ให้ capability layer สอดคล้อง
+        use capability_security::{CapabilityToken, Scope};
+        use std::time::Duration;
+
+        let pid = 44_556u32;
+        let audit_path = std::path::PathBuf::from(format!(
+            "/tmp/ank-h4-unit-{}-audit.log",
+            uuid::Uuid::new_v4()
+        ));
+        let cap = Arc::new(CapabilitySecurityManager::new_with_log_path(
+            audit_path.clone(),
+        ));
+
+        // simulation attachment (ไม่ต้องมีสิทธิ์ kernel) — deny_pid อัปเดต
+        // cache ที่ allows_pid สะท้อนได้
+        let mut sim = LsmAttachment::new();
+        sim.allow_pid(pid)
+            .expect("allow_pid should succeed in simulation");
+        assert!(sim.allows_pid(pid), "PID should start allowed");
+        let attachment = Arc::new(parking_lot::Mutex::new(Some(sim)));
+
+        // callback เดียวกับที่ boot() ผูกไว้ — revoke_token ต้อง trigger deny_pid ซ้ำได้
+        {
+            let attachment_cb = Arc::clone(&attachment);
+            cap.register_revocation_callback(Arc::new(move |_token_id, scope| {
+                if let Scope::Process(p) = scope {
+                    if let Some(a) = attachment_cb.lock().as_mut() {
+                        let _ = a.deny_pid(p);
+                    }
+                }
+            }));
+        }
+
+        let token = CapabilityToken::new(
+            9100,
+            Scope::Process(pid),
+            vec!["read".to_string()],
+            Duration::from_secs(60),
+            [0x11; 32],
+        );
+        cap.issue_token(token.clone()).await.expect("issue token");
+
+        apply_immune_revocation(&attachment, &cap, pid).await;
+
+        assert!(
+            !attachment.lock().as_ref().unwrap().allows_pid(pid),
+            "H4: PID must be blocked at kernel immediately"
+        );
+        assert!(
+            cap.is_revoked(token.id),
+            "H4: token for the quarantined PID must be revoked"
+        );
+
+        let _ = std::fs::remove_file(&audit_path);
     }
 }

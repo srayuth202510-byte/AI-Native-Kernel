@@ -695,7 +695,7 @@ gantt
                 <td><strong>H4</strong></td>
                 <td><strong>Real-time token revocation</strong></td>
                 <td>เมื่อ TCell สั่ง quarantine การเพิกถอนสิทธิ์ยังผ่าน userspace round-trip — agent อาจยิง syscall ได้อีกหลายพันครั้งก่อนโดนตัด</td>
-                <td>Path ตรงจาก cytokine signal → เขียน BPF map ทันที ไม่รอ policy engine round-trip</td>
+                <td>Path ตรงจาก immune-system decision → เขียน BPF map ทันที ไม่รอ policy engine round-trip <strong>✅ implemented ก.ค. 2026</strong> (TCell quarantine/kill → <code>deny_pid</code> เขียน <code>blocked_pids</code> map แบบ synchronous ก่อน audit/broadcast แล้วค่อยเพิกถอน token; unit test ยืนยันตัดที่ kernel + revoke token)</td>
                 <td>Phase 2</td>
             </tr>
             <tr>
