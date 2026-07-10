@@ -274,36 +274,62 @@ int BPF_PROG(lsm_file_open, struct file *file)
      * LSM hooks ที่ helper อนุญาต) — ได้ path จากมุมมองของ kernel เอง
      * เลี่ยง symlink trick จาก userspace ทั้งหมด; resolve ไม่ได้ = fail
      * closed. buffer ต้อง zero-init: arg ของ helper เป็น ARG_PTR_TO_MEM
-     * ซึ่ง verifier บังคับให้ stack ถูก initialize ก่อนเรียก */
-    char path[PATH_BUF_MAX] = {};
-    long len = bpf_d_path(&file->f_path, path, sizeof(path));
+     * ซึ่ง verifier บังคับให้ stack ถูก initialize ก่อนเรียก
+     * ประกาศเป็น u64[] เพื่อให้ align 8 สำหรับ matcher แบบ chunk ข้างล่าง */
+    u64 path[PATH_BUF_MAX / 8] = {};
+    long len = bpf_d_path(&file->f_path, (char *)path, sizeof(path));
     if (len < 0)
         return -EPERM;
 
     /* H3 v2: path ต้องเท่ากับ prefix ใดสักตัวในชุด หรืออยู่ใต้มัน — ไม่ตรง
-     * สักตัวเดียว = DENY (fail closed). loop มีขอบเขตชัด (8×128) verifier
-     * เดินครบทุก branch ได้สบาย */
+     * สักตัวเดียว = DENY (fail closed).
+     *
+     * สำคัญ — เทียบทีละ chunk 8 ไบต์ ไม่ใช่ทีละไบต์: loop แบบ byte
+     * (8 prefix × 128 byte พร้อม early-exit ไป prefix ถัดไป) ทำให้ verifier
+     * เกิด state explosion (mismatch ที่ตำแหน่ง i แต่ละจุด fork เส้นทาง
+     * สำรวจใหม่ของ prefix ที่เหลือทั้งหมด) จนชน 1M insn limit และโหลด
+     * ไม่ผ่าน chunk 8 ไบต์ลด loop ใน = 16 รอบ → งาน verifier หดลง ~64 เท่า
+     *
+     * หา NUL แรกใน chunk ด้วย haszero trick (little-endian — ตรงกับ
+     * target ที่ compile): z มี bit 0x80 ประจำ byte ที่เป็น 0, z & -z
+     * เหลือเฉพาะตัวแรก slot prefix ถูก NUL-pad จาก userspace เสมอ
+     * (path_set_bytes) ดังนั้น byte หลัง NUL ของ p เป็น 0 ล้วน */
     int j;
     for (j = 0; j < MAX_PATH_PREFIXES; j++) {
-        const char *prefix = set->prefix[j];
-        if (prefix[0] == '\0')
+        /* offset ของ slot = j*128 → align 8 เสมอ อ่านเป็น u64 ได้ตรงๆ */
+        const u64 *pfx = (const u64 *)set->prefix[j];
+        if ((pfx[0] & 0xFF) == 0)
             break; /* slot ว่าง = จบชุด (เติมจากหน้าไปหลังเสมอ) */
 
-        int i;
-        int mismatch = 0;
-        for (i = 0; i < PATH_PREFIX_MAX; i++) {
-            char p = prefix[i];
-            if (p == '\0')
-                break;
-            if (i >= PATH_BUF_MAX - 1 || path[i] != p) {
-                mismatch = 1;
-                break;
+        int k;
+        for (k = 0; k < PATH_PREFIX_MAX / 8; k++) {
+            u64 p = pfx[k];
+            u64 c = path[k];
+            u64 z = (p - 0x0101010101010101ULL) & ~p & 0x8080808080808080ULL;
+            u64 nul = z & -z; /* 0x80 << (8*idx) ของ NUL ตัวแรก, 0 = ไม่มี */
+            if (!nul) {
+                if (c != p)
+                    goto next_prefix; /* chunk เต็มไม่ตรง */
+                continue;
+            }
+            /* chunk สุดท้ายของ prefix: byte ก่อน NUL ต้องตรง แล้ว byte
+             * ตรงตำแหน่ง NUL (ขอบเขต) ของ path ต้องเป็น '\0' (path ==
+             * prefix พอดี) หรือ '/' (อยู่ใต้ prefix) — กัน /tmp/foo ไป
+             * จับคู่ /tmp/foobar เหมือน matcher เดิม */
+            {
+                u64 unit = nul >> 7;          /* 1 << (8*idx) */
+                u64 before = unit - 1;        /* mask byte 0..idx-1 */
+                if ((c & before) != p)
+                    goto next_prefix;
+                u64 boundary = c & (0xFFULL * unit);
+                if (boundary == 0 || boundary == 0x2FULL * unit)
+                    return 0; /* 0x2F = '/' */
+                goto next_prefix;
             }
         }
-        /* ผ่านเมื่อ path เท่ากับ prefix พอดี หรืออยู่ใต้ prefix เท่านั้น —
-         * กัน /tmp/foo ไปจับคู่ /tmp/foobar ด้วยการเช็ค byte ถัดไป */
-        if (!mismatch && i < PATH_BUF_MAX && (path[i] == '\0' || path[i] == '/'))
-            return 0;
+        /* วนครบ 16 chunk โดยไม่เจอ NUL — เกิดไม่ได้เมื่อ userspace
+         * NUL-pad เสมอ; ไม่นับเป็น match (fail closed) */
+next_prefix:;
     }
     return -EPERM;
 }
