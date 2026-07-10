@@ -116,13 +116,19 @@
         <h1>AI-Native Kernel</h1>
         <div class="subtitle">Next Generation Operating System Kernel for AI Era &mdash; Rust Implementation Plan</div>
         <div class="meta-grid">
-            <div class="meta-item"><strong>Version:</strong> 3.2 (Repo-aligned baseline)</div>
+            <div class="meta-item"><strong>Version:</strong> 3.3 (Hardening backlog)</div>
             <div class="meta-item"><strong>Language:</strong> Rust (Edition 2024)</div>
             <div class="meta-item"><strong>Status:</strong> Host-side prototype validated; privileged eBPF/LSM re-validation pending</div>
         </div>
     </div>
 
     <div class="changelog">
+        <p><strong>บันทึกการแก้ไข (v3.2 &rarr; v3.3):</strong></p>
+        <ul>
+            <li>เพิ่มหัวข้อ <strong>9.1 Hardening Backlog</strong> (H1&ndash;H5) จากการ review โค้ดจริง:
+                cgroup-scoped allow-list, agent identity ปลอมไม่ได้, intent&rarr;scope compiler,
+                real-time token revocation, VRAM tier จริง</li>
+        </ul>
         <p><strong>บันทึกการแก้ไข (v3.1 &rarr; v3.2):</strong></p>
         <ul>
             <li>ปรับสถานะเอกสารให้สอดคล้องกับ repo ปัจจุบัน: จาก “พร้อมเริ่มต้น prototype” เป็น “validated host-side prototype”</li>
@@ -651,6 +657,59 @@ gantt
             <tr><td><strong>Phase 4: Distributed</strong></td><td>Network partition; consistency</td><td>Tunable consistency; gossip health</td></tr>
         </tbody>
     </table>
+
+    <h3>9.1 Hardening Backlog (จากการ review โค้ดจริง, ก.ค. 2026)</h3>
+
+    <div class="highlight-box">
+        <p><strong>ที่มา:</strong> commit <code>d728095d</code> ต้องกลับด้าน LSM PID gate จาก allow-list เป็น block-list
+        เพราะ allow-list ทำให้ host ค้าง — ผลคือ enforcement ระดับ kernel ปัจจุบันเป็น
+        <strong>default-ALLOW</strong> (บล็อกเฉพาะ PID ในบัญชี) ซึ่งขัดกับหลัก fail-DENY ของโปรเจกต์
+        รายการด้านล่างคือแผนแก้เชิงสถาปัตยกรรม เรียงตามความสำคัญ</p>
+    </div>
+
+    <table>
+        <thead><tr><th>#</th><th>รายการ</th><th>ปัญหาปัจจุบัน</th><th>แนวทางแก้</th><th>เฟส</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><strong>H1</strong></td>
+                <td><strong>cgroup-scoped allow-list</strong></td>
+                <td>LSM gate เป็น PID block-list (default-ALLOW) — ทางแก้ชั่วคราวจาก <code>d728095d</code> ไม่ใช่ design ที่ตั้งใจ</td>
+                <td>รัน agent ทุกตัวใน cgroup เฉพาะ แล้วให้ eBPF เช็ค cgroup id แทน PID — ได้ default-DENY เต็มรูปแบบเฉพาะโลกของ agent โดยไม่แตะ process ของ host (host ไม่มีทางค้าง)</td>
+                <td>Phase 1.5</td>
+            </tr>
+            <tr>
+                <td><strong>H2</strong></td>
+                <td><strong>Agent identity ที่ปลอมไม่ได้</strong></td>
+                <td>การผูก agent กับ PID ตรง ๆ มีช่องโหว่ PID reuse — process ใหม่อาจสวมสิทธิ์ PID เดิม</td>
+                <td>ใช้ pidfd หรือ tuple <code>(start_time, pid)</code> ใน BPF map เพื่อผูก capability token กับ process instance จริง</td>
+                <td>Phase 1.5</td>
+            </tr>
+            <tr>
+                <td><strong>H3</strong></td>
+                <td><strong>Intent → Scope compiler</strong></td>
+                <td>Semantic gap: kernel เห็นแค่ syscall แต่ไม่รู้ intent ที่ประกาศไว้ — ชิ้นส่วนมีครบ (intent-bus, policy, LSM) แต่ยังไม่มีตัวแปลตรงกลาง</td>
+                <td>Pipeline แปลง intent เป็น scope แคบที่ตรวจได้เชิงกลไก (เช่น intent อ่านโปรเจกต์ X → token เปิดอ่านเฉพาะ path นั้น) แล้ว push ลง BPF map ก่อน agent เริ่มงาน</td>
+                <td>Phase 2</td>
+            </tr>
+            <tr>
+                <td><strong>H4</strong></td>
+                <td><strong>Real-time token revocation</strong></td>
+                <td>เมื่อ TCell สั่ง quarantine การเพิกถอนสิทธิ์ยังผ่าน userspace round-trip — agent อาจยิง syscall ได้อีกหลายพันครั้งก่อนโดนตัด</td>
+                <td>Path ตรงจาก cytokine signal → เขียน BPF map ทันที ไม่รอ policy engine round-trip</td>
+                <td>Phase 2</td>
+            </tr>
+            <tr>
+                <td><strong>H5</strong></td>
+                <td><strong>VRAM tier จริง</strong></td>
+                <td><code>gpu_pool.rs</code> ยังเป็น stub (<code>TODO: real cudaMemcpy</code>) — ชั้น GPU ของ context paging ยังไม่ต่อจริง</td>
+                <td>Implement cudaMemcpy/hipMemcpy device↔host จริง — ต้องมีเครื่อง CUDA/ROCm สำหรับทดสอบ (ตรงกับ p2a ใน Gantt)</td>
+                <td>Phase 2</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p><strong>ลำดับที่แนะนำ:</strong> H1 ก่อน เพราะเป็นช่องโหว่เชิงสถาปัตยกรรมที่ขัดกับ security model ของโปรเจกต์เอง
+    และ cgroup scoping จะปูทางให้ H2 (identity ผูกกับ cgroup) และ H3 (scope ผูกกับ intent) ต่อได้ทันที</p>
 
     <!-- ============================================================ -->
     <!-- 10. SUCCESS CRITERIA                                         -->
