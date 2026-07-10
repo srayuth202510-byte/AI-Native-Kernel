@@ -46,8 +46,11 @@ ai-native-kernel/
 │   ├── kernel-companion/      # eBPF/LSM hook layer (Aya)
 │   │   ├── src/
 │   │   │   ├── main.rs        # Companion daemon bootstrap
-│   │   │   ├── ebpf/          # eBPF programs (Aya)
-│   │   │   └── lsm/           # LSM policy decision point
+│   │   │   ├── ebpf/          # eBPF programs (Aya; lsm-security.bpf.c = cgroup-scoped gate)
+│   │   │   ├── lsm.rs         # LSM policy decision point + attachment (H1/H2/H3 maps)
+│   │   │   ├── cgroup.rs      # Agent cgroup v2 scope (H1 default-DENY boundary)
+│   │   │   ├── proc_identity.rs # (PID, start_time) identity — defeats PID reuse (H2)
+│   │   │   └── scope.rs       # Intent → Scope compiler → BPF maps (H3)
 │   │   └── Cargo.toml
 │   ├── agent-scheduler/       # Agent lifecycle + priority + isolation
 │   │   └── src/
@@ -60,12 +63,15 @@ ai-native-kernel/
 │   │       ├── lib.rs
 │   │       ├── hot.rs         # RAM layer (Vec<f32>)
 │   │       ├── warm.rs        # NVMe layer (RocksDB)
-│   │       └── cold.rs        # Disk file fallback
+│   │       ├── cold.rs        # Disk file fallback
+│   │       ├── p2p_mesh.rs    # Cross-node context mesh (gossip + trust)
+│   │       └── mesh_auth.rs   # P2P HMAC signing + replay guard (H6)
 │   ├── compute-scheduler/     # Cost function + adaptive weights
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── cost.rs        # Cost = w1·Lat + w2·Pow + w3·Cost
-│   │       └── weights.rs     # EWMA adaptive weights
+│   │       ├── weights.rs     # EWMA adaptive weights
+│   │       └── gpu_pool.rs    # VRAM tier: real DtoH/HtoD migration (H5)
 │   ├── capability-security/   # CapabilityToken + LSM policy + audit
 │   │   └── src/
 │   │       ├── lib.rs

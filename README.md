@@ -193,7 +193,9 @@ QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
 
 ### 8.1 ระบบถอนสิทธิ์ความปลอดภัยลงสู่ Kernel LSM ทันที (Automatic Revoke/Expiry Propagation)
 - เมื่อ `CapabilityToken` ถูกสั่งยกเลิก (Revoke) หรือหมดอายุการใช้งาน (Expired) ในชั้น `capability-security` ระบบประสานงานหลัก `kernel-companion` จะรับรู้ผ่านกลไกการจดทะเบียน callback ทันที
-- ระบบจะดึงรายชื่อ PIDs ทั้งหมดที่เชื่อมโยงกับโทเค็นดังกล่าว และทำการสั่งเพิ่มเข้า `blocked_pids` ในชั้น Kernel LSM hook (Aya) ทันที (LSM เป็น global hook ที่ default-allow ทุก process บนเครื่อง แล้ว deny เฉพาะ PID ที่ถูกบล็อกอย่างชัดเจนเท่านั้น) รวมถึงมี background thread คอยตรวจสอบความปลอดภัยซ้ำทุกๆ 500ms เพื่อให้สอดคล้องกับมาตรการ Zero-Trust แบบ fail-safe
+- ระบบจะดึงรายชื่อ PIDs ทั้งหมดที่เชื่อมโยงกับโทเค็นดังกล่าว และสั่งเพิ่มเข้า `blocked_pids` ในชั้น Kernel LSM hook (Aya) ทันที รวมถึงมี background thread ตรวจซ้ำทุกๆ 500ms แบบ fail-safe
+- **โมเดล enforcement (Hardening H1):** LSM hook เป็น global hook แต่ **scope การตัดสินด้วย cgroup v2 id**: process ของ host ปล่อยผ่าน (host ไม่มีทางค้าง) ส่วน process ใน agent cgroup ที่ลงทะเบียนแล้วเป็น **default-DENY** เว้นแต่ PID อยู่ใน allow-list — คืนหลัก fail-DENY ให้โลกของ agent โดยไม่กระทบ host (เปิดผ่าน `lsm.agent_cgroup_path`, daemon fail-closed ตอน boot ถ้าตั้ง path แล้วสร้าง cgroup ไม่ได้)
+- **การตัดสิทธิ์แบบทันที (Hardening H4):** เมื่อ Immune System (T-Cell) สั่ง quarantine/kill ระบบจะเขียน `blocked_pids` map ที่ระดับ kernel **ก่อน** audit/broadcast ปิดหน้าต่างที่ agent ยิง syscall ต่อได้ระหว่างรอ token หมดอายุ
 
 ### 8.2 RocksDB Warm Store แบบจัดเก็บถาวร (Persistent RocksDB Warm Store)
 เมื่อคอมไพล์โปรเจกต์ด้วย `--features context-memory/rocksdb-warm` ระบบจัดเก็บข้อมูล RocksDB บน NVMe จะทำงานแบบจัดเก็บถาวร (Persistent):
@@ -203,11 +205,27 @@ QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
 
 ### 8.3 P2P Gossip Mesh พร้อมโมเดลความน่าเชื่อถือและการขจัดความขัดแย้ง (Trust + Conflict Model)
 ระบบแชร์ความจำบริบทข้ามเครื่อง (Cross-Machine Memory Plane) ได้รับการยกระดับความปลอดภัยและความทนทาน:
+- **Mutual Authentication + Integrity (Hardening H6)**: ทุกข้อความใน mesh ถูกเซ็นด้วย **HMAC-SHA256** จาก pre-shared key ต่อ mesh — ผู้รับตรวจ tag ก่อนประมวลผล ปฏิเสธข้อความปลอม/ถูกแก้ และกัน replay (timestamp window + nonce dedup) ทำให้ `trust_score` มีความหมายจริงเพราะ identity ปลอมไม่ได้ (ต้องถือ key จึงเซ็นในนาม node ได้) ตั้ง key ผ่าน `context_memory.p2p_mesh_key_hex` และ daemon จะ **fail-closed** ตอน boot ถ้าเปิด mesh โดยไม่ตั้ง key (ยังไม่เข้ารหัสสาย — mTLS เป็นเฟสถัดไป)
 - **Zero-Trust Connection**: แต่ละ Node จะรักษาคะแนนความน่าเชื่อถือ (`trust_score` ตั้งแต่ 0–100) ของเพื่อนบ้าน โดยหาก Node ใดมีคะแนนต่ำกว่า `50` คะแนน ระบบจะปฏิเสธการเชื่อมต่อ TCP Handshake หรือทำการตัดการเชื่อมต่อ (Sever connection) ทันที รวมถึงละทิ้ง (Drop) ทุกข้อความที่ส่งมาจาก Node นั้นๆ
 - **ระบบจัดลำดับและแก้ปัญหาข้อมูลชนกัน (Conflict Resolution)**: เมื่อได้รับข้อความซิงก์รายการซ้อนทับกัน ระบบจะคัดกรองตามลำดับความสำคัญ:
   1. เปรียบเทียบ **Trust Score** ของ Node ผู้เขียน (Node ที่มีค่าความน่าเชื่อถือสูงกว่าจะทับข้อมูล Node ที่น่าเชื่อถือน้อยกว่าได้เสมอ)
   2. หากมีระดับความน่าเชื่อถือเท่ากัน จะเปรียบเทียบ **Version** ของข้อมูล (เวอร์ชันล่าสุดที่มี timestamp มากกว่าเป็นฝ่ายชนะ)
   3. หากเท่ากันทุกอย่าง จะตัดสินอย่างเด็ดขาดและแน่นอน (Deterministic) ด้วยการคัดเลือก Node ID ตามลำดับตัวอักษร (Lexicographically smaller Node ID wins)
+
+### 8.4 Security Hardening Backlog (H1–H6)
+
+ย้าย trust boundary ลงชั้นที่ปลอมไม่ได้จริง ครบทั้ง host และ network (แผนเต็ม: `docs/ai_native_kernel_plan_v2.html` §9.1):
+
+| # | สิ่งที่ปิด | สถานะ |
+|---|-----------|-------|
+| **H1** | cgroup-scoped default-DENY สำหรับโลกของ agent (แก้ default-ALLOW gap) | ✅ validated บน kernel จริง |
+| **H2** | ผูก authorization กับ `(PID, start_time)` กัน PID reuse | ✅ validated บน kernel จริง |
+| **H3** | intent → scope compiler (path prefix + operation-class ผ่าน `bpf_d_path`) | ✅ validated บน kernel จริง |
+| **H4** | ตัดสิทธิ์ที่ kernel ทันทีเมื่อ immune system สั่ง quarantine | ✅ unit-tested (รอ syscall load จริง) |
+| **H5** | VRAM tier migration ไม่ทำข้อมูลหาย (DtoH/HtoD จริง) | ✅ simulation (รอ GPU จริง) |
+| **H6** | P2P mesh mutual auth + integrity (HMAC + replay guard) | ✅ validated (E2E loopback) |
+
+Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `scripts/run-privileged.sh cargo test -p kernel-companion --test privileged_h1_h2` (H2/H3).
 
 ---
 > **ระดับความปลอดภัย**: Zero-Trust | โค้ดทั้งหมดใช้ **Rust 2024 Edition** ร่วมกับ **Tokio Async Runtime** ปลอดจาก Unsafe blocks และไม่มีการใช้งาน `.unwrap()` ในโค้ดการรันงานหลัก

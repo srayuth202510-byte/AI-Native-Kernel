@@ -2,7 +2,7 @@
 
 This note tracks the current repository state as implemented and locally validated in this workspace, not only the target architecture described in `docs/ai_native_kernel_plan_v2.html`.
 
-Last verified: 2026-07-09 — **469/469 tests pass** (4 ignored, Qdrant-backed), clippy clean, cargo audit clean
+Last verified: 2026-07-10 — **507 tests pass** (4 ignored, Qdrant-backed — now also run against a real Qdrant in CI), clippy clean, cargo audit clean. Hardening backlog H1–H6 complete (see §"Hardening Round 2026-07-10").
 
 ## Current Baseline
 
@@ -114,6 +114,17 @@ Last verified: 2026-07-09 — **469/469 tests pass** (4 ignored, Qdrant-backed),
 - **Fuzz repair + expansion**: fuzz manifest เดิมไม่มี [[bin]] และใช้ workspace deps ทั้งที่ไม่อยู่ใน workspace — targets ไม่เคยถูก compile; ซ่อมแล้ว + async calls รันจริงผ่าน runtime + เพิ่ม 3 targets ใหม่ (audit_entry, config_toml, uds_command) รวมเป็น 7.
 - **CVE**: crossbeam-epoch 0.9.18 → 0.9.20 (RUSTSEC-2026-0204).
 - **Benchmarks**: เพิ่ม immune_bench (crate สุดท้ายที่ยังไม่มี bench); ทุก bench เขียน audit log ลง temp path (เดิมสะสม 2.9GB ใน crate dirs — ลบแล้ว).
+
+### Hardening Round 2026-07-10 — Security Backlog H1–H6
+
+ที่มา: commit `d728095d` ต้องกลับ LSM PID gate เป็น block-list (default-ALLOW) เพื่อไม่ให้ host ค้าง ซึ่งขัดหลัก fail-DENY — backlog นี้ย้าย trust boundary ลงชั้นที่ปลอมไม่ได้จริง ครบทั้ง host (H1–H5) และ network (H6). แผนเต็มดู `docs/ai_native_kernel_plan_v2.html` §9.1.
+
+- **[H1] cgroup-scoped allow-list** — LSM gate เช็ค cgroup v2 id: host world ปล่อยผ่าน, agent cgroup ที่ลงทะเบียนเป็น **default-DENY** เว้นแต่ PID อยู่ใน allow-list; quarantine (`blocked_pids`) ชนะทุกกรณี. Opt-in `lsm.agent_cgroup_path`, fail-closed ตอน boot. **✅ validated end-to-end บน kernel 7.0.0-27** (`scripts/validate-ebpf-attach.sh`: unauthorized process ใน cgroup โดน `-EPERM`, host ไม่กระทบ).
+- **[H2] unforgeable process identity** — allow-list ผูกกับ `(PID, start_time)` (`/proc/<pid>/stat` field 22 == `task->group_leader->start_boottime` ใน BPF) กัน PID reuse; `allow_pid` fail closed เมื่ออ่าน `/proc` ไม่ได้. **✅ validated end-to-end** (`tests/privileged_h1_h2.rs`: authorize flow จริง — allow path ผ่าน, deny path บล็อก).
+- **[H3] intent → scope compiler** — `kernel-companion/src/scope.rs`: compile token caps (grant) + intent metadata (narrow เท่านั้น) → operation-class flags + path prefix, push ลง BPF maps ก่อน agent เริ่มงาน; kernel บังคับ path ด้วย `bpf_d_path`. **✅ validated end-to-end** (in-scope allow / out-of-scope deny / exec deny). BPF gotchas: hook ต้องใช้ `BPF_PROG(...)`, buffer ของ `bpf_d_path` ต้อง zero-init.
+- **[H4] real-time revocation** — TCell quarantine/kill เขียน `blocked_pids` map แบบ synchronous ก่อน audit/broadcast (`apply_immune_revocation`) แล้วเพิกถอน token ปิดหน้าต่างที่ agent ยิง syscall ต่อได้ระหว่างรอ token expiry. **✅ unit-tested** (simulation); ยังไม่ทดสอบภายใต้ syscall load จริง.
+- **[H5] VRAM tier lossless migration** — `compute-scheduler/src/gpu_pool.rs`: `migrate_to_cpu` ทำ DtoH copy จริงรักษาข้อมูล (เดิม free ทิ้ง = data loss) + เพิ่ม `migrate_to_gpu` คู่กัน HtoD. **✅ simulation round-trip**; real-GPU byte-for-byte test พร้อมรัน รอเครื่อง CUDA/ROCm.
+- **[H6] P2P mesh mutual auth + integrity** — `context-memory/src/mesh_auth.rs`: HMAC-SHA256 (pre-shared key ต่อ mesh) + replay guard (timestamp window + nonce dedup) ทุกข้อความ; companion fail closed ถ้าเปิด mesh โดยไม่ตั้ง `p2p_mesh_key_hex`. **✅ validated** (E2E TCP loopback: matching-key เชื่อมได้/wrong-key ถูกปฏิเสธ). ยังไม่เข้ารหัสสาย — mTLS เป็นเฟสถัดไป.
 <!-- IMPLEMENTED_NOW_END -->
 
 ## Not Implemented Yet
@@ -141,8 +152,9 @@ cargo bench --bench scheduler_bench --bench security_bench --bench compute_bench
 
 ## Recommended Next Step
 
-Raise the bar from "validated host-side prototype" to "production-ready security baseline":
+Hardening backlog H1–H6 is complete; two validations remain gated on hardware this workspace lacks, plus follow-on security work:
 
-1. re-run privileged eBPF/LSM validation on a host with kernel prerequisites and fallback disabled
-2. verify latency performance regularly against the benchmarks budget on production targets
-3. close the remaining timeout gaps on external I/O paths if any are newly added
+1. **H4 under real syscall load** — drive TCell past its threshold on a privileged host and confirm the kernel cut lands within budget (currently unit-tested logic only).
+2. **H5 on a real GPU** — run `validate_real_gpu_migrate_round_trip_preserves_bytes` on a CUDA/ROCm host (test is written, skips without a runtime).
+3. **mesh confidentiality (mTLS)** — H6 gives integrity + authenticity + anti-replay but the wire is still plaintext; add TLS for confidentiality.
+4. verify latency performance regularly against the benchmarks budget on production targets.
