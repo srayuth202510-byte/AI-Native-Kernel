@@ -1,0 +1,20 @@
+[package]
+name = "semantic-guard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Data-plane guard - PII redaction and known-injection signatures for AI traffic"
+license = "MIT"
+repository = "https://github.com/srayuth202510-byte/AI-Native-Kernel"
+keywords = ["ai", "security", "pii", "prompt-injection"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

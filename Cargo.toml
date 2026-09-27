@@ -9,6 +9,10 @@ members = [
     "crates/capability-security",
     "crates/intent-bus",
     "crates/immune-system",
+    # Data plane (AI-infrastructure security pivot — see docs/pivot_ai_infra_security.md)
+    "crates/ai-gateway",
+    "crates/semantic-guard",
+    "crates/extraction-det",
 ]
 
 [workspace.dependencies]
@@ -63,4 +67,6 @@ toml = "0.8"
 ratatui = "0.28"
 crossterm = "0.28"
 sha2 = "0.10"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+regex = "1.11"
+axum = { version = "0.8", features = ["macros"] }
