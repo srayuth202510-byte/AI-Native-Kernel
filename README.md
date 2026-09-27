@@ -1,12 +1,14 @@
 # AI-Native Kernel (Rust)
 
 > ระบบปฏิบัติการแบบ **Hybrid-Companion** สำหรับยุค AI ที่ทำงานควบคู่กับ Linux Kernel โดยใช้ **eBPF** และ **LSM Hooks** ในการควบคุมพฤติกรรมและการสืบค้นสิทธิ์ความปลอดภัยผ่าน AI Agents ภายใต้แนวคิด **Zero-Trust**
+>
+> **Pivot (2026-09)**: เพิ่ม **AI Infrastructure Security Data Plane** — `ai-gateway` (OpenAI-compatible reverse proxy), `semantic-guard` (prompt injection/PII), `extraction-det` (model-extraction detection) — ใช้เป็น Data Plane บนต้นไปของโมเดล ในขณะที่ Host Plane (eBPF/LSM) คงควบคุม Kernel-level enforcement
 
 ---
 
 ## 1. โครงสร้างสถาปัตยกรรม (System Architecture)
 
-ระบบประกอบด้วยโมดูลหลัก (Crates) 7 ส่วนที่ทำงานเชื่อมต่อกันเป็นวงปิด:
+ระบบประกอบด้วยโมดูลหลัก (Crates) 10 ส่วน แบ่งเป็น **Host Plane** (eBPF/LSM enforcement) และ **Data Plane** (API security):
 
 ```
 User / AI Application
@@ -14,26 +16,38 @@ User / AI Application
     ▼
 Intent Bus (tokio::sync::broadcast)
     │
-    ▼
-Agent Scheduler (tokio::runtime) ── Capability & Security Manager (LSM Policy Engine)
-    │                                  │
-    ├── Context Memory Manager ─────────┤  (Hot/Warm/Cold paging)
-    │                                  │
-    ▼                                  ▼
-Compute Scheduler (CPU/GPU/NPU)    Audit Logger (WORM)
-    │
-    ▼
-Linux Kernel (eBPF/LSM Hooks via Aya)
+    ├──────────────────┬──────────────────┐
+    ▼                  ▼                  ▼
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│ Data Plane  │  │ Agent Plane │  │ Host Plane  │
+├─────────────┤  ├─────────────┤  ├─────────────┤
+│ ai-gateway  │  │ agent-scheduler │ kernel-companion │
+│ semantic-guard│  │ context-memory│  immune-system   │
+│ extraction-det│  │ compute-scheduler│ capability-security│
+│             │  │ intent-bus   │               │
+└─────────────┘  └─────────────┘  └─────────────┘
+       │              │                  │
+       └──────────────┴──────────────────┘
+                          │
+                          ▼
+              Linux Kernel (eBPF/LSM Hooks via Aya)
 ```
 
-### คำอธิบายโมดูล:
-1. **[kernel-companion](crates/kernel-companion/)**: ตัวประสานงานหลัก (Composition Root) โหลด LSM eBPF hooks และเปิด Unix Domain Socket รับ Intent จากภายนอก
-2. **[agent-scheduler](crates/agent-scheduler/)**: ควบคุมวงจรชีวิตของ Agent (Agent Lifecycle) และคอยดูแลความผิดพลาดด้วย Supervisor
-3. **[context-memory](crates/context-memory/)**: ระบบจัดการหน่วยความจำบริบทแบบลำดับชั้น (VRAM (GPU/NPU) / Hot (RAM) / Warm (in-memory by default, RocksDB via feature flag) / Cold (Disk))
-4. **[capability-security](crates/capability-security/)**: ตรวจสอบและบริหารสิทธิ์ความปลอดภัยแบบ Zero-Trust (Default = DENY) พร้อมเขียนรายงานแบบลบไม่ได้ (WORM Audit Log)
-5. **[compute-scheduler](crates/compute-scheduler/)**: จัดสรรอุปกรณ์ประมวลผล (Placement) ตาม Latency, Power, และ Cost พร้อมสนับสนุนการเลือกรันไทม์ประมวลผล (llama.cpp, ONNX Runtime, TensorRT-LLM)
-6. **[intent-bus](crates/intent-bus/)**: บัสรับส่งข่าวสารเหตุการณ์และคำสั่งแบบ asynchronous
-7. **[immune-system](crates/immune-system/)**: ระบบรักษาความปลอดภัยเลียนแบบระบบภูมิคุ้มกัน (Macrophage, T-Cell, B-Cell, Cytokine)
+### Host Plane (eBPF/LSM Enforcement)
+1. **[kernel-companion](crates/kernel-companion/)**: Composition Root — โหลด LSM eBPF hooks, UDS สำหรับ Intent
+2. **[capability-security](crates/capability-security/)**: Zero-Trust Capability Tokens, Policy Engine (default=DENY), WORM Audit Log
+3. **[immune-system](crates/immune-system/)**: ระบบภูมิคุ้มกันเลียนแบบ (T-Cell, B-Cell, Macrophage) รวม quarantine/kill ผ่าน LSM
+
+### Agent Plane (Agent Runtime)
+4. **[agent-scheduler](crates/agent-scheduler/)**: Agent Lifecycle, Supervisor, Priority Queue
+5. **[context-memory](crates/context-memory/)**: Hot/Warm/Cold Paging (RAM → RocksDB → Disk)
+6. **[compute-scheduler](crates/compute-scheduler/)**: Placement (CPU/GPU/NPU) llama.cpp / ONNX / TensorRT-LLM
+6. **[intent-bus](crates/intent-bus/)**: Async Event Bus
+
+### Data Plane (AI Infrastructure Security) — **NEW**
+8. **[ai-gateway](crates/ai-gateway/)**: OpenAI-compatible Reverse Proxy — Bearer/ApiKey auth, tenant policy, streaming SSE, per-tenant audit
+9. **[semantic-guard](crates/semantic-guard/)**: Unicode normalization, PII redaction (email/card/SSN/API key), 13 prompt-injection signatures, 2ms budget
+10. **[extraction-det](crates/extraction-det/)**: Model-extraction detection — sliding window, MinHash/Jaccard, LSH, per-tenant signals
 
 ---
 
@@ -70,12 +84,14 @@ ank-cli set-threshold <rate_limit> <deny_limit>
 
 ---
 
+---
+
 ## 4. คำสั่งสำหรับพัฒนาและตรวจสอบคุณภาพ (Build & Quality Commands)
 
 ในการรันคำสั่ง กรุณาขึ้นต้นด้วย `rtk` (Rust Token Killer) เสมอเพื่อรักษาเสถียรภาพการใช้โทเค็น:
 
 ```bash
-# คอมไพล์โปรเจคแบบ Release
+# คอมไพล์โปรเจคแบบ Release (รวม Data Plane crates)
 rtk cargo build --release
 
 # เปิดใช้ Warm tier แบบ RocksDB (compile-time feature)
@@ -84,11 +100,17 @@ rtk cargo build --release --features context-memory/rocksdb-warm
 # รันชุดการทดสอบทั้งหมดของระบบ (Unit + Integration Tests)
 rtk cargo test
 
+# รันเทส Data Plane แยกต่างหาก
+rtk cargo test -p ai-gateway -p semantic-guard -p extraction-det
+
 # ตรวจสอบโค้ดและกฎระเบียบความปลอดภัยแบบไม่มีคำเตือน (Zero Warnings Allowed)
-rtk cargo clippy --all-targets --all-features -- -D warnings
+rtk cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # จัดระเบียบฟอร์แมตโค้ดในทั้งโครงการ
 rtk cargo fmt
+
+# Security audit
+cargo audit
 ```
 
 ถ้าต้องการใช้ toolchain ที่ pin ไว้ใน repo โดยตรง:
@@ -97,12 +119,13 @@ rtk cargo fmt
 source scripts/use-local-toolchain.sh
 ```
 
-สถานะที่ยืนยันล่าสุดใน workspace นี้ ณ วันที่ `2026-07-01`:
+สถานะที่ยืนยันล่าสุดใน workspace นี้ ณ วันที่ `2026-09-27`:
 1. `cargo fmt --all -- --check` ผ่าน
 2. `cargo check --workspace` ผ่าน
-3. `cargo clippy --all-targets --all-features -- -D warnings` ผ่าน (แก้ไขปัญหา clippy lint ใน companion_bench สำเร็จ)
-4. `cargo test --workspace` (รวมถึง Qdrant-backed ignored tests ผ่าน mock และ P2P mesh tests) ผ่าน
-5. Criterion Benchmarks (`cargo bench` ทุกโมดูล และ RocksDB warm store benchmark) คอมไพล์และรันผ่านเกณฑ์ Latency
+3. `cargo clippy --workspace --all-targets --all-features -- -D warnings` ผ่าน
+4. `cargo test --workspace` — 697 tests passed (รวม Qdrant-backed ignored tests ผ่าน mock และ P2P mesh tests)
+5. `cargo audit` — 0 vulnerabilities (h2 0.4.19, rustls 0.23.45)
+6. Criterion Benchmarks (`cargo bench` ทุกโมดูล) คอมไพล์และรันผ่านเกณฑ์ Latency
 
 หมายเหตุ:
 1. การทดสอบแบบ privileged eBPF/LSM attach จริงยังคงต้องทำการตรวจสอบบน host ที่มีสิทธิ์ root/capabilities ครบถ้วน (หากไม่มีจะ fallback เป็น simulation mode โดยอัตโนมัติ)
@@ -191,6 +214,58 @@ QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
 
 ## 8. ฟีเจอร์ขั้นสูงเพิ่มเติม (Advanced Features)
 
+### 8.5 Generic Hash Chain — `ChainedLog<E>` (ANK-060)
+
+ระบบ Audit Log แบบ Hash Chain ถูกแยกเป็นโมดูลเจนริก `ChainedLog<E>` ใน `capability-security/chained_log.rs` เพื่อใช้ร่วมกันระหว่าง **Host Plane** (`AuditEntry`) และ **Data Plane** (`ApiAuditEntry`):
+
+```rust
+pub trait ChainEntry: Serialize + DeserializeOwned + Send + Sync + 'static {
+    fn compute_hash(&self, prev_hash: &str) -> String;
+    fn set_hash(&mut self, hash: String);
+    fn hash(&self) -> Option<String>;
+    fn set_chain_id(&mut self, _chain_id: &str) {} // optional
+}
+```
+
+- `AuditLogger` (Host Plane) ใช้ `ChainedLog<AuditEntry>` — กำจัด global mutex bottleneck
+- `ApiAuditChain` (Data Plane) = `type ApiAuditChain = ChainedLog<ApiAuditEntry>` — per-tenant sharded chains
+- รองรับ: crash-safe append, newline repair, resume across restarts, tamper detection
+
+---
+
+## 8.6 API Gateway CLI (Data Plane)
+
+```bash
+# Run reverse proxy
+ai-gateway serve --listen 127.0.0.1:8890 --upstream http://127.0.0.1:8000 \
+  --audit-dir /var/lib/ai-gateway/audit --policy-file /etc/ai-gateway/policy.json
+
+# Verify audit hash chains
+ai-gateway verify-audit --dir /var/lib/ai-gateway/audit
+```
+
+Policy file example (`/etc/ai-gateway/policy.json`):
+```json
+{
+  "tenants": [
+    {
+      "id": "acme",
+      "key": "sk-demo-123456",
+      "allowed_endpoints": ["chat_completions", "embeddings"],
+      "allowed_models": ["demo-model"],
+      "max_concurrent": 10,
+      "suspended": false
+    }
+  ]
+}
+```
+
+Environment variables: `ANK_GATEWAY_LISTEN`, `ANK_GATEWAY_UPSTREAM`, `ANK_GATEWAY_AUDIT_DIR`, `ANK_GATEWAY_POLICY_FILE`, `ANK_GATEWAY_GUARD`, `ANK_GATEWAY_EXTRACTION`, `ANK_LOG`.
+
+---
+
+## 9. การควบคุมผ่านเครื่องมือ CLI (`ank-cli`)
+
 ### 8.1 ระบบถอนสิทธิ์ความปลอดภัยลงสู่ Kernel LSM ทันที (Automatic Revoke/Expiry Propagation)
 - เมื่อ `CapabilityToken` ถูกสั่งยกเลิก (Revoke) หรือหมดอายุการใช้งาน (Expired) ในชั้น `capability-security` ระบบประสานงานหลัก `kernel-companion` จะรับรู้ผ่านกลไกการจดทะเบียน callback ทันที
 - ระบบจะดึงรายชื่อ PIDs ทั้งหมดที่เชื่อมโยงกับโทเค็นดังกล่าว และสั่งเพิ่มเข้า `blocked_pids` ในชั้น Kernel LSM hook (Aya) ทันที รวมถึงมี background thread ตรวจซ้ำทุกๆ 500ms แบบ fail-safe
@@ -229,6 +304,21 @@ QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
 | **H8** | capability-scoped skill manifests (specialization = kernel-enforced least-privilege) | ✅ validated บน kernel จริง |
 
 Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `scripts/run-privileged.sh cargo test -p kernel-companion --test privileged_h1_h2` (H2/H3).
+---
+
+## 9. Task Tracking (ANK-060..067)
+
+| ID | Title | Module | Status |
+|---|-------|--------|--------|
+| ANK-060 | Extract ChainedLog<E> & Rebase AuditLogger | capability-security | ✅ done |
+| ANK-061 | Model-Extraction Detector (extraction-det) | extraction-det | ✅ done |
+| ANK-062 | Semantic Guard: Prompt Injection & PII Redaction | semantic-guard | ✅ done |
+| ANK-063 | AI Gateway Pass-Through Proxy | ai-gateway | ✅ done |
+| ANK-064 | Wire Guard / Extraction / Audit Enforcement | ai-gateway | ✅ done |
+| ANK-065 | Multi-tenant Keys for Immune Tcell | immune-system | 📋 todo |
+| ANK-066 | ank verify-audit & Audit Export | capability-security | 📋 todo |
+| ANK-067 | Reposition Docs & README for AI Security Pivot | infra | 📋 todo |
 
 ---
+
 > **ระดับความปลอดภัย**: Zero-Trust | โค้ดทั้งหมดใช้ **Rust 2024 Edition** ร่วมกับ **Tokio Async Runtime** ปลอดจาก Unsafe blocks และไม่มีการใช้งาน `.unwrap()` ในโค้ดการรันงานหลัก
