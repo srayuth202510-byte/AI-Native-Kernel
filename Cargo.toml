@@ -70,3 +70,5 @@ sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 regex = "1.11"
 axum = { version = "0.8", features = ["macros"] }
+h2 = "0.4.16"
+rustls = "0.23.45"
