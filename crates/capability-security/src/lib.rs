@@ -6,6 +6,8 @@
 
 /// บันทึกประวัติการตัดสินใจด้านความปลอดภัยแบบ WORM (เขียนต่อท้ายเท่านั้น พร้อม hash chain)
 pub mod audit;
+/// Hash chain แบบเจนริกสำหรับ audit log (ใช้ร่วมกับ AuditEntry และ ApiAuditEntry)
+pub mod chained_log;
 pub mod metrics;
 /// เอนจินตัดสินใจเชิงนโยบาย (Policy Engine) แบบ fail-closed
 pub mod policy;

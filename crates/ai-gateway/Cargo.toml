@@ -21,9 +21,10 @@ uuid = { workspace = true }
 futures = { workspace = true }
 clap = { workspace = true }
 parking_lot = { workspace = true }
-bytes = { workspace = true }
 dashmap = { workspace = true }
 sha2 = { workspace = true }
+bytes = { workspace = true }
+capability-security = { path = "../capability-security" }
 semantic-guard = { path = "../semantic-guard" }
 extraction-det = { path = "../extraction-det" }
 

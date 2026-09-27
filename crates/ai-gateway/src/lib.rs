@@ -72,6 +72,9 @@ pub enum GatewayError {
     /// เขียน audit log ไม่สำเร็จ — ต้อง fail-closed
     #[error("audit write failed: {0}")]
     Audit(#[from] ApiAuditError),
+    /// ชั้น audit chain ทำงานผิดพลาด
+    #[error("audit chain failed: {0}")]
+    AuditChain(#[from] capability_security::chained_log::ChainedLogError),
 }
 
 /// การตั้งค่า gateway
@@ -774,6 +777,12 @@ mod tests {
     #[tokio::test]
     async fn chains_validate_after_traffic() {
         let c = core_named("chains_validate_after_traffic").await;
+        // Clean up any leftover FILES from previous runs, but keep the directory
+        let _ = std::fs::read_dir(&c.config().audit_dir).map(|mut entries| {
+            while let Some(Ok(entry)) = entries.next() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        });
         for i in 0..3 {
             c.inspect_request(
                 Some("Bearer secret-key"),

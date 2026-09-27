@@ -156,6 +156,12 @@ fn to_api_error(err: &GatewayError) -> ApiError {
             "audit_unavailable",
             "ระบบบันทึกเหตุการณ์ไม่พร้อมใช้งาน จึงปฏิเสธคำขอเพื่อความปลอดภัย",
         ),
+        GatewayError::AuditChain(_) => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server_error",
+            "audit_unavailable",
+            "ระบบบันทึกเหตุการณ์ไม่พร้อมใช้งาน จึงปฏิเสธคำขอเพื่อความปลอดภัย",
+        ),
         GatewayError::Config(_) | GatewayError::Guard(_) | GatewayError::Extraction(_) => {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,

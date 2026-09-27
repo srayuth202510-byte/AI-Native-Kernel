@@ -10,18 +10,14 @@
 //! ฟิลด์จึง**เปลี่ยนแฮชของทุกรายการที่เขียนไว้แล้ว** และทำให้ `validate_log` ปฏิเสธ
 //! audit log ของทุก deployment ที่อัปเกรดไบนารี
 //!
-//! ดังนั้นชนิดข้อมูลชุดใหม่นี้จึงแยกออกมาต่างหาก และ**แชร์เฉพาะกลไก hash chain**
-//! ไม่ใช่ตัวข้อมูล — ดูรายละเอียดการแยกชิ้นส่วนใน `docs/pivot_ai_infra_security.md` §5
+//! ดังนั้นชนิดข้อมูลชุดใหม่นี้จึงแยกออกมาต่างหาก และใช้ ChainedLog แบบเจนริก
+//! จาก `capability-security` แทนการเขียนซ้ำโค้ด hash chain
 
+use capability_security::chained_log::{ChainEntry, ChainedLog, ChainedLogError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
-
-/// เวลาที่รอ I/O ของ audit chain
-const AUDIT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// ข้อผิดพลาดของ audit chain ของ data plane
 #[derive(Debug, Error)]
@@ -38,6 +34,17 @@ pub enum ApiAuditError {
     /// hash chain ไม่ต่อเนื่อง — ถูกแก้ไขหรือเสียหาย
     #[error("api audit chain validation failed")]
     ValidationFailed,
+}
+
+impl From<ChainedLogError> for ApiAuditError {
+    fn from(e: ChainedLogError) -> Self {
+        match e {
+            ChainedLogError::Io(e) => Self::Io(e),
+            ChainedLogError::Serialize(e) => Self::Serialize(e),
+            ChainedLogError::Timeout => Self::Timeout,
+            ChainedLogError::ValidationFailed => Self::ValidationFailed,
+        }
+    }
 }
 
 /// การตัดสินใจที่บันทึกลง audit
@@ -158,6 +165,24 @@ impl ApiAuditEntry {
     }
 }
 
+impl ChainEntry for ApiAuditEntry {
+    fn compute_hash(&self, previous_hash: &str) -> String {
+        self.compute_hash(previous_hash)
+    }
+
+    fn set_hash(&mut self, hash: String) {
+        self.hash = Some(hash);
+    }
+
+    fn hash(&self) -> Option<String> {
+        self.hash.clone()
+    }
+
+    fn set_chain_id(&mut self, chain_id: &str) {
+        self.chain_id = Some(chain_id.to_string());
+    }
+}
+
 /// เวลาปัจจุบันเป็นวินาทีนับจาก UNIX epoch
 #[must_use]
 pub fn now_secs() -> u64 {
@@ -174,228 +199,14 @@ pub fn new_request_id() -> String {
 
 /// Hash chain ของ data plane แยกต่อผู้เช่า (sharded per tenant)
 ///
-/// การแยกต่อผู้เช่ามีเหตุผลด้านประสิทธิภาพ ไม่ใช่เพราะความสะดวก —
-/// `capability_security` ใช้ mutex เดียวทั้งระบบ ซึ่งเหมาะกับการเขียน audit
-/// กี่รายการต่อวินาทีของ host plane แต่จะกลายเป็นคอขวดเมื่อใช้เป็น gateway
-/// ที่รับหลายร้อยคำขอต่อวินาที (ดู `docs/pivot_ai_infra_security.md` §5)
-///
-/// แต่ละ shard ตรวจสอบความถูกต้องได้อย่างอิสระ และ `chain_id` ในแต่ละรายการ
-/// เชื่อมกลับมาเป็น timeline เดียวได้
-#[derive(Debug)]
-pub struct ApiAuditChain {
-    log_path: PathBuf,
-    chain_id: String,
-    last_hash: std::sync::Arc<parking_lot::Mutex<Option<String>>>,
-    writer: std::sync::Arc<tokio::sync::Mutex<Option<tokio::fs::File>>>,
-}
-
-impl ApiAuditChain {
-    /// สร้าง chain สำหรับผู้เช่าหนึ่งราย
-    #[must_use]
-    pub fn new(log_path: PathBuf, chain_id: &str) -> Self {
-        Self {
-            log_path,
-            chain_id: chain_id.to_string(),
-            last_hash: std::sync::Arc::new(parking_lot::Mutex::new(None)),
-            writer: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-        }
-    }
-
-    /// รหัสของ shard นี้
-    #[must_use]
-    pub fn chain_id(&self) -> &str {
-        &self.chain_id
-    }
-
-    /// พาธของไฟล์ log ของ shard นี้
-    #[must_use]
-    pub fn log_path(&self) -> &Path {
-        &self.log_path
-    }
-
-    /// อ่านแฮชล่าสุดจากท้ายไฟล์โดยไม่อ่านทั้งไฟล์
-    async fn last_hash_from_file(&self) -> String {
-        const INITIAL_TAIL_CHUNK: u64 = 64 * 1024;
-        let path = self.log_path.clone();
-
-        let result = tokio::time::timeout(AUDIT_IO_TIMEOUT, async {
-            use tokio::io::{AsyncReadExt, AsyncSeekExt};
-            let mut file = tokio::fs::File::open(&path).await.ok()?;
-            let len = file.metadata().await.ok()?.len();
-            let mut chunk = INITIAL_TAIL_CHUNK;
-            loop {
-                let start = len.saturating_sub(chunk);
-                file.seek(std::io::SeekFrom::Start(start)).await.ok()?;
-                let mut buf = Vec::with_capacity((len - start) as usize);
-                file.read_to_end(&mut buf).await.ok()?;
-                let text = String::from_utf8_lossy(&buf);
-                let text = if start > 0 {
-                    match text.find('\n') {
-                        Some(i) => &text[i + 1..],
-                        None => "",
-                    }
-                } else {
-                    &text
-                };
-                if let Some(h) = text
-                    .lines()
-                    .rev()
-                    .filter_map(|l| serde_json::from_str::<ApiAuditEntry>(l).ok())
-                    .find_map(|e| e.hash)
-                {
-                    return Some(h);
-                }
-                if start == 0 {
-                    return None;
-                }
-                chunk *= 4;
-            }
-        })
-        .await;
-
-        match result {
-            Ok(Some(h)) => h,
-            _ => String::new(),
-        }
-    }
-
-    /// ตรวจว่าไฟล์จบด้วย newline หรือไม่ (สัญญาณว่า crash กลางการเขียน)
-    async fn ends_without_newline(path: &Path) -> bool {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        let Ok(mut file) = tokio::fs::File::open(path).await else {
-            return false;
-        };
-        let Ok(meta) = file.metadata().await else {
-            return false;
-        };
-        if meta.len() == 0 {
-            return false;
-        }
-        if file
-            .seek(std::io::SeekFrom::Start(meta.len() - 1))
-            .await
-            .is_err()
-        {
-            return false;
-        }
-        let mut last = [0u8; 1];
-        file.read_exact(&mut last).await.is_ok() && last[0] != b'\n'
-    }
-
-    /// บันทึกรายการลง chain
-    ///
-    /// # Errors
-    /// คืน `Err` เมื่อเขียนไฟล์ไม่สำเร็จหรือเกินเวลา — ผู้เรียกต้องตัดสินใจแบบ
-    /// fail-closed เมื่อ audit เขียนไม่ได้ เพราะการตัดสินใจที่ไม่ถูกบันทึก
-    /// เท่ากับไม่มีการควบคุม
-    pub async fn record(&self, mut entry: ApiAuditEntry) -> Result<(), ApiAuditError> {
-        let mut guard = self.writer.lock().await;
-
-        // คัดลอกแฮชออกมาให้จบก่อน await — การถือ `MutexGuard` ข้ามจุด await
-        // จะทำให้เทาที่รออยู่หยุดกลางคัน และ task ที่ต้องการแฮชเดียวกันจะติดตาย
-        let cached_hash: Option<String> = self.last_hash.lock().clone();
-        let prev_hash = match cached_hash {
-            Some(h) => h,
-            None => {
-                let h = self.last_hash_from_file().await;
-                *self.last_hash.lock() = Some(h.clone());
-                h
-            }
-        };
-
-        entry.chain_id = Some(self.chain_id.clone());
-        let hash = entry.compute_hash(&prev_hash);
-        entry.hash = Some(hash.clone());
-
-        let mut line = serde_json::to_string(&entry)?;
-        line.push('\n');
-
-        if guard.is_none() {
-            let repair = Self::ends_without_newline(&self.log_path).await;
-            let mut file = tokio::time::timeout(
-                AUDIT_IO_TIMEOUT,
-                tokio::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&self.log_path),
-            )
-            .await
-            .map_err(|_| ApiAuditError::Timeout)?
-            .map_err(ApiAuditError::Io)?;
-            if repair {
-                file.write_all(b"\n").await.map_err(ApiAuditError::Io)?;
-            }
-            *guard = Some(file);
-        }
-
-        let Some(file) = guard.as_mut() else {
-            return Err(ApiAuditError::Io(std::io::Error::other(
-                "api audit writer unavailable",
-            )));
-        };
-
-        let write_result = tokio::time::timeout(AUDIT_IO_TIMEOUT, async {
-            file.write_all(line.as_bytes()).await?;
-            file.flush().await?;
-            Ok::<_, std::io::Error>(())
-        })
-        .await
-        .map_err(|_| ApiAuditError::Timeout)
-        .and_then(|inner| inner.map_err(ApiAuditError::Io));
-
-        if let Err(e) = write_result {
-            // handle อาจอยู่ในสถานะครึ่ง ๆ — ทิ้งเพื่อให้เปิดใหม่ และล้าง cache
-            // ไม่เช่นนั้นรายการถัดไปจะผูกกับ hash ของรายการที่เขียนไม่สำเร็จ
-            *guard = None;
-            *self.last_hash.lock() = None;
-            return Err(e);
-        }
-
-        *self.last_hash.lock() = Some(hash);
-        Ok(())
-    }
-
-    /// อ่านรายการทั้งหมดของ shard นี้
-    pub async fn entries(&self) -> Vec<ApiAuditEntry> {
-        let content =
-            match tokio::time::timeout(AUDIT_IO_TIMEOUT, tokio::fs::read_to_string(&self.log_path))
-                .await
-            {
-                Ok(Ok(c)) => c,
-                _ => String::new(),
-            };
-        content
-            .lines()
-            .filter_map(|l| serde_json::from_str::<ApiAuditEntry>(l).ok())
-            .collect()
-    }
-
-    /// ตรวจสอบความถูกต้องของ hash chain ทั้งหมด
-    ///
-    /// # Errors
-    /// คืน `Err` เมื่ออ่านไฟล์ไม่สำเร็จ
-    pub async fn validate(&self) -> Result<bool, ApiAuditError> {
-        let entries = self.entries().await;
-        if entries.is_empty() {
-            return Ok(true);
-        }
-        let mut prev = String::new();
-        for entry in &entries {
-            let Some(recorded) = entry.hash.as_deref() else {
-                return Ok(false);
-            };
-            if entry.compute_hash(&prev) != recorded {
-                return Ok(false);
-            }
-            prev = recorded.to_string();
-        }
-        Ok(true)
-    }
-}
+/// ใช้ `ChainedLog<ApiAuditEntry>` จาก `capability-security` แทนการเขียนซ้ำ
+/// โค้ด hash chain — ดูรายละเอียดที่ `capability_security::chained_log::ChainedLog`
+pub type ApiAuditChain = ChainedLog<ApiAuditEntry>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("api-audit-{name}.jsonl"))
