@@ -42,7 +42,7 @@ Intent Bus (tokio::sync::broadcast)
 4. **[agent-scheduler](crates/agent-scheduler/)**: Agent Lifecycle, Supervisor, Priority Queue
 5. **[context-memory](crates/context-memory/)**: Hot/Warm/Cold Paging (RAM → RocksDB → Disk)
 6. **[compute-scheduler](crates/compute-scheduler/)**: Placement (CPU/GPU/NPU) llama.cpp / ONNX / TensorRT-LLM
-6. **[intent-bus](crates/intent-bus/)**: Async Event Bus
+7. **[intent-bus](crates/intent-bus/)**: Async Event Bus
 
 ### Data Plane (AI Infrastructure Security) — **NEW**
 8. **[ai-gateway](crates/ai-gateway/)**: OpenAI-compatible Reverse Proxy — Bearer/ApiKey auth, tenant policy, streaming SSE, per-tenant audit
@@ -80,9 +80,10 @@ ank-cli list-quarantine
 
 # ตั้งค่าเกณฑ์ความปลอดภัยของ T-Cell (Syscall Rate limit, Deny count limit) แบบไดนามิกทันที
 ank-cli set-threshold <rate_limit> <deny_limit>
-```
 
----
+# ตรวจสอบความถูกต้องของ hash chain ใน audit log ของ Host Plane
+ank-cli verify-audit /var/lib/ank/audit/audit.jsonl
+```
 
 ---
 
@@ -214,7 +215,7 @@ QDRANT_URL=http://qdrant.internal:6334 ./scripts/run-all-tests.sh
 
 ## 8. ฟีเจอร์ขั้นสูงเพิ่มเติม (Advanced Features)
 
-### 8.5 Generic Hash Chain — `ChainedLog<E>` (ANK-060)
+### 8.1 Generic Hash Chain — `ChainedLog<E>` (ANK-060)
 
 ระบบ Audit Log แบบ Hash Chain ถูกแยกเป็นโมดูลเจนริก `ChainedLog<E>` ใน `capability-security/chained_log.rs` เพื่อใช้ร่วมกันระหว่าง **Host Plane** (`AuditEntry`) และ **Data Plane** (`ApiAuditEntry`):
 
@@ -233,7 +234,7 @@ pub trait ChainEntry: Serialize + DeserializeOwned + Send + Sync + 'static {
 
 ---
 
-## 8.6 API Gateway CLI (Data Plane)
+### 8.2 API Gateway CLI (Data Plane)
 
 ```bash
 # Run reverse proxy
@@ -264,21 +265,19 @@ Environment variables: `ANK_GATEWAY_LISTEN`, `ANK_GATEWAY_UPSTREAM`, `ANK_GATEWA
 
 ---
 
-## 9. การควบคุมผ่านเครื่องมือ CLI (`ank-cli`)
-
-### 8.1 ระบบถอนสิทธิ์ความปลอดภัยลงสู่ Kernel LSM ทันที (Automatic Revoke/Expiry Propagation)
+### 8.3 ระบบถอนสิทธิ์ความปลอดภัยลงสู่ Kernel LSM ทันที (Automatic Revoke/Expiry Propagation)
 - เมื่อ `CapabilityToken` ถูกสั่งยกเลิก (Revoke) หรือหมดอายุการใช้งาน (Expired) ในชั้น `capability-security` ระบบประสานงานหลัก `kernel-companion` จะรับรู้ผ่านกลไกการจดทะเบียน callback ทันที
 - ระบบจะดึงรายชื่อ PIDs ทั้งหมดที่เชื่อมโยงกับโทเค็นดังกล่าว และสั่งเพิ่มเข้า `blocked_pids` ในชั้น Kernel LSM hook (Aya) ทันที รวมถึงมี background thread ตรวจซ้ำทุกๆ 500ms แบบ fail-safe
 - **โมเดล enforcement (Hardening H1):** LSM hook เป็น global hook แต่ **scope การตัดสินด้วย cgroup v2 id**: process ของ host ปล่อยผ่าน (host ไม่มีทางค้าง) ส่วน process ใน agent cgroup ที่ลงทะเบียนแล้วเป็น **default-DENY** เว้นแต่ PID อยู่ใน allow-list — คืนหลัก fail-DENY ให้โลกของ agent โดยไม่กระทบ host (เปิดผ่าน `lsm.agent_cgroup_path`, daemon fail-closed ตอน boot ถ้าตั้ง path แล้วสร้าง cgroup ไม่ได้)
 - **การตัดสิทธิ์แบบทันที (Hardening H4):** เมื่อ Immune System (T-Cell) สั่ง quarantine/kill ระบบจะเขียน `blocked_pids` map ที่ระดับ kernel **ก่อน** audit/broadcast ปิดหน้าต่างที่ agent ยิง syscall ต่อได้ระหว่างรอ token หมดอายุ
 
-### 8.2 RocksDB Warm Store แบบจัดเก็บถาวร (Persistent RocksDB Warm Store)
+### 8.4 RocksDB Warm Store แบบจัดเก็บถาวร (Persistent RocksDB Warm Store)
 เมื่อคอมไพล์โปรเจกต์ด้วย `--features context-memory/rocksdb-warm` ระบบจัดเก็บข้อมูล RocksDB บน NVMe จะทำงานแบบจัดเก็บถาวร (Persistent):
 - **การตั้งค่าพาธ**: สามารถกำหนดตำแหน่งโฟลเดอร์ของฐานข้อมูลได้ผ่านฟิลด์ `warm_store_path` ใน `config/default.toml` หรือส่งผ่านตัวแปรสิ่งแวดล้อม `ANK_WARM_STORE_PATH`
 - **การกู้คืนสถานะช่วง Startup**: ทุกครั้งที่มีการเปิดระบบขึ้นมาใหม่ Warm Store จะทำการสแกนตรวจสอบข้อมูล (Key Iterator) ที่คงเหลืออยู่จริงบน RocksDB อัตโนมัติ เพื่อสร้างค่าตัวนับรายการ (`count`) และจัดลำดับอายุข้อมูล FIFO (`order` queue) ในแรมใหม่ทั้งหมด ทำให้มั่นใจได้ว่าข้อมูลจะไม่ทับซ้อนและไม่สูญหายข้ามการปิดเปิดระบบ
 - **การรันเทสที่เสถียร**: ในสภาพแวดล้อมการทดสอบ (`cargo test`) ระบบจะสร้างฐานข้อมูลแบบแยก UUID ของแต่ละ thread อัตโนมัติ เพื่อหลีกเลี่ยงข้อจำกัดการล๊อคไฟล์ของ RocksDB (Lock conflict) ระหว่างการประมวลผลการทดสอบแบบขนาน
 
-### 8.3 P2P Gossip Mesh พร้อมโมเดลความน่าเชื่อถือและการขจัดความขัดแย้ง (Trust + Conflict Model)
+### 8.5 P2P Gossip Mesh พร้อมโมเดลความน่าเชื่อถือและการขจัดความขัดแย้ง (Trust + Conflict Model)
 ระบบแชร์ความจำบริบทข้ามเครื่อง (Cross-Machine Memory Plane) ได้รับการยกระดับความปลอดภัยและความทนทาน:
 - **Mutual Authentication + Integrity (Hardening H6)**: ทุกข้อความใน mesh ถูกเซ็นด้วย **HMAC-SHA256** จาก pre-shared key ต่อ mesh — ผู้รับตรวจ tag ก่อนประมวลผล ปฏิเสธข้อความปลอม/ถูกแก้ และกัน replay (timestamp window + nonce dedup) ทำให้ `trust_score` มีความหมายจริงเพราะ identity ปลอมไม่ได้ (ต้องถือ key จึงเซ็นในนาม node ได้) ตั้ง key ผ่าน `context_memory.p2p_mesh_key_hex` และ daemon จะ **fail-closed** ตอน boot ถ้าเปิด mesh โดยไม่ตั้ง key
 - **Confidentiality via mTLS (Hardening H7)**: เข้ารหัสสายด้วย **TLS 1.3** โดยไม่ต้องมี PKI — derive cert/key แบบ deterministic จาก PSK เดียวกับ H6 แล้ว pin peer cert ให้ตรง identity นั้น กัน active MITM ดักอ่าน context data; peer ที่ไม่ถือ PSK จะ handshake TLS ไม่ผ่าน (ถูกปฏิเสธก่อนถึงชั้น HMAC) โดย operator ยังจัดการ secret เดียวเหมือนเดิม
@@ -288,7 +287,7 @@ Environment variables: `ANK_GATEWAY_LISTEN`, `ANK_GATEWAY_UPSTREAM`, `ANK_GATEWA
   2. หากมีระดับความน่าเชื่อถือเท่ากัน จะเปรียบเทียบ **Version** ของข้อมูล (เวอร์ชันล่าสุดที่มี timestamp มากกว่าเป็นฝ่ายชนะ)
   3. หากเท่ากันทุกอย่าง จะตัดสินอย่างเด็ดขาดและแน่นอน (Deterministic) ด้วยการคัดเลือก Node ID ตามลำดับตัวอักษร (Lexicographically smaller Node ID wins)
 
-### 8.4 Security Hardening Backlog (H1–H7)
+### 8.6 Security Hardening Backlog (H1–H8)
 
 ย้าย trust boundary ลงชั้นที่ปลอมไม่ได้จริง ครบทั้ง host และ network (แผนเต็ม: `docs/ai_native_kernel_plan_v2.html` §9.1):
 
@@ -310,14 +309,16 @@ Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `sc
 
 | ID | Title | Module | Status |
 |---|-------|--------|--------|
-| ANK-060 | Extract ChainedLog<E> & Rebase AuditLogger | capability-security | ✅ done |
-| ANK-061 | Model-Extraction Detector (extraction-det) | extraction-det | ✅ done |
-| ANK-062 | Semantic Guard: Prompt Injection & PII Redaction | semantic-guard | ✅ done |
-| ANK-063 | AI Gateway Pass-Through Proxy | ai-gateway | ✅ done |
+| ANK-060 | Extract ChainedLog<E> & Rebase AuditLogger | capability-security | ✅ done (`chained_log.rs`) |
+| ANK-061 | Model-Extraction Detector (extraction-det) | extraction-det | ✅ done (48 tests) |
+| ANK-062 | Semantic Guard: Prompt Injection & PII Redaction | semantic-guard | ✅ done (77 tests) |
+| ANK-063 | AI Gateway Pass-Through Proxy | ai-gateway | ✅ done (104 tests) |
 | ANK-064 | Wire Guard / Extraction / Audit Enforcement | ai-gateway | ✅ done |
 | ANK-065 | Multi-tenant Keys for Immune Tcell | immune-system | 📋 todo |
-| ANK-066 | ank verify-audit & Audit Export | capability-security | 📋 todo |
-| ANK-067 | Reposition Docs & README for AI Security Pivot | infra | 📋 todo |
+| ANK-066 | `verify-audit` & Audit Export | capability-security | 🚧 in_progress — มี verify-audit แล้วทั้งสอง plane; ขาด JSON export สำหรับ SIEM |
+| ANK-067 | Reposition Docs & README for AI Security Pivot | infra | ✅ done |
+
+งานที่เหลือของ Phase 1 อยู่ที่ ANK-065 (tenant key ใน `tcell.rs` ยังใช้ PID เป็นมิติหลัก) และส่วน export ของ ANK-066 — ดู `docs/pivot_ai_infra_security.md` §7 สำหรับลำดับการดำเนินการ
 
 ---
 

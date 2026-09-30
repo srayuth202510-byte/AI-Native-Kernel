@@ -1,7 +1,11 @@
 # Pivot: AI-Native Kernel → AI Infrastructure Security Platform
 
-> Status: proposed. Supersedes the "AI agent kernel" positioning in `README.md` /
+> Status: **accepted — in execution.** Committed 2026-09; Phase 1 steps 1–5 of §7 are
+> shipped. Supersedes the "AI agent kernel" positioning in `README.md` /
 > `docs/ai_native_kernel_plan_v2.html`. The kernel code is **retained**, not replaced.
+>
+> Step-to-task mapping and current state live in `docs/tasks.json` (ANK-060..067) and
+> `README.md` §9. This document remains the rationale for *why*; those two track *what*.
 
 ## 1. Thesis
 
@@ -181,16 +185,20 @@ Therefore:
 
 Each step is independently shippable and independently revertable.
 
-| # | Step | Gate |
-|---|---|---|
-| 1 | Extract `chained_log`, rebase `AuditLogger` on it | Existing `audit.rs` tests pass unchanged; `validate_log` still accepts pre-refactor logs |
-| 2 | Add `extraction-det` as a library with unit + property tests | Rate/volume logic tested with `proptest`; no gateway needed yet |
-| 3 | Add `semantic-guard` PII + signature engine | Corpus in `tests/fixtures/`; adversarial redaction fixtures (unicode, zero-width) |
-| 4 | Add `ai-gateway` pass-through, no guard | OpenAI-SDK conformance test against a mock upstream; SSE frame-for-frame |
-| 5 | Wire guard + extraction-det + sharded audit into the gateway | End-to-end: denied request appears in the chain, `verify-audit` passes |
-| 6 | Adapt `tcell.rs` to tenant keys | Existing host-plane behavior unchanged (property tests) |
-| 7 | `ank verify-audit` + audit export | Golden-file evidence output |
-| 8 | Reposition docs/README | — |
+| # | Step | Task | State | Gate |
+|---|---|---|---|---|
+| 1 | Extract `chained_log`, rebase `AuditLogger` on it | ANK-060 | ✅ | Existing `audit.rs` tests pass unchanged; `validate_log` still accepts pre-refactor logs |
+| 2 | Add `extraction-det` as a library with unit + property tests | ANK-061 | ✅ | Rate/volume logic tested with `proptest`; no gateway needed yet |
+| 3 | Add `semantic-guard` PII + signature engine | ANK-062 | ✅ | Corpus in `tests/fixtures/`; adversarial redaction fixtures (unicode, zero-width) |
+| 4 | Add `ai-gateway` pass-through, no guard | ANK-063 | ✅ | OpenAI-SDK conformance test against a mock upstream; SSE frame-for-frame |
+| 5 | Wire guard + extraction-det + sharded audit into the gateway | ANK-064 | ✅ | End-to-end: denied request appears in the chain, `verify-audit` passes |
+| 6 | Adapt `tcell.rs` to tenant keys | ANK-065 | 📋 | Existing host-plane behavior unchanged (property tests) |
+| 7 | `ank verify-audit` + audit export | ANK-066 | 🚧 | Golden-file evidence output |
+| 8 | Reposition docs/README | ANK-067 | ✅ | — |
+
+On step 7, verification is done (`ank-cli verify-audit <file>` for the host plane,
+`ai-gateway verify-audit --dir <dir>` across every data-plane shard) but SIEM export is
+not. The migration is complete enough that the remaining work is additive.
 
 Steps 1–3 are pure library work with no network surface, so they are cheap to build,
 testable in CI without root or eBPF, and they de-risk the whole pivot before we commit to
