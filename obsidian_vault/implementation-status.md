@@ -74,9 +74,10 @@ Last verified: 2026-07-11 — **519 tests pass** (4 ignored, Qdrant-backed — n
 - **[ANK-018] Policy Engine (fail-DENY)**: Policy engine default = DENY, capability allowlist, และ token validation/decision paths มีแล้ว; constant_time_eq ถูกใช้งานแล้ว.
 - **[ANK-019] Persistent WORM audit logger**: Audit trail เป็น file-backed append-only log พร้อม hash chaining แล้ว; ยังควร harden เรื่อง fail-closed ordering ของ revoke path เพิ่ม.
 - **[ANK-020] Security hardening: constant-time token comparison**: แทนที่การเทียบ token แบบปกติด้วย constant_time_eq ตาม security guideline ใน AGENTS.md.
-- **[ANK-047] Automatic Capability Revoke + Expiry + Rate Limiting**: revoke_token() พร้อม callback propagation ไปยัง blocked_pids (global default-allow LSM hook, deny เฉพาะ PID ที่ถูกบล็อก); token expiry check ในทุก decision path; rate-limited token issuance (max_issue_rate ปรับได้).
+- **[ANK-047] Automatic Capability Revoke + Expiry + Rate Limiting**: revoke_token() พร้อม callback propagation ไปยัง allowed_pids; token expiry check ในทุก decision path; rate-limited token issuance (max_issue_rate ปรับได้).
 - **[ANK-048] Security Metrics / Prometheus Counters**: SecurityMetrics struct พร้อม Prometheus counters: tokens_issued_total, token_validation_failures_total, policy_decisions_total (allow/deny labels), audit_entries_total. ลงทะเบียนกับ global registry.
 - **[ANK-054] Cryptographic Audit Log Validation**: Hash chain validation สำหรับ WORM audit log; cryptographic verification ของ log integrity; CLI integration สำหรับ log validation commands.
+- **[ANK-060] Extract ChainedLog<E> & Rebase AuditLogger**: แยกกลไก hash chain ออกจาก capability-security::audit เป็นโครงสร้างทั่วไป ChainedLog<E> ใน capability-security::audit แล้วให้ AuditLogger ใช้ร่วมกัน เพื่อแก้คอขวด mutex เดียวที่ serialize การเขียน audit ทั้งระบบ ห้ามเพิ่มฟิลด์ใหม่ใน AuditEntry เพราะ compute_hash แฮชโครงสร้างที่ serialize แล้ว การเพิ่มฟิลด์จะทำให้ validate_log ปฏิเสธ audit log ของ deployment เดิม
 
 ### immune-system
 
@@ -102,6 +103,12 @@ Last verified: 2026-07-11 — **519 tests pass** (4 ignored, Qdrant-backed — n
 - **[ANK-038] Timeout hardening for external I/O paths**: ครอบ tokio::time::timeout ให้ external calls ที่ยังเหลือ เช่น Qdrant, TCP peer connect/accept/read paths และ network-facing endpoints ให้ตรงกับ AGENTS.md.
 - **[ANK-039] CI-equivalent clippy validation (--all-targets --all-features)**: ผ่านแล้ว — cargo clippy --all-targets --all-features clean (0 errors, 0 lint warnings). เหลือแค่ info log จาก prebuilt eBPF objects.
 - **[ANK-056] Cross-Crate Pipeline Integration Tests**: 11 cross-crate integration tests ครอบคลุม end-to-end pipeline: intent → scheduler → capability → LSM decision → audit log, พร้อม fault injection สำหรับทุก Failure Domain.
+- **[ANK-067] Reposition Docs & README for AI Security Pivot**: ปรับตำแหน่งและเนื้อหาเอกสารให้สื่อว่าเป็นแพลตฟอร์มความปลอดภัยโครงสร้างพื้นฐาน AI โดยอธิบายบทบาทสองชั้น (data plane ที่บังคับนโยบาย API และ host plane ที่บังคับด้วย eBPF/LSM) พร้อมลบหรือทำเครื่องหมายคำแนะนำเดิมที่ขัดกับทิศทางใหม่ เพื่อไม่ให้ผู้อ่านเข้าใจผิดว่าโครงการเป็นเพียง eBPF tracer
+<!-- IMPLEMENTED_NOW_END -->
+
+## Hardening Rounds
+
+> ส่วนนี้เขียนด้วยมือ — `scripts/sync.py` ไม่แตะ (อยู่นอก marker block)
 
 ### Hardening Round 2026-07-09
 
@@ -127,12 +134,11 @@ Last verified: 2026-07-11 — **519 tests pass** (4 ignored, Qdrant-backed — n
 - **[H6] P2P mesh mutual auth + integrity** — `context-memory/src/mesh_auth.rs`: HMAC-SHA256 (pre-shared key ต่อ mesh) + replay guard (timestamp window + nonce dedup) ทุกข้อความ; companion fail closed ถ้าเปิด mesh โดยไม่ตั้ง `p2p_mesh_key_hex`. **✅ validated** (E2E TCP loopback: matching-key เชื่อมได้/wrong-key ถูกปฏิเสธ).
 - **[H7] P2P mesh confidentiality (mTLS)** — `context-memory/src/mesh_tls.rs`: เข้ารหัสสายด้วย TLS 1.3 โดยไม่ต้องมี PKI — derive cert/key แบบ deterministic จาก PSK เดียวกับ H6 (SHA256 seed → Ed25519 → rcgen self-signed) แล้ว pin peer cert ด้วย rustls custom verifier; wrap TLS ใน `start_listener`/`connect_to_peer`. **✅ validated** (E2E: matching-PSK handshake ผ่าน, wrong-PSK ถูกปฏิเสธที่ชั้น TLS ก่อนถึง HMAC). Operator ยังจัดการ secret เดียว (`p2p_mesh_key_hex`).
 - **[H8] capability-scoped skill manifests** — `kernel-companion/src/skill.rs`: skill.md-style manifest (TOML frontmatter, `+++`) ประกาศ routing (`description`) + placement (`model`/`compute`) + capability scope (`[capabilities]`) ในไฟล์เดียว; `to_intent()` แปลง `allow` เป็น H3 narrow-only (skill ลดสิทธิ์ token ได้อย่างเดียว); `SkillRegistry` โหลด+route. ต่อ `authorize_process_token_with_scope` (H3) โดยไม่มี enforcement code ใหม่. **✅ validated end-to-end บน kernel 7.0.0-27** — agent จาก skill file-only เปิด in-scope ได้ / out-of-scope + exec โดนปฏิเสธตามที่ manifest ประกาศ. "ความถนัด = kernel-enforced least-privilege".
-<!-- IMPLEMENTED_NOW_END -->
 
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-
+- **[ANK-065] Multi-tenant Keys for Immune Tcell** (todo, med): ปรับ immune-system::tcell ให้ใช้ tenant_id แทน PID เป็นมิติหลักของการตรวจจับผิดปกติ เพราะผู้โจมตีสามารถสร้าง process ใหม่ได้ไม่จำกัดแต่ไม่สามารถสร้าง credential ใหม่ได้ง่ายนักเท่า ต้องรักษาความสามารถในการตรวจจับซ้ำชั้น (defense in depth) ไว้ และย้ายการจำกัดอัตราต่อ PID ไปเป็นต่อผู้เช่า
 <!-- NOT_IMPLEMENTED_YET_END -->
 
 ## Validation Status
@@ -144,11 +150,8 @@ Last verified: 2026-07-11 — **519 tests pass** (4 ignored, Qdrant-backed — n
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace -- -D warnings
 cargo test --workspace
-./scripts/run-all-tests.sh
-cargo bench --bench scheduler_bench --bench security_bench --bench compute_bench --bench memory_bench --bench intent_bus_bench --bench companion_bench -- --quick
-./scripts/run-warm-bench.sh
 ```
 <!-- VALIDATION_STATUS_END -->
 

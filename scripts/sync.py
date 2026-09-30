@@ -3,6 +3,57 @@ import json
 import os
 import re
 
+def replace_marked_section(text, start_marker, end_marker, new_content,
+                           allowed_headings, allowed_literals=()):
+    """Replace a marker-delimited block, refusing to drop hand-written content.
+
+    Everything between the markers is regenerated from tasks.json, so any line
+    the generator cannot reproduce would be silently lost. That has already
+    happened once (the "Hardening Round" sections lived inside the block and
+    were erased on every run). Bail out loudly instead.
+    """
+    start_re = re.escape(start_marker)
+    end_re = re.escape(end_marker)
+    pattern = re.compile(f'{start_re}.*?{end_re}', re.DOTALL)
+
+    match = pattern.search(text)
+    if not match:
+        print(f"Warning: {start_marker} / {end_marker} markers not found, section left untouched")
+        return text
+
+    existing = match.group(0)
+    body = existing[len(start_marker):-len(end_marker)]
+
+    in_fence = False
+    for line in body.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            continue
+        # Inside a fenced block the content is a literal payload (command list),
+        # not prose — only fence state matters, not individual lines.
+        if in_fence or not stripped:
+            continue
+        if stripped.startswith('### '):
+            if stripped[4:] not in allowed_headings:
+                raise SystemExit(
+                    f"Refusing to sync: hand-written heading {stripped!r} found inside "
+                    f"the {start_marker} block. Move it below {end_marker} first."
+                )
+            continue
+        if stripped in allowed_literals:
+            continue
+        if not stripped.startswith('- '):
+            raise SystemExit(
+                f"Refusing to sync: line {stripped[:60]!r} inside the {start_marker} "
+                f"block is not generated from tasks.json and would be lost. "
+                f"Move it below {end_marker} first."
+            )
+
+    replacement = f'{start_marker}\n{new_content}\n{end_marker}'
+    return text[:match.start()] + replacement + text[match.end():]
+
+
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo_dir = os.path.dirname(script_dir)
@@ -141,25 +192,29 @@ def main():
     validation_content = "\n".join(validation_parts).strip()
     
     # Replace sections in MD
-    status_md = re.sub(
-        r'<!-- IMPLEMENTED_NOW_START -->.*?<!-- IMPLEMENTED_NOW_END -->',
-        f'<!-- IMPLEMENTED_NOW_START -->\n{implemented_now_content}\n<!-- IMPLEMENTED_NOW_END -->',
+    status_md = replace_marked_section(
         status_md,
-        flags=re.DOTALL
+        '<!-- IMPLEMENTED_NOW_START -->',
+        '<!-- IMPLEMENTED_NOW_END -->',
+        implemented_now_content,
+        allowed_headings=set(modules_order),
     )
     
-    status_md = re.sub(
-        r'<!-- NOT_IMPLEMENTED_YET_START -->.*?<!-- NOT_IMPLEMENTED_YET_END -->',
-        f'<!-- NOT_IMPLEMENTED_YET_START -->\n{not_implemented_content}\n<!-- NOT_IMPLEMENTED_YET_END -->',
+    status_md = replace_marked_section(
         status_md,
-        flags=re.DOTALL
+        '<!-- NOT_IMPLEMENTED_YET_START -->',
+        '<!-- NOT_IMPLEMENTED_YET_END -->',
+        not_implemented_content,
+        allowed_headings=set(),
     )
     
-    status_md = re.sub(
-        r'<!-- VALIDATION_STATUS_START -->.*?<!-- VALIDATION_STATUS_END -->',
-        f'<!-- VALIDATION_STATUS_START -->\n{validation_content}\n<!-- VALIDATION_STATUS_END -->',
+    status_md = replace_marked_section(
         status_md,
-        flags=re.DOTALL
+        '<!-- VALIDATION_STATUS_START -->',
+        '<!-- VALIDATION_STATUS_END -->',
+        validation_content,
+        allowed_headings=set(),
+        allowed_literals={'```bash', '```'},
     )
     
     with open(status_path, 'w', encoding='utf-8') as f:

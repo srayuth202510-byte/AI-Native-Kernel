@@ -1079,11 +1079,99 @@ const SEED = [
         "module": "compute-scheduler",
         "assignee": "AI",
         "due": ""
+    },
+    {
+        "id": "ANK-060",
+        "type": "task",
+        "title": "Extract ChainedLog<E> & Rebase AuditLogger",
+        "desc": "แยกกลไก hash chain ออกจาก capability-security::audit เป็นโครงสร้างทั่วไป ChainedLog<E> ใน capability-security::audit แล้วให้ AuditLogger ใช้ร่วมกัน เพื่อแก้คอขวด mutex เดียวที่ serialize การเขียน audit ทั้งระบบ ห้ามเพิ่มฟิลด์ใหม่ใน AuditEntry เพราะ compute_hash แฮชโครงสร้างที่ serialize แล้ว การเพิ่มฟิลด์จะทำให้ validate_log ปฏิเสธ audit log ของ deployment เดิม",
+        "status": "done",
+        "priority": "critical",
+        "module": "capability-security",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-061",
+        "type": "feature",
+        "title": "Model-Extraction Detector (extraction-det)",
+        "desc": "สร้าง crate extraction-det เพื่อตรวจจับการขโมยโมเดลแบบ model-free ได้แก่ อัตราคำขอ, ปริมาณโทเคนต่อวินาที, ความหลากหลายของ prompt, MinHash/Jaccard similarity และความยาว prompt ที่สม่ำเสมอผิดปกติ เก็บสถานะแยกต่อผู้เช่า พร้อมระดับ Normal/Suspicious/Alert/Extracting และเกณฑ์ที่ปรับตัวได้ผ่าน ExtractionConfig",
+        "status": "done",
+        "priority": "critical",
+        "module": "extraction-det",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-062",
+        "type": "feature",
+        "title": "Semantic Guard: Prompt Injection & PII Redaction",
+        "desc": "สร้าง crate semantic-guard สำหรับตรวจข้อความก่อนส่งเข้าโมเดล ครอบคลุม Unicode normalization พร้อมแผนที่ byte offset กลับไปข้อความต้นฉบับ, การตรวจและปิดบังข้อมูลส่วนบุคคล (อีเมล บัตรเครดิต SSN API key IPv4 โทรศัพท์) และการจับคู่ลายเซ็น prompt injection 13 กฎ พร้อมงบเวลา 2 มิลลิวินาทีและการ fail-closed เมื่องบประมาณหมด",
+        "status": "done",
+        "priority": "critical",
+        "module": "semantic-guard",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-063",
+        "type": "feature",
+        "title": "AI Gateway Pass-Through Proxy",
+        "desc": "สร้าง crate ai-gateway เป็น reverse proxy ที่รับคำขอแบบ OpenAI-compatible แล้วส่งต่อไปยัง upstream โดยบังคับนโยบายก่อน ประกอบด้วยชั้นยืนยันตัวตนและตรวจสิทธิ์ต่อผู้เช่า (Bearer/ApiKey เทียบแบบ constant-time, allowlist ของ endpoint และโมเดล), ตัวถอด request แบบพหูพจน์ที่เก็บฟิลด์ที่ไม่รู้จักไว้, ตัวแทน Axum router และ Reqwest upstream client รวมถึงการจัดการ streaming (SSE) และการตรวจ response แบบจำกัด prefix เพื่อรักษาความเร็วในการส่ง token แรก",
+        "status": "done",
+        "priority": "critical",
+        "module": "ai-gateway",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-064",
+        "type": "feature",
+        "title": "Wire Guard / Extraction / Audit Enforcement",
+        "desc": "เชื่อม semantic-guard, extraction-det และ audit เข้ากับเส้นทางจริงของ gateway โดยบังคับลำดับ ยืนยันตัวตน → ตรวจสิทธิ์ → ตรวจข้อมูล → ตรวจการขโมยโมเดล เพื่อไม่ให้ผู้ที่ยังไม่ยืนยันตัวตนยืมอำนาจให้ชั้นตรวจข้อมูลทำงาน และให้การตัดสินใจทุกครั้งถูกบันทึกลง hash chain แยกต่อผู้เช่า โดยปฏิเสธคำขอเมื่อเขียน audit ไม่สำเร็จ (fail-closed)",
+        "status": "done",
+        "priority": "critical",
+        "module": "ai-gateway",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-065",
+        "type": "task",
+        "title": "Multi-tenant Keys for Immune Tcell",
+        "desc": "ปรับ immune-system::tcell ให้ใช้ tenant_id แทน PID เป็นมิติหลักของการตรวจจับผิดปกติ เพราะผู้โจมตีสามารถสร้าง process ใหม่ได้ไม่จำกัดแต่ไม่สามารถสร้าง credential ใหม่ได้ง่ายนักเท่า ต้องรักษาความสามารถในการตรวจจับซ้ำชั้น (defense in depth) ไว้ และย้ายการจำกัดอัตราต่อ PID ไปเป็นต่อผู้เช่า",
+        "status": "todo",
+        "priority": "med",
+        "module": "immune-system",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-066",
+        "type": "feature",
+        "title": "ank verify-audit & Audit Export",
+        "desc": "เพิ่มคำสั่ง ank verify-audit สำหรับตรวจสอบความถูกต้องของ hash chain ของ audit ทั้ง host plane และ data plane พร้อมการส่งออกรายงาน JSON สำหรับ SIEM ต้องรองรับการตรวจจากไฟล์ที่ถูกปิดแล้วในขณะที่ process ยังทำงานอยู่ [partial] มีคำสั่ง verify-audit แล้วทั้ง `ank-cli verify-audit <file>` (host plane) และ `ai-gateway verify-audit --dir <dir>` (data plane, ตรวจทุก shard) แต่ยังไม่มีการส่งออกรายงาน JSON สำหรับ SIEM",
+        "status": "in_progress",
+        "priority": "high",
+        "module": "capability-security",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-067",
+        "type": "task",
+        "title": "Reposition Docs & README for AI Security Pivot",
+        "desc": "ปรับตำแหน่งและเนื้อหาเอกสารให้สื่อว่าเป็นแพลตฟอร์มความปลอดภัยโครงสร้างพื้นฐาน AI โดยอธิบายบทบาทสองชั้น (data plane ที่บังคับนโยบาย API และ host plane ที่บังคับด้วย eBPF/LSM) พร้อมลบหรือทำเครื่องหมายคำแนะนำเดิมที่ขัดกับทิศทางใหม่ เพื่อไม่ให้ผู้อ่านเข้าใจผิดว่าโครงการเป็นเพียง eBPF tracer",
+        "status": "done",
+        "priority": "med",
+        "module": "infra",
+        "assignee": "AI",
+        "due": ""
     }
 ];
 // SEED_END
 
-let state = { tasks: [], nextSeq: 60, view: "kanban", filters: { module: "all" } };
+let state = { tasks: [], nextSeq: 68, view: "kanban", filters: { module: "all" } };
 
 function load() {
     try {
