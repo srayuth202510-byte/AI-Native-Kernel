@@ -1,0 +1,36 @@
+#!/bin/sh
+# Auto-sync tasks to board and Obsidian vault, then gate on cargo fmt.
+#
+# Installed via `git config core.hooksPath .githooks` — the copy in
+# .git/hooks is a per-clone artifact and does not travel with the repo.
+#
+# NOTE: the repo root is resolved via `git rev-parse` and kept in a
+# dedicated variable. Do not reuse the name SCRIPT_DIR here — this hook
+# sources scripts/use-local-toolchain.sh, which assigns SCRIPT_DIR to its
+# *own* directory and would clobber it.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# shellcheck disable=SC1090
+. "$REPO_ROOT/scripts/use-local-toolchain.sh"
+
+# sync.py regenerates the marker blocks in board.html and the Obsidian
+# vault from docs/tasks.json. It aborts (exit 1) if a marker block holds
+# content it cannot reproduce, so a non-zero status must block the commit
+# rather than stage a partial regeneration.
+if ! python3 "$REPO_ROOT/scripts/sync.py"; then
+    echo "❌ scripts/sync.py failed — refusing to commit. See the message above."
+    exit 1
+fi
+
+# Stage the generated files (only if present — the vault is optional).
+for generated in docs/board.html obsidian_vault/implementation-status.md; do
+    if [ -f "$REPO_ROOT/$generated" ]; then
+        git add "$generated"
+    fi
+done
+
+# Check Rust formatting — abort if not clean.
+if ! cargo fmt --all -- --check 2>/dev/null; then
+    echo "❌ cargo fmt is not clean. Run 'cargo fmt --all' before committing."
+    exit 1
+fi
