@@ -157,3 +157,38 @@ async fn revoke_emits_audit_and_denies_future_validation() {
 
     let _ = std::fs::remove_dir_all(&log_dir);
 }
+
+#[tokio::test]
+async fn syscall_denied_entry_chains_and_validates() {
+    use capability_security::audit::{AuditEntry, AuditLogger};
+
+    // constructor นี้เคยเป็น dead code — เทสต์นี้เป็นครั้งแรกที่มันผ่าน chain จริง
+    let dir = std::env::temp_dir().join("cap-security-int-syscall-denied");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok();
+    let path = dir.join("audit.log");
+
+    let logger = AuditLogger::new(path);
+    logger
+        .record(AuditEntry::syscall_denied(
+            4242,
+            1000,
+            "execve",
+            "lsm policy deny",
+        ))
+        .await
+        .expect("record");
+    assert!(
+        logger.validate_log().await.expect("validate"),
+        "syscall_denied must chain correctly"
+    );
+
+    let entries = logger.entries().await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].action, "syscall_denied");
+    assert_eq!(entries[0].pid, Some(4242));
+    assert_eq!(entries[0].uid, Some(1000));
+    assert_eq!(entries[0].syscall.as_deref(), Some("execve"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

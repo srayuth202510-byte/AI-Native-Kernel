@@ -627,6 +627,33 @@ impl KernelCompanion {
                                 .unwrap_or_else(|| "default".to_string());
 
                             let denied = matches!(event.decision, PolicyDecision::Deny);
+
+                            // บันทึกทุกคำตัดสิน DENY ลง audit chain (AGENTS.md: ทุก
+                            // security decision ต้องมี audit entry) — ทำตรงนี้ ไม่ใช่
+                            // ใน poll loop เพราะ `record` เป็น async I/O (append +
+                            // flush) ห้าม block วง 1ms ใช้ pattern เดียวกับ
+                            // quarantine/kill audit ด้านล่าง
+                            //
+                            // Tradeoff ที่รู้ไว้: syscall ที่ถูก deny ถี่ ๆ จะเขียน
+                            // ถี่ตาม (เช่น tight loop) channel 4096 + try_send
+                            // เป็น backpressure อยู่แล้ว แต่ยังไม่มี per-second cap
+                            // ถ้าต้องการ cap ต้องเป็นฟีเจอร์แยก (และจะขัดกับกฎ
+                            // "ทุก decision" ข้างบนโดยตรง)
+                            if denied {
+                                let entry = AuditEntry::syscall_denied(
+                                    event.pid,
+                                    event.uid,
+                                    &event.syscall_name,
+                                    "lsm policy deny",
+                                );
+                                let audit_logger = audit_logger.clone();
+                                let _ = task::spawn_blocking(move || {
+                                    tokio::runtime::Handle::current()
+                                        .block_on(audit_logger.record(entry))
+                                })
+                                .await;
+                            }
+
                             let decision = tcell.observe_syscall(&tenant_id, event.pid, &event.syscall_name, denied).await;
 
                             if decision == ThreatDecision::Quarantine || decision == ThreatDecision::Kill {
