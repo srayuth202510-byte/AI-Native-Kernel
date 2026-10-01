@@ -14,6 +14,7 @@
 //! สาย (confidentiality) ซึ่งเป็นงานของ mTLS เฟสถัดไป
 
 use crate::p2p_mesh::P2PMessage;
+use capability_security::constant_time_eq_slices as constant_time_eq;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -85,20 +86,8 @@ pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     outer.finalize().into()
 }
 
-/// เปรียบเทียบ tag 32 ไบต์แบบคงเวลา กัน timing attack ตอน verify HMAC
-///
-/// สำเนาเฉพาะจุดนี้เพราะ crate นี้ไม่ได้พึ่ง `capability-security` — canonical
-/// อยู่ที่ `capability_security::constant_time_eq_slices` ถ้าแตะฟังก์ชันนี้
-/// ให้เทียบกับต้นฉบับด้วย สะสมด้วย `u64` ทั้งตัว ห้ามตัดเหลือ `u8`
-#[must_use]
-fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    let mut acc = 0u64;
-    for (x, y) in a.iter().zip(b.iter()) {
-        acc |= u64::from(x ^ y);
-    }
-    acc == 0
-}
-
+/// เปรียบเทียบ tag แบบคงเวลาใช้ canonical ร่วมทั้ง workspace — ดู
+/// `capability_security::constant_time_eq_slices` (สะสม `u64` ทั้งตัว)
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

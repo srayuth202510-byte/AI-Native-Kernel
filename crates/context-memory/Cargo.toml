@@ -14,6 +14,7 @@ rocksdb-warm = ["dep:rocksdb"]
 
 [dependencies]
 thiserror = { workspace = true }
+capability-security = { path = "../capability-security" }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
