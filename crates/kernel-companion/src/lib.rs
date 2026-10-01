@@ -5,6 +5,7 @@
 
 use crate::cognitive::CognitiveControlPlane;
 use crate::config::Config;
+use crate::deny_audit::DenyAuditAction;
 use crate::intent_bridge::IntentBridge;
 use crate::observability::{kernel_metrics, shutdown_tracing};
 use crate::retry_telemetry::{RetryAndTelemetryManager, RetryConfig, TelemetryTTLConfig};
@@ -21,7 +22,7 @@ use immune_system::{BCellAgent, MacrophageAgent, TCellAgent, ThreatDecision};
 use intent_bus::{Intent, IntentBus, IntentType};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tokio::task;
 use tokio::task::JoinHandle;
@@ -34,6 +35,8 @@ pub mod cgroup;
 pub mod cognitive;
 /// โหลดและตรวจสอบ config (TOML) ของ companion daemon
 pub mod config;
+/// ตัวจำกัดอัตรา audit สำหรับ denied syscall ที่ถี่ (กันดิสก์เต็มจาก tight loop)
+pub mod deny_audit;
 /// ชั้น eBPF: โหลด BPF object, แนบ syscall tracer และจัดการ event channel
 pub mod ebpf;
 /// สะพานส่ง Intent ข้ามเครื่องระหว่าง node ใน mesh
@@ -643,6 +646,8 @@ impl KernelCompanion {
             ));
             // UID -> tenant_id mapping สำหรับ ANK-065 (tenant-keyed T-Cell)
             let uid_to_tenant = self.config.immune_system.uid_to_tenant.clone();
+            // limiter กัน audit flood จาก denied-tight-loop (ดู deny_audit.rs)
+            let mut audit_limiter = deny_audit::DenyAuditLimiter::with_defaults();
             let mut tcell_shutdown_rx = shutdown_tx.subscribe();
             self.tcell_task = Some(tokio::spawn(async move {
                 loop {
@@ -669,27 +674,48 @@ impl KernelCompanion {
                             // บันทึกทุกคำตัดสิน DENY ลง audit chain (AGENTS.md: ทุก
                             // security decision ต้องมี audit entry) — ทำตรงนี้ ไม่ใช่
                             // ใน poll loop เพราะ `record` เป็น async I/O (append +
-                            // flush) ห้าม block วง 1ms ใช้ pattern เดียวกับ
-                            // quarantine/kill audit ด้านล่าง
+                            // flush) ห้าม block วง 1ms
                             //
-                            // Tradeoff ที่รู้ไว้: syscall ที่ถูก deny ถี่ ๆ จะเขียน
-                            // ถี่ตาม (เช่น tight loop) channel 4096 + try_send
-                            // เป็น backpressure อยู่แล้ว แต่ยังไม่มี per-second cap
-                            // ถ้าต้องการ cap ต้องเป็นฟีเจอร์แยก (และจะขัดกับกฎ
-                            // "ทุก decision" ข้างบนโดยตรง)
+                            // กันดิสก์เต็มจาก tight loop ด้วย limiter: ในงบต่อวินาที
+                            // บันทึกเดี่ยว เกินงบข้ามแต่**นับไว้** แล้วสรุป
+                            // เป็น entry เดียวตอนขึ้นวินาทีใหม่ — ทุก decision จึงยัง
+                            // ถูกนับรวมใน audit ไม่มีหายเงียบ (ดู deny_audit.rs)
                             if denied {
-                                let entry = AuditEntry::syscall_denied(
+                                let record = |logger: AuditLogger, entry: AuditEntry| async move {
+                                    let _ = task::spawn_blocking(move || {
+                                        tokio::runtime::Handle::current()
+                                            .block_on(logger.record(entry))
+                                    })
+                                    .await;
+                                };
+                                let individual = AuditEntry::syscall_denied(
                                     event.pid,
                                     event.uid,
                                     &event.syscall_name,
                                     "lsm policy deny",
                                 );
-                                let audit_logger = audit_logger.clone();
-                                let _ = task::spawn_blocking(move || {
-                                    tokio::runtime::Handle::current()
-                                        .block_on(audit_logger.record(entry))
-                                })
-                                .await;
+                                match audit_limiter.decide(
+                                    event.pid,
+                                    &event.syscall_name,
+                                    Instant::now(),
+                                ) {
+                                    DenyAuditAction::Audit => {
+                                        record(audit_logger.clone(), individual).await;
+                                    }
+                                    DenyAuditAction::Suppress => {}
+                                    DenyAuditAction::Rollover { suppressed } => {
+                                        let summary = AuditEntry::syscall_denied(
+                                            event.pid,
+                                            event.uid,
+                                            &event.syscall_name,
+                                            &format!(
+                                                "rate-limited: {suppressed} further identical denies suppressed in 1s window"
+                                            ),
+                                        );
+                                        record(audit_logger.clone(), summary).await;
+                                        record(audit_logger.clone(), individual).await;
+                                    }
+                                }
                             }
 
                             let decision = tcell.observe_syscall(&tenant_id, event.pid, &event.syscall_name, denied).await;
