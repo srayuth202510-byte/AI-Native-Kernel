@@ -19,13 +19,13 @@ use context_memory::p2p_mesh::{NodeTelemetry, P2PMeshManager};
 use context_memory::{SemanticFileSystem, semantic::SemanticStore};
 use immune_system::{BCellAgent, MacrophageAgent, TCellAgent, ThreatDecision};
 use intent_bus::{Intent, IntentBus, IntentType};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tokio::task;
 use tokio::task::JoinHandle;
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 pub mod capability_detect;
 /// จัดการ cgroup (v2) สำหรับ agent scope — ขอบเขต default-DENY ของ LSM hook
@@ -61,7 +61,10 @@ pub mod skill;
 pub mod uds;
 
 pub use cgroup::{AgentCgroup, cgroup_id_of};
-pub use ebpf::{PolicyDecision, SyscallEvent, SyscallTracer, tokio_util_cancel};
+pub use ebpf::{
+    CacheInvalidation, CacheInvalidationSender, PolicyDecision, SyscallEvent, SyscallTracer,
+    tokio_util_cancel,
+};
 pub use lsm::{LsmAttachment, LsmDecision, LsmPolicyEngine, attach_lsm_hooks};
 pub use scope::{IntentScope, ScopeError};
 pub use skill::{Skill, SkillRegistry};
@@ -110,6 +113,32 @@ async fn apply_immune_revocation(
                 }
             }
         }
+    }
+}
+
+/// สั่ง invalidate BPF decision cache สำหรับ syscall หนึ่ง (best-effort)
+///
+/// ใช้ `try_send` แทน `send().await` เพราะห้าม block immune task ถ้า channel เต็ม —
+/// invalidation เกิดทีละครั้งนาน ๆ (antibody ใหม่) channel 64 จึงไม่ควรเต็ม ถ้าเต็ม
+/// จริงจะ warn ให้เห็นแทนที่จะเงียบหาย
+fn notify_syscall_changed(
+    tx: &Option<CacheInvalidationSender>,
+    nr_by_name: &HashMap<String, u64>,
+    syscall: &str,
+) {
+    let Some(tx) = tx else { return };
+    let Some(&nr) = nr_by_name.get(syscall) else {
+        debug!(
+            syscall,
+            "antibody for unknown syscall; nothing cached to invalidate"
+        );
+        return;
+    };
+    if tx.try_send(CacheInvalidation::Syscall(nr)).is_err() {
+        warn!(
+            syscall,
+            "cache invalidation channel full; kernel may serve stale decision"
+        );
     }
 }
 
@@ -184,6 +213,9 @@ pub struct KernelCompanion {
     tracer_task: Option<JoinHandle<()>>,
     /// cancellation token ของ tracer task
     tracer_cancel: Option<tokio_util_cancel::CancellationToken>,
+    /// sender สำหรับสั่ง invalidate BPF decision cache (profile switch / antibody)
+    /// — `None` จนกว่า tracer จะบูตด้วย `with_cache_invalidation`
+    cache_invalidation_tx: Option<CacheInvalidationSender>,
     /// handle ของ tcell event receiver task
     tcell_task: Option<JoinHandle<()>>,
     /// handle ของ prometheus metrics server task
@@ -323,6 +355,7 @@ impl KernelCompanion {
             immune_task: None,
             tracer_task: None,
             tracer_cancel: None,
+            cache_invalidation_tx: None,
             tcell_task: None,
             metrics_task: None,
             metrics_cancel: None,
@@ -588,7 +621,12 @@ impl KernelCompanion {
 
             // ── Syscall Tracer & T-Cell Integration ──
             // เริ่มต้น SyscallTracer เพื่อดักฟัง syscall และส่งต่อให้ TCellAgent
-            let (tracer, mut event_rx) = SyscallTracer::new(Arc::clone(&self.lsm_engine));
+            // ใช้ `with_cache_invalidation` เสมอเพื่อให้ profile switch และ antibody
+            // ใหม่ทำให้ kernel decision เก่าหมดอายุ — มิฉะนั้น cache ที่ pre-populate
+            // ไว้ตอน attach จะเสิร์ฟคำตัดสินเก่าต่อไปจน restart
+            let (tracer, mut event_rx, invalidation_tx) =
+                SyscallTracer::with_cache_invalidation(Arc::clone(&self.lsm_engine));
+            self.cache_invalidation_tx = Some(invalidation_tx);
             let cancel = tokio_util_cancel::CancellationToken::new();
             let enable_fallback = self.config.ebpf.enable_fallback;
             self.tracer_cancel = Some(cancel.clone());
@@ -724,6 +762,15 @@ impl KernelCompanion {
             let bcell = Arc::clone(&self.bcell);
             let tcell_for_immune = Arc::clone(&self.tcell);
             let macrophage = Arc::clone(&self.macrophage);
+            // sender + ตารางชื่อ→nr สำหรับสั่ง invalidate BPF cache เมื่อ antibody
+            // เปลี่ยน (ถ้า tracer ยังไม่บูตจะเป็น None แล้วข้ามไปอย่างเงียบ ๆ)
+            let invalidation_tx = self.cache_invalidation_tx.clone();
+            let syscall_nr_by_name: Arc<HashMap<String, u64>> = Arc::new(
+                ebpf::build_syscall_table()
+                    .into_iter()
+                    .map(|(nr, name)| (name.to_string(), nr))
+                    .collect(),
+            );
             let mut immune_intent_subscriber = self.intent_bus.subscribe();
             let immune_shutdown_rx = shutdown_tx.subscribe();
             let immune_interval = std::time::Duration::from_secs(10);
@@ -754,6 +801,11 @@ impl KernelCompanion {
                                                 // สั่งให้ B-Cell สร้าง Antibody ทันทีหลังเรียนรู้
                                                 if let Some(antibody) = bcell.generate_antibody().await {
                                                     lsm.add_blocked_syscall(&antibody.blocked_syscall);
+                                                    notify_syscall_changed(
+                                                        &invalidation_tx,
+                                                        &syscall_nr_by_name,
+                                                        &antibody.blocked_syscall,
+                                                    );
                                                     warn!(
                                                         syscall = %antibody.blocked_syscall,
                                                         confidence = antibody.confidence,
@@ -772,6 +824,11 @@ impl KernelCompanion {
                             let promoted = bcell.sweep_shadow_antibodies().await;
                             for ab in &promoted {
                                 lsm.add_blocked_syscall(&ab.blocked_syscall);
+                                notify_syscall_changed(
+                                    &invalidation_tx,
+                                    &syscall_nr_by_name,
+                                    &ab.blocked_syscall,
+                                );
                                 warn!(
                                     syscall = %ab.blocked_syscall,
                                     confidence = ab.confidence,
@@ -1274,6 +1331,7 @@ impl KernelCompanion {
                 &self.config.kernel_companion.uds_socket_path,
                 cancel_uds,
                 Some(Arc::clone(&self.capability_security)),
+                self.cache_invalidation_tx.clone(),
             )
             .await?;
             self.uds_task = Some(uds_task);
@@ -1751,5 +1809,42 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&audit_path);
+    }
+}
+
+#[cfg(test)]
+mod cache_invalidation_tests {
+    use super::*;
+
+    fn nr_map() -> HashMap<String, u64> {
+        ebpf::build_syscall_table()
+            .into_iter()
+            .map(|(nr, name)| (name.to_string(), nr))
+            .collect()
+    }
+
+    #[test]
+    fn known_syscall_sends_targeted_invalidation() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let map = nr_map();
+        notify_syscall_changed(&Some(tx), &map, "execve");
+        let got = rx.try_recv().expect("invalidation must be sent");
+        let expected_nr = map["execve"];
+        assert!(
+            matches!(got, CacheInvalidation::Syscall(nr) if nr == expected_nr),
+            "expected targeted invalidation for execve, got {got:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_syscall_and_missing_sender_send_nothing() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let map = nr_map();
+        notify_syscall_changed(&Some(tx), &map, "definitely-not-a-syscall");
+        assert!(
+            rx.try_recv().is_err(),
+            "unknown syscall has no cache entry to invalidate"
+        );
+        notify_syscall_changed(&None, &map, "execve");
     }
 }

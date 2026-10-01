@@ -1,3 +1,4 @@
+use crate::ebpf::{CacheInvalidation, CacheInvalidationSender};
 use crate::lsm::LsmPolicyEngine;
 use crate::tokio_util_cancel::CancellationToken;
 use agent_scheduler::AgentScheduler;
@@ -37,6 +38,7 @@ pub async fn start_uds_server(
     socket_path: &str,
     cancel: CancellationToken,
     auth_manager: Option<Arc<CapabilitySecurityManager>>,
+    cache_invalidation_tx: Option<CacheInvalidationSender>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     // ลบไฟล์ซ็อกเก็ตเก่าถ้ามี
     let _ = tokio::fs::remove_file(socket_path).await;
@@ -66,6 +68,7 @@ pub async fn start_uds_server(
 
     let tcell = tcell.clone();
     let lsm = lsm.clone();
+    let cache_invalidation_tx = cache_invalidation_tx.clone();
     let agent_scheduler = agent_scheduler.clone();
     let compute_scheduler = compute_scheduler.clone();
     let context_memory = context_memory.clone();
@@ -116,6 +119,7 @@ pub async fn start_uds_server(
                                             let bus = Arc::clone(&intent_bus);
                                             let tcell = tcell.clone();
                                             let lsm = lsm.clone();
+                                            let cache_invalidation_tx = cache_invalidation_tx.clone();
                                             let agent_scheduler = agent_scheduler.clone();
                                             let compute_scheduler = compute_scheduler.clone();
                                             let context_memory = context_memory.clone();
@@ -361,6 +365,14 @@ pub async fn start_uds_server(
                                                                                     message = format!("LSM profile switched to {profile}");
                                                                                     active_lsm_profile = l.active_profile_name();
                                                                                     allowed_syscalls_count = l.get_allowed_syscalls().len();
+                                                                                    // profile เปลี่ยน = allowlist เปลี่ยน ต้องสั่ง
+                                                                                    // invalidate BPF cache ทั้งหมด ไม่เช่นนั้น kernel
+                                                                                    // จะเสิร์ฟคำตัดสินของ profile เก่าต่อไป
+                                                                                    if let Some(ref tx) = cache_invalidation_tx {
+                                                                                        if tx.try_send(CacheInvalidation::Full).is_err() {
+                                                                                            warn!("cache invalidation channel full after profile switch; kernel may serve stale decisions");
+                                                                                        }
+                                                                                    }
                                                                                 }
                                                                                 Err(err) => {
                                                                                     message = err.to_string();
@@ -488,6 +500,7 @@ mod tests {
             &socket_path,
             cancel.clone(),
             None,
+            None,
         )
         .await
         .expect("start_uds_server");
@@ -536,6 +549,7 @@ mod tests {
             None,
             &socket_path,
             cancel.clone(),
+            None,
             None,
         )
         .await
@@ -623,6 +637,56 @@ mod tests {
         assert_eq!(
             parsed["message"],
             "Failed to parse rate or deny from metadata"
+        );
+
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
+    #[tokio::test]
+    async fn uds_profile_switch_notifies_cache_invalidation() {
+        // สลับ profile สำเร็จต้องส่ง CacheInvalidation::Full ให้ tracer —
+        // มิฉะนั้น kernel จะเสิร์ฟคำตัดสินของ profile เก่าต่อไป
+        use crate::ebpf::CacheInvalidation;
+
+        let socket_path = format!("/tmp/test-ank-invalidate-{}.sock", uuid::Uuid::new_v4());
+        let intent_bus = Arc::new(IntentBus::new(10));
+        let cancel = CancellationToken::new();
+        let lsm = Arc::new(LsmPolicyEngine::new());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+        let _uds_task = start_uds_server(
+            Arc::clone(&intent_bus),
+            None,
+            Some(Arc::clone(&lsm)),
+            None,
+            None,
+            None,
+            None,
+            &socket_path,
+            cancel.clone(),
+            None,
+            Some(tx),
+        )
+        .await
+        .expect("start UDS server");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+        let mut meta = HashMap::new();
+        meta.insert("profile".to_string(), "strict".to_string());
+        let resp = send_command(&mut client, "set-lsm-profile", meta).await;
+        let parsed: serde_json::Value = serde_json::from_str(resp.trim()).unwrap();
+        assert_eq!(parsed["success"], true, "profile switch failed: {parsed}");
+
+        let notification = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("invalidation must arrive")
+            .expect("channel open");
+        assert!(
+            matches!(notification, CacheInvalidation::Full),
+            "expected Full invalidation, got {notification:?}"
         );
 
         cancel.cancel();
