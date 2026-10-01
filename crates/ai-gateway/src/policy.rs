@@ -307,11 +307,14 @@ pub fn parse_bearer(header: &str) -> Option<&str> {
 /// ความยาวถูกรวมเข้าไปใน `diff` แทนการแยกพิจารณา
 #[must_use]
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = (a.len() ^ b.len()) as u8;
+    // สะสมด้วย u64 ทั้งตัว — เดิมใช้ `as u8` ซึ่งตัดบิตสูงของผลต่างความยาวทิ้ง
+    // ทำให้คีย์ที่ยาวต่างกัน 256 เท่าตัวพอดี (บวก zero padding) เปรียบเทียบผ่าน
+    // ทั้งที่ต้องถูกปฏิเสธเสมอ
+    let mut diff = (a.len() ^ b.len()) as u64;
     let len = a.len().max(b.len());
     for i in 0..len {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(0);
+        let x = u64::from(a.get(i).copied().unwrap_or(0));
+        let y = u64::from(b.get(i).copied().unwrap_or(0));
         diff |= x ^ y;
     }
     diff == 0
@@ -632,6 +635,25 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"ab"));
         assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_256_byte_length_difference() {
+        // เดิม `(len_diff) as u8` ตัดบิตสูงทิ้ง ทำให้ความยาวที่ต่างกัน 256 พอดี
+        // กลายเป็น 0 และถ้าไบต์ส่วนเกินเป็น 0 ทั้งหมดจะเปรียบเทียบผ่านทั้งคู่ —
+        // คีย์ปลอมที่เอาคีย์จริงมาต่อ zero padding 256 ไบต์ต้องถูกปฏิเสธเสมอ
+        let key = b"sk-live-abc123";
+        let mut padded = key.to_vec();
+        padded.extend(std::iter::repeat_n(0, 256));
+        assert_eq!(padded.len() - key.len(), 256);
+        assert!(
+            !constant_time_eq(key, &padded),
+            "256-byte zero-padded key must not compare equal"
+        );
+        assert!(
+            !constant_time_eq(&padded, key),
+            "comparison must reject symmetrically"
+        );
     }
 
     #[test]
