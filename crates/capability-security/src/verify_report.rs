@@ -111,36 +111,154 @@ impl VerifyReport {
 /// ใช้กับ entry ทุกชนิดที่ implement [`ChainEntry`] จึงใช้ได้ทั้ง `AuditEntry`
 /// (host plane) และ `ApiAuditEntry` (data plane) โดยไม่ต้องเขียนโค้ดตรวจซ้ำ
 pub async fn verify_chain_file<E: ChainEntry>(path: &Path, chain_id: &str) -> ChainReport {
+    let (report, _) = verify_chain_with_hashes::<E>(path, chain_id).await;
+    report
+}
+
+/// ตรวจไฟล์ chain พร้อมคืนลำดับแฮช — ใช้ภายในสำหรับการเทียบ checkpoint
+async fn verify_chain_with_hashes<E: ChainEntry>(
+    path: &Path,
+    chain_id: &str,
+) -> (ChainReport, Vec<String>) {
     let file = path.display().to_string();
     if !path.exists() {
-        return ChainReport {
-            chain_id: chain_id.to_string(),
-            file,
-            entries: 0,
-            valid: false,
-            error: Some("audit file not found".to_string()),
-        };
+        return (
+            ChainReport {
+                chain_id: chain_id.to_string(),
+                file,
+                entries: 0,
+                valid: false,
+                error: Some("audit file not found".to_string()),
+            },
+            Vec::new(),
+        );
     }
     let chain = ChainedLog::<E>::new(PathBuf::from(path), chain_id);
     match chain.validate().await {
         Ok(valid) => {
-            let entries = chain.entries().await.len();
+            let entries = chain.entries().await;
+            let hashes: Vec<String> = entries.iter().filter_map(|e| ChainEntry::hash(e)).collect();
+            let report = ChainReport {
+                chain_id: chain_id.to_string(),
+                file,
+                entries: entries.len(),
+                valid,
+                error: (!valid).then(|| "hash chain mismatch".to_string()),
+            };
+            (report, hashes)
+        }
+        Err(e) => (
             ChainReport {
                 chain_id: chain_id.to_string(),
                 file,
-                entries,
-                valid,
-                error: (!valid).then(|| "hash chain mismatch".to_string()),
+                entries: 0,
+                valid: false,
+                error: Some(e.to_string()),
+            },
+            Vec::new(),
+        ),
+    }
+}
+
+/// จุดตรวจภายนอกของ chain หนึ่งไฟล์ — จำจำนวน entry และแฮชล่าสุดไว้
+///
+/// hash chain ตรวจ "ความต่อเนื่องของสิ่งที่เหลือ" ได้ แต่ตรวจ "สิ่งที่หายไป"
+/// ไม่ได้ การเทียบกับ checkpoint ที่บันทึกไว้คราวก่อนจึงเป็นวิธีเดียวที่จับ
+/// การตัดทิ้ง (truncation) หรือเขียนประวัติใหม่ โดยไม่ต้องไว้ใจไฟล์ log เอง
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChainCheckpoint {
+    /// ไฟล์ที่ checkpoint นี้เป็นของ
+    pub file: String,
+    /// จำนวน entry ตอนบันทึก
+    pub entries: usize,
+    /// แฮชของ entry สุดท้ายตอนบันทึก (ว่างเมื่อ chain ว่าง)
+    pub last_hash: String,
+}
+
+/// ชุด checkpoint ทุก chain — ไฟล์ JSON ที่ verifier เก็บไว้นอก log
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AuditCheckpoint {
+    /// checkpoint รายไฟล์
+    pub chains: Vec<ChainCheckpoint>,
+}
+
+impl AuditCheckpoint {
+    /// ค้นหา checkpoint ของไฟล์ (ถ้าเคยบันทึกไว้)
+    #[must_use]
+    pub fn find(&self, file: &str) -> Option<&ChainCheckpoint> {
+        self.chains.iter().find(|c| c.file == file)
+    }
+
+    /// บันทึก/แทนที่ checkpoint ของไฟล์
+    pub fn upsert(&mut self, entry: ChainCheckpoint) {
+        if let Some(slot) = self.chains.iter_mut().find(|c| c.file == entry.file) {
+            *slot = entry;
+        } else {
+            self.chains.push(entry);
+        }
+    }
+
+    /// โหลดจากไฟล์ — ไฟล์ไม่มีถือเป็นรอบแรก (ว่าง) ไม่ใช่ error
+    ///
+    /// # Errors
+    /// คืน `Err` เมื่อไฟล์มีอยู่แต่อ่าน/ถอดไม่ได้ ผู้เรียกควรเตือนแล้วตรวจต่อ
+    /// แบบไม่มี checkpoint ดีกว่าล้มทั้งคำสั่งเพราะไฟล์ state เสีย
+    pub async fn load(path: &Path) -> Result<Self, String> {
+        match tokio::fs::read_to_string(path).await {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("parse checkpoint: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(format!("read checkpoint: {e}")),
+        }
+    }
+
+    /// บันทึกลงไฟล์
+    ///
+    /// # Errors
+    /// คืน `Err` เมื่อเขียนไม่สำเร็จ
+    pub async fn save(&self, path: &Path) -> Result<(), String> {
+        let text =
+            serde_json::to_string_pretty(self).map_err(|e| format!("serialize checkpoint: {e}"))?;
+        tokio::fs::write(path, text)
+            .await
+            .map_err(|e| format!("write checkpoint: {e}"))?;
+        Ok(())
+    }
+}
+
+/// ตรวจไฟล์ chain พร้อมเทียบ checkpoint ภายนอก
+///
+/// คืนรายงาน (ที่ทำเครื่องหมาย `valid: false` แล้วเมื่อเจอ truncation/rewrite)
+/// กับ checkpoint ใหม่สำหรับรอบนี้ ผู้เรียกควรบันทึก checkpoint ใหม่**เฉพาะเมื่อ
+/// รายงาน valid** — บันทึกทับตอน chain พังเท่ากับรับรองประวัติที่พังเป็น baseline
+pub async fn verify_chain_checked<E: ChainEntry>(
+    path: &Path,
+    chain_id: &str,
+    checkpoint: &AuditCheckpoint,
+) -> (ChainReport, ChainCheckpoint) {
+    let (mut report, hashes) = verify_chain_with_hashes::<E>(path, chain_id).await;
+    let fresh = ChainCheckpoint {
+        file: path.display().to_string(),
+        entries: hashes.len(),
+        last_hash: hashes.last().cloned().unwrap_or_default(),
+    };
+    // เทียบเฉพาะตอน validate ผ่าน — ถ้า chain พังอยู่แล้ว error เดิมสำคัญกว่า
+    if report.valid {
+        if let Some(prev) = checkpoint.find(&fresh.file) {
+            if hashes.len() < prev.entries {
+                report.valid = false;
+                report.error = Some(format!(
+                    "truncation detected: entries decreased {} -> {}",
+                    prev.entries,
+                    hashes.len()
+                ));
+            } else if !prev.last_hash.is_empty() && !hashes.contains(&prev.last_hash) {
+                report.valid = false;
+                report.error =
+                    Some("history rewritten: checkpoint hash not found in chain".to_string());
             }
         }
-        Err(e) => ChainReport {
-            chain_id: chain_id.to_string(),
-            file,
-            entries: 0,
-            valid: false,
-            error: Some(e.to_string()),
-        },
     }
+    (report, fresh)
 }
 
 #[cfg(test)]
@@ -279,5 +397,172 @@ mod tests {
             error: None,
         });
         assert_eq!(report.empty_log_warning(), None);
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    fn checkpoint(entries: usize, last_hash: &str) -> AuditCheckpoint {
+        AuditCheckpoint {
+            chains: vec![ChainCheckpoint {
+                file: "/tmp/audit.log".to_string(),
+                entries,
+                last_hash: last_hash.to_string(),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn append_only_growth_passes_checkpoint() {
+        let dir = std::env::temp_dir().join("ckpt-growth");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("audit.log");
+
+        let logger = crate::audit::AuditLogger::new(path.clone());
+        logger
+            .record(crate::audit::AuditEntry::allowed(1))
+            .await
+            .expect("record");
+        logger
+            .record(crate::audit::AuditEntry::allowed(2))
+            .await
+            .expect("record");
+
+        // รอบแรก: ไม่มี checkpoint มาก่อน → ผ่านและได้ baseline
+        let empty = AuditCheckpoint::default();
+        let (report, fresh) =
+            verify_chain_checked::<crate::audit::AuditEntry>(&path, "host-plane", &empty).await;
+        assert!(report.valid);
+        assert_eq!(fresh.entries, 2);
+        assert!(!fresh.last_hash.is_empty());
+
+        // รอบสอง: ต่อท้ายอีก entry — ต้องผ่านเทียบกับ baseline
+        logger
+            .record(crate::audit::AuditEntry::allowed(3))
+            .await
+            .expect("record");
+        let saved = AuditCheckpoint {
+            chains: vec![fresh],
+        };
+        let (report, _) =
+            verify_chain_checked::<crate::audit::AuditEntry>(&path, "host-plane", &saved).await;
+        assert!(report.valid, "append-only growth must pass: {report:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn truncated_tail_is_detected() {
+        let dir = std::env::temp_dir().join("ckpt-truncate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("audit.log");
+
+        let logger = crate::audit::AuditLogger::new(path.clone());
+        for id in 1..=3u64 {
+            logger
+                .record(crate::audit::AuditEntry::allowed(id))
+                .await
+                .expect("record");
+        }
+        let (report, fresh) = verify_chain_checked::<crate::audit::AuditEntry>(
+            &path,
+            "host-plane",
+            &AuditCheckpoint::default(),
+        )
+        .await;
+        assert!(report.valid);
+        let saved = AuditCheckpoint {
+            chains: vec![fresh],
+        };
+
+        // ตัด entry ท้ายทิ้ง — chain ที่เหลือยัง valid ในตัวเอง แต่สั้นลง
+        let content = std::fs::read_to_string(&path).expect("read");
+        let mut lines: Vec<&str> = content.lines().collect();
+        lines.pop();
+        std::fs::write(&path, lines.join("\n") + "\n").expect("write");
+
+        let (report, _) =
+            verify_chain_checked::<crate::audit::AuditEntry>(&path, "host-plane", &saved).await;
+        assert!(!report.valid, "truncated tail must fail");
+        assert!(
+            report.error.as_deref().unwrap_or("").contains("truncation"),
+            "error must say truncation, got {:?}",
+            report.error
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn rewritten_history_is_detected() {
+        let dir = std::env::temp_dir().join("ckpt-rewrite");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("audit.log");
+
+        let logger = crate::audit::AuditLogger::new(path.clone());
+        for id in 1..=2u64 {
+            logger
+                .record(crate::audit::AuditEntry::allowed(id))
+                .await
+                .expect("record");
+        }
+        let (_, fresh) = verify_chain_checked::<crate::audit::AuditEntry>(
+            &path,
+            "host-plane",
+            &AuditCheckpoint::default(),
+        )
+        .await;
+        let saved = AuditCheckpoint {
+            chains: vec![fresh],
+        };
+
+        // เขียนประวัติใหม่จำนวนเท่าเดิมแต่เนื้อหาต่าง (hash เปลี่ยนหมด)
+        let logger2 = crate::audit::AuditLogger::new(path.clone());
+        let _ = std::fs::remove_file(&path);
+        for id in 11..=12u64 {
+            logger2
+                .record(crate::audit::AuditEntry::denied(id))
+                .await
+                .expect("record");
+        }
+
+        let (report, _) =
+            verify_chain_checked::<crate::audit::AuditEntry>(&path, "host-plane", &saved).await;
+        assert!(!report.valid, "rewritten history must fail");
+        assert!(
+            report.error.as_deref().unwrap_or("").contains("rewritten"),
+            "error must say rewritten, got {:?}",
+            report.error
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_save_load_round_trips() {
+        let dir = std::env::temp_dir().join("ckpt-roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("checkpoint.json");
+
+        let cp = checkpoint(7, "abc123");
+        cp.save(&path).await.expect("save");
+        let loaded = AuditCheckpoint::load(&path).await.expect("load");
+        assert_eq!(loaded, cp);
+
+        // ไฟล์ไม่มี = รอบแรก ไม่ใช่ error
+        let missing = AuditCheckpoint::load(&dir.join("nope.json")).await;
+        assert_eq!(missing, Ok(AuditCheckpoint::default()));
+
+        // ไฟล์เสีย = error (ผู้เรียกต้องเตือนแล้วตรวจต่อ ไม่ใช่ล้ม)
+        std::fs::write(dir.join("bad.json"), "{oops").expect("write");
+        assert!(AuditCheckpoint::load(&dir.join("bad.json")).await.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

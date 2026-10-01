@@ -14,6 +14,7 @@ struct VerifyAuditArgs {
     log_file: String,
     format: String,
     output: Option<String>,
+    checkpoint: Option<String>,
 }
 
 /// แยกวิเคราะห์อาร์กิวเมนต์ของ verify-audit
@@ -25,6 +26,7 @@ struct VerifyAuditArgs {
 ///   - `ank-cli verify-audit <log_file> --output <path>`
 ///   - `ank-cli verify-audit <log_file> --output=<path>`
 ///   - `ank-cli verify-audit <log_file> --format json --output <path>`
+///   - `ank-cli verify-audit <log_file> --checkpoint <path>` (จำ baseline ไว้จับ truncation รอบหน้า)
 ///
 /// คืน error ถ้า:
 ///   - ไม่มี log file
@@ -34,7 +36,7 @@ struct VerifyAuditArgs {
 fn parse_verify_audit_args(args: &[String]) -> Result<VerifyAuditArgs, String> {
     if args.is_empty() {
         return Err(
-            "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>]"
+            "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>] [--checkpoint <path>]"
                 .to_string(),
         );
     }
@@ -42,6 +44,7 @@ fn parse_verify_audit_args(args: &[String]) -> Result<VerifyAuditArgs, String> {
     let mut log_file: Option<String> = None;
     let mut format = "human".to_string();
     let mut output: Option<String> = None;
+    let mut checkpoint: Option<String> = None;
     let mut rest = args.iter().peekable();
 
     while let Some(arg) = rest.next() {
@@ -71,6 +74,14 @@ fn parse_verify_audit_args(args: &[String]) -> Result<VerifyAuditArgs, String> {
             } else {
                 return Err("--output requires a path".to_string());
             }
+        } else if let Some(value) = arg.strip_prefix("--checkpoint=") {
+            checkpoint = Some(value.to_string());
+        } else if arg == "--checkpoint" {
+            if let Some(value) = rest.next() {
+                checkpoint = Some(value.to_string());
+            } else {
+                return Err("--checkpoint requires a path".to_string());
+            }
         } else if !arg.starts_with('-') {
             if log_file.is_none() {
                 log_file = Some(arg.to_string());
@@ -86,7 +97,7 @@ fn parse_verify_audit_args(args: &[String]) -> Result<VerifyAuditArgs, String> {
 
     let Some(log_file) = log_file else {
         return Err(
-            "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>]"
+            "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>] [--checkpoint <path>]"
                 .to_string(),
         );
     };
@@ -95,6 +106,7 @@ fn parse_verify_audit_args(args: &[String]) -> Result<VerifyAuditArgs, String> {
         log_file,
         format,
         output,
+        checkpoint,
     })
 }
 
@@ -109,7 +121,9 @@ async fn main() -> Result<()> {
         println!("  ank-cli list-quarantine         Lists currently quarantined process IDs");
         println!("  ank-cli set-threshold <r> <d> [k] Sets T-Cell rate, deny & kill thresholds");
         println!("  ank-cli set-lsm-profile <name>  Switches active LSM profile");
-        println!("  ank-cli verify-audit <log> [--format human|json] [--output <path>]");
+        println!(
+            "  ank-cli verify-audit <log> [--format human|json] [--output <path>] [--checkpoint <path>]"
+        );
         println!("      Verifies the cryptographic hash chain of an audit log");
         return Ok(());
     }
@@ -203,9 +217,21 @@ async fn main() -> Result<()> {
 
             // ตรวจผ่าน ChainedLog::validate เสมอ ไม่เขียนอัลกอริทึมซ้ำตรงนี้ —
             // อัลกอริทึมสองชุดที่ "ควรจะเหมือนกัน" จะค่อย ๆ ต่างกันไปเอง
-            let chain = capability_security::verify_report::verify_chain_file::<
+            // ถ้ามี --checkpoint จะเทียบประวัติกับ baseline รอบก่อนด้วย เพื่อจับ
+            // truncation ที่ hash chain ล้วนมองไม่เห็น
+            let mut checkpoint = capability_security::verify_report::AuditCheckpoint::default();
+            if let Some(cp) = parsed.checkpoint.as_deref() {
+                let path = std::path::PathBuf::from(cp);
+                match capability_security::verify_report::AuditCheckpoint::load(&path).await {
+                    Ok(c) => checkpoint = c,
+                    Err(e) => {
+                        eprintln!("WARNING: {e}; verifying without checkpoint baseline")
+                    }
+                }
+            }
+            let (chain, fresh) = capability_security::verify_report::verify_chain_checked::<
                 capability_security::audit::AuditEntry,
-            >(&log_path, "host-plane")
+            >(&log_path, "host-plane", &checkpoint)
             .await;
             let mut report = capability_security::verify_report::VerifyReport::new(
                 "ank-cli verify-audit",
@@ -247,6 +273,16 @@ async fn main() -> Result<()> {
             }
 
             if report.valid {
+                if let Some(cp) = parsed.checkpoint.as_deref() {
+                    // บันทึก baseline ใหม่เฉพาะตอนผ่าน — ทับตอนพังเท่ากับรับรอง
+                    // ประวัติที่พังเป็น baseline รอบหน้า
+                    checkpoint.upsert(fresh);
+                    let path = std::path::PathBuf::from(cp);
+                    match checkpoint.save(&path).await {
+                        Ok(()) => eprintln!("Checkpoint updated: {}", path.display()),
+                        Err(e) => eprintln!("WARNING: {e}"),
+                    }
+                }
                 return Ok(());
             }
             for chain in &report.chains {

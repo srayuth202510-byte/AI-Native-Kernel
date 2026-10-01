@@ -2,7 +2,7 @@ use ai_gateway::{
     AppState, GatewayConfig, GatewayCore, build_router, entry::ApiAuditEntry, policy::PolicyFile,
     proxy::Upstream,
 };
-use capability_security::verify_report::{VerifyReport, verify_chain_file};
+use capability_security::verify_report::{AuditCheckpoint, VerifyReport, verify_chain_checked};
 use clap::{Parser, Subcommand};
 use semantic_guard::{DetectionMode, GuardConfig};
 use std::net::SocketAddr;
@@ -81,6 +81,10 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
 
+        /// Checkpoint file for truncation detection (created on first run)
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
+
         #[command(flatten)]
         args: Args,
     },
@@ -112,10 +116,16 @@ async fn main() -> std::process::ExitCode {
             dir,
             format,
             output,
+            checkpoint,
             args,
         }) => (
             merge_args(&cli.args, args),
-            Some((dir.clone(), format.clone(), output.clone())),
+            Some((
+                dir.clone(),
+                format.clone(),
+                output.clone(),
+                checkpoint.clone(),
+            )),
         ),
         None => (cli.args.clone(), None),
     };
@@ -135,9 +145,9 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    if let Some((dir_override, format, output)) = verify {
+    if let Some((dir_override, format, output, checkpoint)) = verify {
         let dir = dir_override.unwrap_or_else(|| config.audit_dir.clone());
-        verify_audit(dir, &format, output.as_ref()).await
+        verify_audit(dir, &format, output.as_ref(), checkpoint.as_ref()).await
     } else {
         serve(config).await
     }
@@ -307,6 +317,7 @@ async fn verify_audit(
     dir: PathBuf,
     format: &str,
     output: Option<&PathBuf>,
+    checkpoint_path: Option<&PathBuf>,
 ) -> std::process::ExitCode {
     if format != "human" && format != "json" {
         eprintln!("Unknown --format '{format}': expected human or json");
@@ -349,15 +360,28 @@ async fn verify_audit(
 
     // ตรวจทุก shard ผ่าน ChainedLog::validate แล้วรวมเป็นรายงานเดียว —
     // schema เดียวกับ `ank-cli verify-audit` เพื่อให้ SIEM ใช้ parser เดียว
+    // ถ้ามี --checkpoint จะเทียบประวัติกับ baseline รอบก่อนด้วย เพื่อจับ
+    // truncation ที่ hash chain ล้วนมองไม่เห็น
     files.sort();
+    let mut checkpoint = AuditCheckpoint::default();
+    if let Some(path) = checkpoint_path {
+        match AuditCheckpoint::load(path).await {
+            Ok(c) => checkpoint = c,
+            Err(e) => eprintln!("WARNING: {e}; verifying without checkpoint baseline"),
+        }
+    }
     let mut report = VerifyReport::new("ai-gateway verify-audit", &dir);
+    let mut fresh = AuditCheckpoint::default();
     for file in &files {
         let chain_id = file
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        report.push(verify_chain_file::<ApiAuditEntry>(file, &chain_id).await);
+        let (chain, entry) =
+            verify_chain_checked::<ApiAuditEntry>(file, &chain_id, &checkpoint).await;
+        fresh.upsert(entry);
+        report.push(chain);
     }
     if let Some(warning) = report.empty_log_warning() {
         eprintln!("WARNING: {warning}");
@@ -400,6 +424,14 @@ async fn verify_audit(
     }
 
     if report.valid {
+        if let Some(path) = checkpoint_path {
+            // บันทึก baseline ใหม่เฉพาะตอนผ่าน — ทับตอนพังเท่ากับรับรอง
+            // ประวัติที่พังเป็น baseline รอบหน้า
+            match fresh.save(path).await {
+                Ok(()) => eprintln!("Checkpoint updated: {}", path.display()),
+                Err(e) => eprintln!("WARNING: {e}"),
+            }
+        }
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::FAILURE
