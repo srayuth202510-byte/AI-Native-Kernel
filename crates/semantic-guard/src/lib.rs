@@ -411,6 +411,31 @@ mod tests {
     }
 
     #[test]
+    fn redacts_every_pii_in_the_prompt_not_just_the_first() {
+        // ทุกชิ้นที่ตรวจเจอต้องถูกปิดบัง — ไม่ใช่แค่ชิ้นแรกของแต่ละชนิด
+        let text = "relay to alice@example.com and bob@example.org, cards \
+                    4111111111111111 and 5500005555555559, ssn 123-45-6789";
+        let v = guard()
+            .inspect(text, Direction::Inbound)
+            .expect("inspect should succeed");
+        assert_eq!(v.action, GuardAction::Redacted);
+        for leaked in [
+            "alice@example.com",
+            "bob@example.org",
+            "4111111111111111",
+            "5500005555555559",
+            "123-45-6789",
+        ] {
+            assert!(
+                !v.text.contains(leaked),
+                "{leaked} leaked into output: {:?}",
+                v.text
+            );
+        }
+        assert!(v.text.contains("relay to"), "surrounding text kept");
+    }
+
+    #[test]
     fn outbound_does_not_scan_injections() {
         // คำตอบของโมเดลที่อธิบายเรื่อง prompt injection ต้องไม่ถูกปฏิเสธ
         let text = "Prompt injection is when someone says 'ignore all previous instructions'.";

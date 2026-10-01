@@ -241,9 +241,9 @@ impl PiiDetector {
             }
         }
 
-        // ชนิดเดียวกันอาจถูกจับทั้งจาก prefix ที่รู้จักและจาก entropy —
-        // เก็บเฉพาะผลที่แคบที่สุดเพื่อไม่ให้ redact ซ้อนกัน
-        dedup_by_kind(&mut findings);
+        // ชนิดเดียวกันอาจถูกจับทั้งจาก prefix ที่รู้จักและจาก entropy → รวมช่วงที่ซ้อนกัน
+        // ส่วนผลที่คนละตำแหน่งต้องถูกเก็บไว้ครบทุกชิ้น ไม่เช่นนั้น PII ชิ้นที่สองจะหลุด
+        dedup_overlapping(&mut findings);
         findings.sort_by_key(|f| (f.span.start, f.span.end));
         findings
     }
@@ -364,19 +364,48 @@ pub fn is_valid_ipv4(s: &str) -> bool {
     })
 }
 
-/// เก็บเฉพาะผลลัพธ์ที่แคบที่สุดต่อหนึ่งชนิด เพื่อไม่ให้ redact ซ้อนกัน
-fn dedup_by_kind(findings: &mut Vec<PiiFinding>) {
-    let mut best: BTreeMap<PiiKind, std::ops::Range<usize>> = BTreeMap::new();
-    for f in findings.iter() {
-        best.entry(f.kind)
-            .and_modify(|cur| {
-                if (f.span.end - f.span.start) < (cur.end - cur.start) {
-                    *cur = f.span.clone();
-                }
-            })
-            .or_insert_with(|| f.span.clone());
+/// รวมผลลัพธ์ที่ซ้อนกันในชนิดเดียวกัน และเก็บผลที่คนละตำแหน่งไว้ครบทุกชิ้น
+///
+/// เดิมฟังก์ชันนี้เก็บเฉพาะ span ที่แคบที่สุดต่อหนึ่ง `kind` เพื่อกัน redact ซ้อนกัน
+/// แต่การกรองด้วย `kind` อย่างเดียวทำให้ผลสองชิ้นที่ **คนละตำแหน่ง** ถูกทิ้งทั้งคู่ —
+/// PII ชิ้นที่สองหลุดออกไปโดยไม่ถูกปิดบัง ทั้งที่เป็นชนิดที่ค่าเริ่มต้น redact อยู่แล้ว
+///
+/// การแก้คือตัดเฉพาะตอนที่ซ้อนกันจริง ๆ และเก็บ span เป็นผลรวม ไม่ใช่ช่วงแคบ เพราะ
+/// ถ้าเก็บแค่ช่วงแคบ หางของ span กว้างจะหลุดจากการปิดบัง การรวมทำแยกตามชนิดเสมอ —
+/// ชนิดกำหนดทั้ง placeholder และ `should_redact` การรวมข้ามชนิดจึงอาจทำให้บัตรเครดิต
+/// ถูก span ชนิดที่ไม่ถูก redact กลืนไปด้วย
+fn dedup_overlapping(findings: &mut Vec<PiiFinding>) {
+    if findings.is_empty() {
+        return;
     }
-    findings.retain(|f| best.get(&f.kind) == Some(&f.span));
+
+    let mut by_kind: BTreeMap<PiiKind, Vec<PiiFinding>> = BTreeMap::new();
+    for f in findings.drain(..) {
+        by_kind.entry(f.kind).or_default().push(f);
+    }
+
+    let mut merged: Vec<PiiFinding> = Vec::new();
+    for (_, mut group) in by_kind {
+        group.sort_by_key(|f| (f.span.start, f.span.end));
+        let mut iter = group.into_iter();
+        // ป้องกัน unreachable โดยให้ compiler เห็นว่ากลุ่มมีอย่างน้อยหนึ่งรายการ
+        let Some(mut cur) = iter.next() else {
+            continue;
+        };
+        for f in iter {
+            if f.span.start < cur.span.end {
+                cur.span.end = cur.span.end.max(f.span.end);
+            } else {
+                merged.push(cur);
+                cur = f;
+            }
+        }
+        merged.push(cur);
+    }
+
+    // คืนลำดับตามตำแหน่งเริ่มต้นเพื่อให้ผลลัพธ์ทำนายได้และสอดคล้องกับผู้เรียก
+    merged.sort_by_key(|f| (f.span.start, f.span.end));
+    *findings = merged;
 }
 
 /// ผลลัพธ์ของการปิดบังข้อมูลส่วนบุคคล
@@ -569,6 +598,114 @@ mod tests {
         let found = detect(original);
         let report = redact_with(original, &found, Some(&|_| "X".to_string()));
         assert_eq!(report.text, "before X after");
+    }
+
+    // การปิดบังต้องครอบคลุมทุกชิ้นที่พบ ไม่ใช่แค่ชิ้นเดียวต่อหนึ่งชนิด
+    //
+    // ฟังก์ชันรวมผลลัพธ์เดิมกรองด้วย `kind` อย่างเดียว (เก็บ span ที่แคบที่สุด)
+    // ชิ้นที่สองของชนิดเดียวกันจึงถูกทิ้งทั้งคู่แม้จะคนละตำแหน่ง — ผลคือ PII ชิ้นที่สอง
+    // หลุดออกไปโดยไม่ถูกปิดบัง ทั้งที่เป็นชนิดที่ค่าเริ่มต้น redact อยู่แล้ว
+
+    #[test]
+    fn redacts_every_disjoint_email_not_just_one() {
+        let original = "reach alice@example.com and bob@example.org now";
+        let report = redact_with(original, &detect(original), Some(&|_| "X".to_string()));
+        assert!(
+            !report.text.contains("alice@example.com"),
+            "first email leaked: {:?}",
+            report.text
+        );
+        assert!(
+            !report.text.contains("bob@example.org"),
+            "second email leaked: {:?}",
+            report.text
+        );
+        assert_eq!(report.findings.len(), 2, "both must be reported as applied");
+    }
+
+    #[test]
+    fn redacts_every_disjoint_credit_card() {
+        // สองบัตรที่ผ่าน Luhn คนละตำแหน่ง ทั้งคู่อยู่ใน redact_kinds ของค่าเริ่มต้น
+        let original = "4111111111111111 and 5500005555555559";
+        let report = redact_with(original, &detect(original), Some(&|_| "X".to_string()));
+        assert!(
+            !report.text.contains("4111111111111111"),
+            "first card leaked: {:?}",
+            report.text
+        );
+        assert!(
+            !report.text.contains("5500005555555559"),
+            "second card leaked: {:?}",
+            report.text
+        );
+    }
+
+    #[test]
+    fn overlapping_same_kind_detections_merge_into_one_span() {
+        // prefix และ entropy อาจจับข้อความเดียวกันด้วย span ต่างกัน → ต้องเหลือ span เดียว
+        let mut findings = vec![
+            PiiFinding {
+                kind: PiiKind::ApiKey,
+                severity: Severity::High,
+                span: 0..24,
+                snippet: String::new(),
+            },
+            PiiFinding {
+                kind: PiiKind::ApiKey,
+                severity: Severity::High,
+                span: 4..20,
+                snippet: String::new(),
+            },
+        ];
+        dedup_overlapping(&mut findings);
+        assert_eq!(findings.len(), 1, "overlap must collapse: {findings:?}");
+        assert_eq!(findings[0].span, 0..24, "must keep the union of both spans");
+    }
+
+    #[test]
+    fn disjoint_same_kind_detections_are_all_kept() {
+        let mut findings = vec![
+            PiiFinding {
+                kind: PiiKind::ApiKey,
+                severity: Severity::High,
+                span: 0..8,
+                snippet: String::new(),
+            },
+            PiiFinding {
+                kind: PiiKind::ApiKey,
+                severity: Severity::High,
+                span: 40..48,
+                snippet: String::new(),
+            },
+        ];
+        dedup_overlapping(&mut findings);
+        assert_eq!(
+            findings.len(),
+            2,
+            "disjoint spans must both survive: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn overlapping_span_keeps_union_so_no_tail_escapes() {
+        // ช่วงกว้างครอบคลุมช่วงแคบบางส่วน — ถ้าเก็บแค่ช่วงแคบ หางของช่วงกว้างจะหลุด
+        let mut findings = vec![
+            PiiFinding {
+                kind: PiiKind::ApiKey,
+                severity: Severity::High,
+                span: 0..20,
+                snippet: String::new(),
+            },
+            PiiFinding {
+                kind: PiiKind::ApiKey,
+                severity: Severity::High,
+                span: 5..30,
+                snippet: String::new(),
+            },
+        ];
+        dedup_overlapping(&mut findings);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].span, 0..30, "union must cover both findings");
     }
 
     #[test]
