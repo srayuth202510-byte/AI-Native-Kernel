@@ -112,6 +112,12 @@ run_stage "P2P mesh slice" bash "$SCRIPT_DIR/run-p2p-tests.sh"
 run_stage "eBPF prerequisite check" non-blocking bash "$SCRIPT_DIR/check-ebpf-prereqs.sh"
 run_stage "rocksdb warm prereq check" bash "$SCRIPT_DIR/check-rocksdb-bench-prereqs.sh"
 run_stage "rocksdb warm benchmark compile" cargo bench -p context-memory --bench rocksdb_bench --features rocksdb-warm --no-run
+# งบ latency 2ms ของ data plane วัดได้เฉพาะ release เท่านั้น (ดู ai-gateway/tests/perf_budget.rs)
+# ใน debug เทสต์ถูก ignore อยู่แล้ว จึงต้องรันแยกจาก debug test suite ไม่เช่นนั้นไม่มีอะไรถูกตรวจ
+# ใช้ non-blocking เพราะ shared runner ไม่นิ่งพอสำหรับ latency assertion —
+# ถ้าพังเฉพาะบน runner จะได้ WARN ให้สืบสวนแทนที่จะบล็อกทั้ง pipeline
+run_stage "data plane latency budget (release)" non-blocking \
+    cargo test -p ai-gateway --release --test perf_budget -- --test-threads=1 --nocapture
 run_stage "release build" cargo build --release
 
 if [[ "$FAIL_COUNT" -gt 0 ]]; then
