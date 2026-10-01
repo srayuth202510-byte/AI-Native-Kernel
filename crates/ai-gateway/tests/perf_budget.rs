@@ -15,17 +15,20 @@
 //! แต่ละชั้นวัดแยกกัน เพราะเมื่อรวมกันจะไม่รู้ว่าตัวไหนกินเวลา — และถ้าอัปสตรีมในอนาคต
 //! ชั้นไหนช้าลง เราต้องชี้ชั่วได้โดยไม่ต้องไล่หาทั้ง pipeline
 //!
-//! **สิ่งที่ไม่อยู่ในไฟล์นี้:** การเขียน audit log ถูก `tokio::spawn` แยกออกไปแล้ว
-//! (`routes.rs` เขียน audit ใน background task) จึงไม่อยู่ในเส้นทางวิกฤตของ request
-//! และไม่ถูกนับในงบ 2ms — การวัดมันต้องเป็น throughput test แยก เพราะมันผูกกับ
-//! disk flush ไม่ใช่ CPU
+//! **การเขียน audit อยู่บนเส้นทาง request ไม่ใช่ background** — `inspect_request` เรียก
+//! `record_audit().await` inline (`lib.rs`) ซึ่งเป็น file append + flush ใต้ per-tenant
+//! mutex ทุก request และ fail-closed ถ้าเขียนไม่ได้ ดังนั้นเทสต์
+//! `budget_inspect_request_including_audit_*` จึงวัดเส้นทางจริงครบทุกอย่าง ส่วนอีกเทสต์
+//! ที่ชื่อ "CPU layers only" จงใจตัด audit ออกเพื่อแยกให้เห็นว่า disk กินส่วนแบ่งแค่ไหน
 #![deny(unsafe_code)]
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use ai_gateway::policy::TenantCredential;
-use ai_gateway::{DataPlanePolicy, Endpoint, RequestSummary, TenantPolicy};
+use ai_gateway::{
+    DataPlanePolicy, Endpoint, GatewayConfig, GatewayCore, RequestSummary, TenantPolicy,
+};
 use extraction_det::ExtractionDetector;
 use semantic_guard::{Direction, Guard, GuardAction, GuardConfig};
 
@@ -220,17 +223,20 @@ fn budget_request_summary_parse_p99_within_budget() {
     report("request summary parse", &mut latencies, GUARD_BUDGET);
 }
 
-/// ---- รวมสามชั้นตามลำดับจริงใน gateway ----
+/// ---- รวมสามชั้นตามลำดับจริงใน gateway (เฉพาะ CPU, ไม่รวมการเขียน audit) ----
 ///
 /// เอกสารบังคับลำดับ ยืนยันตัวตน → ตรวจสิทธิ์ → ตรวจข้อมูล → ตรวจการขโมยโมเดล
 /// เทสต์นี้ยืนยันว่าลำดับนั้นรวมกันแล้วยังอยู่ในงบเดียวกัน ไม่ใช่แค่แต่ละชั้น
 /// ผ่านแยกกันแล้วพอกัน
+///
+/// จงใจ**ไม่**เรียก `GatewayCore` เพราะต้องการ isolate ต้นทุน CPU ล้วน — เส้นทางจริง
+/// ที่มีการเขียน audit อยู่ใน `budget_inspect_request_including_audit_p99_within_budget`
 #[test]
 #[cfg_attr(
     debug_assertions,
     ignore = "perf budget is only meaningful in --release; debug regex/MinHash exceeds 2ms"
 )]
-fn budget_full_enforcement_pipeline_p99_within_budget() {
+fn budget_cpu_layers_only_p99_within_budget() {
     let policy = bench_policy();
     let guard_cfg = GuardConfig::default();
     let guard = Guard::with_config(guard_cfg).expect("guard must build");
@@ -270,8 +276,94 @@ fn budget_full_enforcement_pipeline_p99_within_budget() {
     }
 
     report(
-        "full pipeline (auth+authorize+parse+guard+extraction)",
+        "CPU layers only (auth+authorize+parse+guard+extraction, no audit write)",
         &mut latencies,
         GUARD_BUDGET,
     );
+}
+
+/// ---- เส้นทาง request จริงครบทุกอย่าง รวมการเขียน audit ----
+///
+/// `GatewayCore::inspect_request` คือฟังก์ชันที่ handler เรียกจริง: ยืนยันตัวตน →
+/// ตรวจสิทธิ์ → ถอด body → ตรวจข้อมูล → ตรวจการขโมยโมเดล → **เขียน audit chain**
+/// การเขียน audit เป็น `record_audit().await` แบบ inline (`lib.rs`) ไม่ใช่
+/// background task ดังนั้น file append + flush จึงอยู่ในตัวเลขนี้ด้วย
+///
+/// นี่คือตัวเลขที่ต้องเทียบกับงบ 2ms เพราะเป็นสิ่งที่ request จริงต้องจ่าย
+#[cfg_attr(
+    debug_assertions,
+    ignore = "perf budget is only meaningful in --release; debug regex/MinHash exceeds 2ms"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn budget_inspect_request_including_audit_p99_within_budget() {
+    let audit_dir = std::env::temp_dir().join(format!(
+        "ai-gw-perf-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let config = GatewayConfig {
+        audit_dir: audit_dir.clone(),
+        guard_enabled: true,
+        extraction_enabled: true,
+        ..GatewayConfig::default()
+    };
+    let core = GatewayCore::new(config, bench_policy(), None, None)
+        .await
+        .expect("core must build with audit dir");
+
+    let header = "Bearer sk-bench-key-000000000000";
+    let body = r#"{"model":"demo-model","messages":[
+        {"role":"user","content":"ada@example.com reported card 4111 1111 1111 1111 on 123-45-6789"}
+    ]}"#;
+    let mut latencies = Vec::with_capacity(SAMPLES);
+
+    for i in 0..SAMPLES {
+        let start = Instant::now();
+        let inspection = core
+            .inspect_request(
+                Some(header),
+                Endpoint::ChatCompletions,
+                "demo-model",
+                body,
+                i as u64 * 10,
+            )
+            .await
+            .expect("request must pass enforcement");
+        latencies.push(start.elapsed());
+        assert!(
+            matches!(
+                inspection.decision,
+                ai_gateway::ApiDecision::Allow | ai_gateway::ApiDecision::Redacted
+            ),
+            "unexpected decision {:?}",
+            inspection.decision
+        );
+    }
+
+    // พิสูจน์ว่า audit เขียนจริง — ถ้า chain ว่าง แปลว่าตัวเลขที่วัดได้ไม่ได้รวม disk
+    let files: Vec<_> = std::fs::read_dir(&audit_dir)
+        .map(|it| {
+            it.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(!files.is_empty(), "audit chain file must exist");
+    let lines = std::fs::read_to_string(&files[0])
+        .expect("read audit log")
+        .lines()
+        .count();
+    assert_eq!(lines, SAMPLES, "every request must be audited on path");
+
+    report(
+        "inspect_request (auth+parse+guard+extraction+audit write)",
+        &mut latencies,
+        GUARD_BUDGET,
+    );
+
+    let _ = std::fs::remove_dir_all(&audit_dir);
 }

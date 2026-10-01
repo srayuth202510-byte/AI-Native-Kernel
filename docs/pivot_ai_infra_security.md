@@ -189,24 +189,33 @@ Therefore:
 `crates/ai-gateway/tests/perf_budget.rs` — `cargo test -p ai-gateway --release --test
 perf_budget -- --nocapture --test-threads=1`. Numbers are on this dev box, not a vLLM host;
 treat them as a regression tripwire, not as a published benchmark. P99 varies run to run
-(observed full-pipeline P99 across runs: 10.3–12.2 µs), so the ordering of layers is the
-durable result, not the third digit.
+(observed across runs: CPU-only path 10.3–12.2 µs, full request path 36–52 µs), so the
+ordering of layers is the durable result, not the third digit.
 
 | Layer | P50 | P99 | Max |
 |---|---|---|---|
-| auth + authorize | ~0.17 µs | ~0.24 µs | ~0.8 µs |
-| request summary parse (JSON) | ~0.67 µs | ~0.78 µs | ~5 µs |
-| guard, clean text | ~1.99 µs | ~2.06 µs | ~103 µs |
-| guard, PII redaction | ~4.50 µs | ~6.74 µs | ~252 µs |
-| extraction-det `observe` | ~1.89 µs | ~5.66 µs | ~11 µs |
-| **full pipeline** | **~6.0 µs** | **~11 µs** | **~208 µs** |
+| auth + authorize | ~0.28 µs | ~0.30 µs | ~1 µs |
+| request summary parse (JSON) | ~0.74 µs | ~1.16 µs | ~10 µs |
+| guard, clean text | ~1.93 µs | ~2.03 µs | ~101 µs |
+| guard, PII redaction | ~4.48 µs | ~4.69 µs | ~241 µs |
+| extraction-det `observe` | ~1.86 µs | ~2.49 µs | ~10 µs |
+| CPU layers only (no audit write) | ~5.9 µs | ~11.8 µs | ~206 µs |
+| **`inspect_request`, everything incl. audit write** | **~23 µs** | **~36–52 µs** | **~380–550 µs** |
 
-Full enforcement path is ~180x under the 2 ms budget, so the added gateway hop is not
-inference-bound. Three caveats: the redaction path is ~2.3x the clean path because it
-allocates and copies a rewritten string; the max outliers (~100–250 µs) are scheduler
-noise on a shared dev box, not guard work; and audit-log writes are `tokio::spawn`ed off the
-request path so they are *not* covered here — bounding them is a separate throughput
-question, not a latency one.
+The last row is the one that matters: `inspect_request` is what the handler actually calls,
+and it writes the per-tenant audit chain **inline** — `record_audit().await` is on the request
+path, not spawned to a background task, and it fails closed if the write fails. Audit write
+costs ~17–40 µs on top of the CPU-only path (measured as the delta between the last two rows),
+so the full request path sits ~40x under the 2 ms budget even at the worst P99 observed
+across runs.
+
+Caveats: the redaction path is ~2.2x the clean path because it allocates and copies a
+rewritten string; the max outliers (~100–550 µs) are scheduler noise on a shared dev box, not
+guard work; and `ChainedLog` calls `flush()` without `fsync`, so these numbers cover a
+page-cache write, not durable-to-disk — on a slow or loaded volume the tail will move.
+Concurrent tenants do not block each other (per-tenant `DashMap` shard + per-chain mutex), but
+concurrent requests *to the same tenant* serialize on that chain lock, which is not exercised
+by this single-stream test.
 
 ## 7. Migration order
 
@@ -236,10 +245,14 @@ an axum/TLS/SSE stack.
 Stated up front so we can watch the signals:
 
 1. **Latency.** If the added P99 exceeds ~2 ms in a real vLLM deployment, buyers reject it
-   regardless of features. **Measured** — see "Measured" above: full pipeline P99 is ~11 µs
-   in release, ~180x under budget, and the per-layer tests fail the build if that regresses.
-   Not yet validated against a real vLLM host with TLS and concurrent tenants, which is where
-   the tail could still move.
+   regardless of features. **Measured** — see "Measured" above: the full `inspect_request`
+   path including its inline audit write is 36–52 µs P99 in release, ~40x under budget at the
+   worst observed run, and the
+   per-layer tests assert that budget on every release run. Caveat: the CI stage runs it
+   `non-blocking`, so a regression surfaces as `WARN` rather than a red build — it will not
+   actually block a merge until that stage is flipped to `required`. Still not validated
+   against a real vLLM host with TLS and concurrent tenants, which is where the tail could
+   still move.
 2. **The PII/signature layer gets dismissed as "just regex."** It probably will be. The
    answer is the host plane — the regex layer is the on-ramp, not the pitch.
 3. **eBPF/LSM deployment friction.** Requiring privileged, kernel-specific setup to get
