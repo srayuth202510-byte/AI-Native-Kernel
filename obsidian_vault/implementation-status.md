@@ -87,6 +87,7 @@ Last verified: 2026-07-11 — **519 tests pass** (4 ignored, Qdrant-backed — n
 - **[ANK-033] Immune System: B-Cell Agent (Pattern Learning)**: B-Cell Agent สำหรับเรียนรู้ attack patterns จาก T-Cell reports และสร้าง Antibody Rules (LSM policy). 3 tests ผ่าน.
 - **[ANK-034] Immune System: Cytokine Signal (Critical Broadcast)**: Cytokine Signal สำหรับ broadcast ข้อความวิกฤต (Emergency/Critical/Warning/Info) ไปยัง Agents ทุกตัวผ่าน IntentBus. 3 tests ผ่าน.
 - **[ANK-051] Closed-Loop Immune System Feedback + T-Cell Enhancements**: T-Cell ส่ง threat report ผ่าน IntentBus → B-Cell อ่านและสร้าง AntibodyRules (LSM policy) โดยอัตโนมัติ; T-Cell เพิ่ม anomaly_score, syscall_history, dynamic thresholds, quarantine expiry.
+- **[ANK-065] Multi-tenant Keys for Immune Tcell**: ปรับ immune-system::tcell ให้ใช้ tenant_id แทน PID เป็นมิติหลักของการตรวจจับผิดปกติ เพราะผู้โจมตีสามารถสร้าง process ใหม่ได้ไม่จำกัดแต่ไม่สามารถสร้าง credential ใหม่ได้ง่ายนักเท่า ต้องรักษาความสามารถในการตรวจจับซ้ำชั้น (defense in depth) ไว้ และย้ายการจำกัดอัตราต่อ PID ไปเป็นต่อผู้เช่า
 
 ### infra
 
@@ -139,7 +140,7 @@ Last verified: 2026-07-11 — **519 tests pass** (4 ignored, Qdrant-backed — n
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-- **[ANK-065] Multi-tenant Keys for Immune Tcell** (todo, med): ปรับ immune-system::tcell ให้ใช้ tenant_id แทน PID เป็นมิติหลักของการตรวจจับผิดปกติ เพราะผู้โจมตีสามารถสร้าง process ใหม่ได้ไม่จำกัดแต่ไม่สามารถสร้าง credential ใหม่ได้ง่ายนักเท่า ต้องรักษาความสามารถในการตรวจจับซ้ำชั้น (defense in depth) ไว้ และย้ายการจำกัดอัตราต่อ PID ไปเป็นต่อผู้เช่า
+
 <!-- NOT_IMPLEMENTED_YET_END -->
 
 ## Validation Status

@@ -314,11 +314,11 @@ Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `sc
 | ANK-062 | Semantic Guard: Prompt Injection & PII Redaction | semantic-guard | ✅ done (77 tests) |
 | ANK-063 | AI Gateway Pass-Through Proxy | ai-gateway | ✅ done (104 tests) |
 | ANK-064 | Wire Guard / Extraction / Audit Enforcement | ai-gateway | ✅ done |
-| ANK-065 | Multi-tenant Keys for Immune Tcell | immune-system | 📋 todo |
-| ANK-066 | `verify-audit` & Audit Export | capability-security | 🚧 in_progress — มี verify-audit แล้วทั้งสอง plane; ขาด JSON export สำหรับ SIEM |
+| ANK-065 | Multi-tenant Keys for Immune Tcell | immune-system | ✅ done |
+| ANK-066 | `verify-audit` & Audit Export | capability-security | ✅ done — JSON export ทั้งสอง plane + golden-shape test |
 | ANK-067 | Reposition Docs & README for AI Security Pivot | infra | ✅ done |
 
-งานที่เหลือของ Phase 1 อยู่ที่ ANK-065 (tenant key ใน `tcell.rs` ยังใช้ PID เป็นมิติหลัก) และส่วน export ของ ANK-066 — ดู `docs/pivot_ai_infra_security.md` §7 สำหรับลำดับการดำเนินการ
+งาน Phase 1 ครบทั้ง 8 ขั้นตอนแล้ว — ดู `docs/pivot_ai_infra_security.md` §7 สำหรับรายละเอียด
 
 ---
 

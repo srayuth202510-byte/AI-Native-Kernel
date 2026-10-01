@@ -708,7 +708,7 @@
     "type": "task",
     "title": "Multi-tenant Keys for Immune Tcell",
     "desc": "ปรับ immune-system::tcell ให้ใช้ tenant_id แทน PID เป็นมิติหลักของการตรวจจับผิดปกติ เพราะผู้โจมตีสามารถสร้าง process ใหม่ได้ไม่จำกัดแต่ไม่สามารถสร้าง credential ใหม่ได้ง่ายนักเท่า ต้องรักษาความสามารถในการตรวจจับซ้ำชั้น (defense in depth) ไว้ และย้ายการจำกัดอัตราต่อ PID ไปเป็นต่อผู้เช่า",
-    "status": "todo",
+    "status": "done",
     "priority": "med",
     "module": "immune-system",
     "assignee": "AI",

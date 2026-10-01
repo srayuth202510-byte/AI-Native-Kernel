@@ -1,7 +1,7 @@
 # Pivot: AI-Native Kernel → AI Infrastructure Security Platform
 
-> Status: **accepted — in execution.** Committed 2026-09; Phase 1 steps 1–5, 7, 8 of §7
-> are shipped (step 6, tenant-keyed T-Cell, remains). Supersedes the "AI agent kernel" positioning in `README.md` /
+> Status: **accepted — in execution.** Committed 2026-09; Phase 1 steps 1–8 of §7
+> are shipped. Supersedes the "AI agent kernel" positioning in `README.md` /
 > `docs/ai_native_kernel_plan_v2.html`. The kernel code is **retained**, not replaced.
 >
 > Step-to-task mapping and current state live in `docs/tasks.json` (ANK-060..067) and
@@ -68,7 +68,7 @@ built.
 | `capability-security/src/policy.rs` | Fail-closed principle | Keep for host plane. **Do not reuse** for data plane (§4). |
 | `capability-security/src/uds_auth.rs` | Admin/control auth (token file, session TTL, capability map) | Keep. Pattern is correct. |
 | `capability-security/src/token.rs` | Host-plane identity | Keep, host plane only. |
-| `immune-system/src/tcell.rs` | Per-tenant rate/anomaly detection, revocation | **Adapt** — currently keyed by `pid` + syscall rate (`tcell.rs:389`). Needs a tenant/request key. |
+| `immune-system/src/tcell.rs` | Per-tenant rate/anomaly detection, revocation | **Adapted** — now keyed by `tenant_id` (`DashMap<String, TenantState>`); PID retained for quarantine/kill actions. |
 | `kernel-companion/src/ebpf/lsm-security.bpf.c` | Host-plane enforcement of the model server | Keep, unchanged. |
 | `kernel-companion/src/metrics_server.rs` | Prometheus/OTel | Keep. |
 | `compute-scheduler/src/vllm.rs` | Existing vLLM client — becomes the passthrough backend | Keep. |
@@ -231,7 +231,7 @@ Each step is independently shippable and independently revertable.
 | 3 | Add `semantic-guard` PII + signature engine | ANK-062 | ✅ | Corpus in `tests/fixtures/`; adversarial redaction fixtures (unicode, zero-width) |
 | 4 | Add `ai-gateway` pass-through, no guard | ANK-063 | ✅ | OpenAI-SDK conformance test against a mock upstream; SSE frame-for-frame |
 | 5 | Wire guard + extraction-det + sharded audit into the gateway | ANK-064 | ✅ | End-to-end: denied request appears in the chain, `verify-audit` passes |
-| 6 | Adapt `tcell.rs` to tenant keys | ANK-065 | 📋 | Existing host-plane behavior unchanged (property tests) |
+| 6 | Adapt `tcell.rs` to tenant keys | ANK-065 | ✅ | `DashMap<tenant, TenantState>`; rate/anomaly per tenant, quarantine per PID; `uid_to_tenant` mapping in config |
 | 7 | `ank verify-audit` + audit export | ANK-066 | ✅ | Same JSON schema on both planes (`capability_security::verify_report`); golden-shape test pins field names |
 | 8 | Reposition docs/README | ANK-067 | ✅ | — |
 
