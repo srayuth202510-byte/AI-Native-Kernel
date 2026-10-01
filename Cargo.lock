@@ -610,6 +610,7 @@ name = "context-memory"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "capability-security",
  "criterion",
  "fastrand",
  "futures",
