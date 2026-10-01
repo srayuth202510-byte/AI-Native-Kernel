@@ -279,6 +279,24 @@ where
     S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
     E: std::fmt::Display + Send + 'static,
 {
+    guard_stream_prefix_with_report(inner, prefix_len, guard, None)
+}
+
+/// `guard_stream_prefix` รุ่นที่รายงานผลตรวจ prefix กลับมา
+///
+/// เมื่อตรวจ prefix สำเร็จ จะเก็บ [`ResponseInspection`] ลง `report` ก่อนปล่อย bytes
+/// แรก เพื่อให้ผู้เรียก (เช่น SSE handler) บันทึก audit ได้ตรงกับสิ่งที่ตรวจจริง
+/// ถ้าตรวจไม่สำเร็จ สตรีมจะ yield `Err` ตามปกติและ `report` จะไม่มีค่า
+pub fn guard_stream_prefix_with_report<S, E>(
+    inner: S,
+    prefix_len: usize,
+    guard: Option<Arc<Guard>>,
+    report: Option<Arc<std::sync::Mutex<Option<ResponseInspection>>>>,
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, GatewayError>> + Send>>
+where
+    S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
     let state = GuardState::<S, E> {
         inner,
         _err: std::marker::PhantomData,
@@ -286,6 +304,7 @@ where
         prefix_len: prefix_len.max(1),
         phase: Phase::Gathering,
         guard,
+        report,
     };
 
     Box::pin(futures::stream::unfold(state, |mut st| async move {
@@ -307,7 +326,14 @@ where
 
                 let gathered = Bytes::from(std::mem::take(&mut st.buffer));
                 let (out, inspection) = match inspect_buffered(st.guard.as_deref(), &gathered) {
-                    Ok(v) => v,
+                    Ok((out, inspection)) => {
+                        if let Some(slot) = st.report.as_ref() {
+                            if let Ok(mut guard) = slot.lock() {
+                                *guard = Some(inspection.clone());
+                            }
+                        }
+                        (out, inspection)
+                    }
                     Err(e) => {
                         // ตรวจไม่สำเร็จ = ไม่รู้ว่าข้างในมีอะไร จึงกลืน bytes ทั้งหมดไว้
                         // แล้ววางยาสตรีมให้ poll ถัดไปจบลงทันที — บันทึกแค่ขนาด ไม่บันทึก
@@ -351,6 +377,7 @@ struct GuardState<S, E> {
     prefix_len: usize,
     phase: Phase,
     guard: Option<Arc<Guard>>,
+    report: Option<Arc<std::sync::Mutex<Option<ResponseInspection>>>>,
 }
 
 /// ค่า `content-type` ที่ปลอดภัย หรือค่าเริ่มต้น
@@ -641,5 +668,56 @@ mod tests {
             "oversize prefix must surface as a guard error, got {first:?}"
         );
         assert!(guarded.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_reports_prefix_verdict_for_audit() {
+        // slot ต้องได้ผลตรวจจริง (Redacted) ไม่ใช่ Clean ที่เดาเอา — มิฉะนั้น audit
+        // ของ SSE จะบันทึก Clean ทั้งที่เนื้อหาถูกปิดบังไปแล้ว
+        // (prefix 64 ครอบคลุม email ทั้งอัน — ถ้าตัดกลางคำจะไม่มี PII ที่สมบูรณ์ให้ตรวจ)
+        let report = Arc::new(std::sync::Mutex::new(None));
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(b"data: {\"email\":\"bo")),
+            Ok(Bytes::from_static(b"b@example.com\"}\n\n")),
+        ];
+        let mut guarded = guard_stream_prefix_with_report(
+            futures::stream::iter(chunks),
+            64,
+            Some(Arc::new(guard())),
+            Some(Arc::clone(&report)),
+        );
+
+        let first = guarded.next().await.expect("stream yields").expect("ok");
+        assert!(
+            !String::from_utf8_lossy(&first).contains("bob@example.com"),
+            "prefix PII must be redacted before release"
+        );
+        let verdict = report.lock().ok().and_then(|guard| guard.clone());
+        assert!(
+            matches!(verdict, Some(ResponseInspection::Redacted { .. })),
+            "report slot must hold the real Redacted verdict, got {verdict:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_leaves_report_empty_when_inspection_fails() {
+        // ตรวจไม่ผ่านต้องไม่มี verdict ค้างใน slot — ผู้เรียกแยกแยะได้จาก Err
+        let report = Arc::new(std::sync::Mutex::new(None));
+        let chunks: Vec<Result<Bytes, std::io::Error>> =
+            vec![Ok(Bytes::from_static(b"secret payload here"))];
+        let mut guarded = guard_stream_prefix_with_report(
+            futures::stream::iter(chunks),
+            8,
+            Some(Arc::new(failing_guard())),
+            Some(Arc::clone(&report)),
+        );
+
+        let first = guarded.next().await.expect("stream yields");
+        assert!(first.is_err(), "failed inspection must surface as error");
+        let verdict = report.lock().ok().and_then(|guard| guard.clone());
+        assert!(
+            verdict.is_none(),
+            "no verdict may be recorded on failure, got {verdict:?}"
+        );
     }
 }

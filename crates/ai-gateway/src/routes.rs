@@ -309,41 +309,58 @@ async fn handle(
 
     if proxy::is_event_stream(&upstream_response) {
         // กัน prefix ไว้ตรวจก่อนปล่อย แล้วปล่อยที่เหลือทันที
-        let stream = proxy::guard_stream_prefix(
+        let prefix_report = Arc::new(std::sync::Mutex::new(None));
+        let stream = proxy::guard_stream_prefix_with_report(
             upstream_response.bytes_stream(),
             state.upstream.prefix_bytes(),
             state.guard.clone(),
+            Some(Arc::clone(&prefix_report)),
         );
 
-        // สำหรับ SSE ต้องบันทึก audit หลังสตรีมจบ — wrap stream เพื่อบันทึกเมื่อจบ
+        // สำหรับ SSE ต้องบันทึก audit หลังตรวจ prefix — wrap stream เพื่อบันทึกเมื่อจบ
+        // บันทึกทันทีที่เห็น chunk แรก (ซึ่งคือ prefix ที่ตรวจแล้ว) หรือ error จาก
+        // การตรวจ เพราะ downstream อาจหยุด poll หลัง error แล้วโค้ดท้ายสตรีมจะไม่รัน
         let tenant_id = inspection.audit.tenant_id.clone();
         let core = state.core.clone();
         let base_audit = inspection.audit.clone();
 
-        let stream = async_stream::stream! {
+        let stream = stream! {
             let mut audit_recorded = false;
-            let mut final_inspection = ResponseInspection::Clean;
 
             for await chunk in stream {
-                if let Ok(ref bytes) = chunk {
-                    // ตรวจสอบว่า chunk นี้เป็น chunk สุดท้ายหรือไม่ (SSE ends with "data: [DONE]\n\n")
-                    let is_done = bytes.windows(6).any(|w| w == b"[DONE]");
-                    if is_done && !audit_recorded {
-                        // บันทึก audit หลังสตรีมจบ
-                        let response_audit = response_audit_entry(
-                            base_audit.clone(),
-                            &final_inspection,
-                        );
-                        let _ = core.record_audit(&tenant_id, response_audit).await;
-                        audit_recorded = true;
+                if !audit_recorded {
+                    match &chunk {
+                        Err(GatewayError::Guard(_)) | Err(GatewayError::Denied(_)) => {
+                            // ตรวจ prefix ไม่ผ่าน — บันทึก Deny ทันทีก่อน yield error
+                            // เพราะ downstream อาจหยุด poll แล้วไม่กลับมาอีก
+                            let mut denied_audit = base_audit.clone();
+                            denied_audit.decision = ApiDecision::Deny;
+                            denied_audit.reason = "response_inspection_failed".to_string();
+                            let _ = core.record_audit(&tenant_id, denied_audit).await;
+                            audit_recorded = true;
+                        }
+                        Ok(_) => {
+                            // chunk แรกคือ prefix ที่ตรวจแล้ว — อ่านผลจาก slot
+                            let prefix_inspection = prefix_report
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.clone())
+                                .unwrap_or(ResponseInspection::Clean);
+                            let response_audit =
+                                response_audit_entry(base_audit.clone(), &prefix_inspection);
+                            let _ = core.record_audit(&tenant_id, response_audit).await;
+                            audit_recorded = true;
+                        }
+                        _ => {}
                     }
                 }
                 yield chunk;
             }
 
-            // Fallback: ถ้าสตรีมจบโดยไม่มี [DONE] marker
+            // Fallback: สตรีมว่างเปล่า (ไม่มี chunk เลย) — บันทึก Clean เพื่อไม่ให้หาย
             if !audit_recorded {
-                let response_audit = response_audit_entry(base_audit, &final_inspection);
+                let response_audit =
+                    response_audit_entry(base_audit, &ResponseInspection::Clean);
                 let _ = core.record_audit(&tenant_id, response_audit).await;
             }
         };
@@ -630,5 +647,111 @@ mod tests {
         let audit = ApiAuditEntry::new("acme", "r1", "chat_completions", "gpt-x");
         let out = response_audit_entry(audit, &ResponseInspection::Clean);
         assert_eq!(out.decision, ApiDecision::Allow);
+    }
+
+    /// mock upstream ที่ตอบ SSE คงที่ — ผูกพอร์ตอิสระ รับหนึ่ง connection แล้วปิด
+    async fn mock_sse_upstream(body: &'static str) -> (tokio::task::JoinHandle<()>, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = vec![0u8; 8192];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            tokio::io::AsyncWriteExt::write_all(&mut socket, resp.as_bytes())
+                .await
+                .expect("write mock response");
+            let _ = tokio::io::AsyncWriteExt::shutdown(&mut socket).await;
+        });
+        (task, format!("http://{addr}"))
+    }
+
+    fn state_with_guard(dir: &str, upstream_url: &str) -> AppState {
+        let config = crate::GatewayConfig {
+            audit_dir: std::env::temp_dir().join(format!("gw-routes-{dir}")),
+            policy_file: std::env::temp_dir().join("unused.json"),
+            guard_enabled: true,
+            extraction_enabled: false,
+            ..crate::GatewayConfig::default()
+        };
+        // งบ guard ขยายเฉพาะเทสต์ (แบบเดียวกับ core tests) เพราะ 2ms ของ
+        // production ไม่เสถียรใน debug build
+        let guard_cfg = semantic_guard::GuardConfig {
+            budget: Duration::from_secs(30),
+            ..semantic_guard::GuardConfig::default()
+        };
+        let tenants = vec![TenantPolicy {
+            tenant_id: "acme".to_string(),
+            allowed_endpoints: ["chat_completions", "embeddings"].into_iter().collect(),
+            allowed_models: ["gpt-x".to_string()].into_iter().collect(),
+            max_concurrent: 10,
+            suspended: false,
+        }];
+        let creds = vec![TenantCredential {
+            tenant_id: "acme".to_string(),
+            key: b"secret-key".to_vec(),
+            expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
+        }];
+        let policy = DataPlanePolicy::new(tenants, creds);
+        let core = futures::executor::block_on(GatewayCore::new(
+            config,
+            policy,
+            Some(guard_cfg.clone()),
+            None,
+        ))
+        .expect("core");
+        let guard = Guard::with_config(guard_cfg).expect("guard");
+        let upstream = Upstream::new(upstream_url, Duration::from_secs(5), 4096).expect("upstream");
+        AppState {
+            core: Arc::new(core),
+            upstream,
+            guard: Some(Arc::new(guard)),
+        }
+    }
+
+    #[tokio::test]
+    async fn sse_response_audit_is_persisted() {
+        // end-to-end ของ B-1: response ที่ถูก redact ต้องมี audit entry ใน chain
+        // ไม่ใช่แค่ส่งกลับให้ client แล้วทิ้ง
+        let sse_body = "data: {\"email\":\"bob@example.com\"}\n\ndata: [DONE]\n\n";
+        let (_mock, url) = mock_sse_upstream(sse_body).await;
+        let state = state_with_guard("sse-audit", &url);
+
+        let resp = handle(
+            state,
+            auth_header(),
+            Bytes::from_static(BODY.as_bytes()),
+            Endpoint::ChatCompletions,
+        )
+        .await
+        .expect("sse request should succeed");
+
+        // ดึง body จนจบเพื่อให้ audit wrapper ทำงานครบ
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("bob@example.com"),
+            "response PII must be redacted, got {text:?}"
+        );
+
+        let audit_file = std::env::temp_dir().join("gw-routes-sse-audit/acme.jsonl");
+        let content = std::fs::read_to_string(&audit_file).expect("audit chain written");
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(
+            lines.len() >= 2,
+            "request + response entries expected, got {}",
+            lines.len()
+        );
+        assert!(
+            content.contains("pii_redacted_in_response"),
+            "response redaction must be audited, got {content:?}"
+        );
     }
 }
