@@ -78,6 +78,7 @@ Last verified: 2026-07-11 — **519 tests pass** (4 ignored, Qdrant-backed — n
 - **[ANK-048] Security Metrics / Prometheus Counters**: SecurityMetrics struct พร้อม Prometheus counters: tokens_issued_total, token_validation_failures_total, policy_decisions_total (allow/deny labels), audit_entries_total. ลงทะเบียนกับ global registry.
 - **[ANK-054] Cryptographic Audit Log Validation**: Hash chain validation สำหรับ WORM audit log; cryptographic verification ของ log integrity; CLI integration สำหรับ log validation commands.
 - **[ANK-060] Extract ChainedLog<E> & Rebase AuditLogger**: แยกกลไก hash chain ออกจาก capability-security::audit เป็นโครงสร้างทั่วไป ChainedLog<E> ใน capability-security::audit แล้วให้ AuditLogger ใช้ร่วมกัน เพื่อแก้คอขวด mutex เดียวที่ serialize การเขียน audit ทั้งระบบ ห้ามเพิ่มฟิลด์ใหม่ใน AuditEntry เพราะ compute_hash แฮชโครงสร้างที่ serialize แล้ว การเพิ่มฟิลด์จะทำให้ validate_log ปฏิเสธ audit log ของ deployment เดิม
+- **[ANK-066] ank verify-audit & Audit Export**: เพิ่มคำสั่ง ank verify-audit สำหรับตรวจสอบความถูกต้องของ hash chain ของ audit ทั้ง host plane และ data plane พร้อมการส่งออกรายงาน JSON สำหรับ SIEM [done] มีคำสั่ง verify-audit แล้วทั้ง `ank-cli verify-audit <file> [--format human|json] [--output <path>]` (host plane) และ `ai-gateway verify-audit --dir <dir> [--format json] [--output <path>]` (data plane, ตรวจทุก shard) ทั้งสองฝั่งใช้ schema เดียวกันจาก capability_security::verify_report (VerifyReport/ChainReport) ตรวจผ่าน ChainedLog::validate ที่เดียว ไม่เขียนอัลกอริทึมซ้ำ
 
 ### immune-system
 

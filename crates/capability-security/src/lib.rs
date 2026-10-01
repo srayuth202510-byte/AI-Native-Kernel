@@ -14,6 +14,8 @@ pub mod policy;
 /// นิยาม [`CapabilityToken`] และขอบเขตสิทธิ์ ([`Scope`]) พร้อมการเปรียบเทียบแบบ constant-time
 pub mod token;
 pub mod uds_auth;
+/// รายงานผลการตรวจสอบ hash chain สำหรับ SIEM (`ank verify-audit` ทั้งสอง planes)
+pub mod verify_report;
 
 pub use metrics::{SecurityMetrics, render_metrics};
 

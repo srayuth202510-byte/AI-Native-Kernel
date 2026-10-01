@@ -20,9 +20,8 @@ async fn main() -> Result<()> {
         println!("  ank-cli list-quarantine         Lists currently quarantined process IDs");
         println!("  ank-cli set-threshold <r> <d> [k] Sets T-Cell rate, deny & kill thresholds");
         println!("  ank-cli set-lsm-profile <name>  Switches active LSM profile");
-        println!(
-            "  ank-cli verify-audit <log>      Verifies the cryptographic hash chain of an audit log"
-        );
+        println!("  ank-cli verify-audit <log> [--format human|json] [--output <path>]");
+        println!("      Verifies the cryptographic hash chain of an audit log");
         return Ok(());
     }
 
@@ -104,52 +103,107 @@ async fn main() -> Result<()> {
             }
         }
         "verify-audit" => {
-            if args.len() < 3 {
-                println!("Usage: ank-cli verify-audit <log_file>");
-                return Ok(());
-            }
-            let log_path = std::path::PathBuf::from(&args[2]);
-            if !log_path.exists() {
-                eprintln!("Error: Log file not found at {:?}", log_path);
-                std::process::exit(1);
-            }
-
-            let logger = capability_security::audit::AuditLogger::new(log_path);
-            let entries = logger.entries().await;
-            println!("Validating {} audit entries...", entries.len());
-
-            if entries.is_empty() {
-                println!("Success: Audit log is empty.");
-                return Ok(());
-            }
-
-            let mut prev_hash = String::new();
-            for (idx, entry) in entries.iter().enumerate() {
-                let recorded_hash = match entry.hash.as_deref() {
-                    Some(h) => h,
-                    None => {
-                        eprintln!(
-                            "ERROR: Chain broken at Entry Index {} (Token ID {}). Missing hash field.",
-                            idx, entry.token_id
-                        );
-                        std::process::exit(1);
+            // ank-cli verify-audit <log_file> [--format human|json] [--output <path>]
+            let mut log_arg: Option<&str> = None;
+            let mut format = "human";
+            let mut output: Option<&str> = None;
+            let mut rest = args[2..].iter().peekable();
+            while let Some(arg) = rest.next() {
+                if let Some(value) = arg.strip_prefix("--format=") {
+                    format = value;
+                } else if arg == "--format" {
+                    match rest.next() {
+                        Some(value) => format = value,
+                        None => {
+                            println!("--format requires a value: human or json");
+                            return Err(anyhow::anyhow!("--format requires a value"));
+                        }
                     }
-                };
-                let computed = entry.compute_hash(&prev_hash);
-                if computed != recorded_hash {
-                    eprintln!(
-                        "ERROR: Cryptographic signature mismatch at Entry Index {} (Token ID {}).",
-                        idx, entry.token_id
+                } else if let Some(value) = arg.strip_prefix("--output=") {
+                    output = Some(value);
+                } else if *arg == "--output" {
+                    match rest.next() {
+                        Some(value) => output = Some(value),
+                        None => {
+                            println!("--output requires a path");
+                            return Err(anyhow::anyhow!("--output requires a path"));
+                        }
+                    }
+                } else if !arg.starts_with('-') {
+                    if log_arg.is_none() {
+                        log_arg = Some(arg);
+                    }
+                } else {
+                    println!("Unknown flag for verify-audit: {arg}");
+                    println!(
+                        "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>]"
                     );
-                    eprintln!("Expected (Computed): {}", computed);
-                    eprintln!("Found (Recorded): {}", recorded_hash);
-                    std::process::exit(1);
+                    return Err(anyhow::anyhow!("unknown flag {arg}"));
                 }
-                prev_hash = recorded_hash.to_string();
+            }
+            let Some(log_file) = log_arg else {
+                println!(
+                    "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>]"
+                );
+                return Ok(());
+            };
+            if format != "human" && format != "json" {
+                println!("Unknown --format '{format}': expected human or json");
+                return Err(anyhow::anyhow!("unknown --format '{format}'"));
+            }
+            let log_path = std::path::PathBuf::from(log_file);
+
+            // ตรวจผ่าน ChainedLog::validate เสมอ ไม่เขียนอัลกอริทึมซ้ำตรงนี้ —
+            // อัลกอริทึมสองชุดที่ "ควรจะเหมือนกัน" จะค่อย ๆ ต่างกันไปเอง
+            let chain = capability_security::verify_report::verify_chain_file::<
+                capability_security::audit::AuditEntry,
+            >(&log_path, "host-plane")
+            .await;
+            let mut report = capability_security::verify_report::VerifyReport::new(
+                "ank-cli verify-audit",
+                &log_path,
+            );
+            report.push(chain);
+
+            if format == "json" {
+                let json = report
+                    .to_json()
+                    .map_err(|e| anyhow::anyhow!("failed to serialize report: {e}"))?;
+                if let Some(out) = output {
+                    tokio::fs::write(out, &json)
+                        .await
+                        .with_context(|| format!("failed to write JSON report to {out}"))?;
+                    println!("Wrote JSON report to {out}");
+                } else {
+                    println!("{json}");
+                }
+            } else {
+                println!("Validating {} audit entries...", report.total_entries);
+                if report.total_entries == 0 && report.valid {
+                    println!("Success: Audit log is empty.");
+                } else if report.valid {
+                    println!("SUCCESS: Cryptographic audit log is valid. WORM property intact.");
+                }
+                if let Some(out) = output {
+                    let json = report
+                        .to_json()
+                        .map_err(|e| anyhow::anyhow!("failed to serialize report: {e}"))?;
+                    tokio::fs::write(out, &json)
+                        .await
+                        .with_context(|| format!("failed to write JSON report to {out}"))?;
+                    println!("Wrote JSON report to {out}");
+                }
             }
 
-            println!("SUCCESS: Cryptographic audit log is valid. WORM property intact.");
-            return Ok(());
+            if report.valid {
+                return Ok(());
+            }
+            for chain in &report.chains {
+                if let Some(err) = &chain.error {
+                    eprintln!("ERROR: {}: {}", chain.file, err);
+                }
+            }
+            return Err(anyhow::anyhow!("audit chain INVALID: {:?}", log_path));
         }
         _ => {
             // คำสั่งอื่นๆ นอกเหนือจากนี้ ให้ส่งเป็น payload ทั่วไป

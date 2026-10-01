@@ -1,7 +1,8 @@
 use ai_gateway::{
-    AppState, GatewayConfig, GatewayCore, build_router, entry::ApiAuditChain, policy::PolicyFile,
+    AppState, GatewayConfig, GatewayCore, build_router, entry::ApiAuditEntry, policy::PolicyFile,
     proxy::Upstream,
 };
+use capability_security::verify_report::{VerifyReport, verify_chain_file};
 use clap::{Parser, Subcommand};
 use semantic_guard::{DetectionMode, GuardConfig};
 use std::net::SocketAddr;
@@ -72,6 +73,14 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
 
+        /// Output format: human (default) or json (SIEM)
+        #[arg(long, default_value = "human")]
+        format: String,
+
+        /// Write the JSON report to this file as well
+        #[arg(long)]
+        output: Option<PathBuf>,
+
         #[command(flatten)]
         args: Args,
     },
@@ -97,9 +106,17 @@ fn merge_args(outer: &Args, inner: &Args) -> Args {
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
-    let (args, dir_override) = match &cli.command {
+    let (args, verify) = match &cli.command {
         Some(Command::Serve { args }) => (merge_args(&cli.args, args), None),
-        Some(Command::VerifyAudit { dir, args }) => (merge_args(&cli.args, args), dir.clone()),
+        Some(Command::VerifyAudit {
+            dir,
+            format,
+            output,
+            args,
+        }) => (
+            merge_args(&cli.args, args),
+            Some((dir.clone(), format.clone(), output.clone())),
+        ),
         None => (cli.args.clone(), None),
     };
 
@@ -118,9 +135,9 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    match dir_override {
-        Some(dir) => verify_audit(dir).await,
-        None => serve(config).await,
+    match verify {
+        Some((Some(dir), format, output)) => verify_audit(dir, &format, output.as_ref()).await,
+        _ => serve(config).await,
     }
 }
 
@@ -284,7 +301,16 @@ async fn shutdown_signal() {
     }
 }
 
-async fn verify_audit(dir: PathBuf) -> std::process::ExitCode {
+async fn verify_audit(
+    dir: PathBuf,
+    format: &str,
+    output: Option<&PathBuf>,
+) -> std::process::ExitCode {
+    if format != "human" && format != "json" {
+        eprintln!("Unknown --format '{format}': expected human or json");
+        return std::process::ExitCode::FAILURE;
+    }
+
     let mut entries = match tokio::fs::read_dir(&dir).await {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -319,38 +345,79 @@ async fn verify_audit(dir: PathBuf) -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
 
+    // ตรวจทุก shard ผ่าน ChainedLog::validate แล้วรวมเป็นรายงานเดียว —
+    // schema เดียวกับ `ank-cli verify-audit` เพื่อให้ SIEM ใช้ parser เดียว
     files.sort();
-    let mut all_valid = true;
-
+    let mut report = VerifyReport::new("ai-gateway verify-audit", &dir);
     for file in &files {
         let chain_id = file
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        let chain = ApiAuditChain::new(file.clone(), &chain_id);
+        report.push(verify_chain_file::<ApiAuditEntry>(file, &chain_id).await);
+    }
 
-        match chain.validate().await {
-            Ok(true) => {
-                let count = chain.entries().await.len();
-                println!("OK      {} ({count} entries)", file.display());
+    if format == "json" {
+        if let Some(out) = output {
+            if !write_report_file(&report, out).await {
+                return std::process::ExitCode::FAILURE;
             }
-            Ok(false) => {
-                all_valid = false;
-                eprintln!("INVALID {}", file.display());
+        } else {
+            match report.to_json() {
+                Ok(json) => println!("{json}"),
+                Err(e) => {
+                    eprintln!("Serialize report: {e}");
+                    return std::process::ExitCode::FAILURE;
+                }
             }
-            Err(e) => {
-                all_valid = false;
-                eprintln!("ERROR   {}: {e}", file.display());
+        }
+    } else {
+        for chain in &report.chains {
+            if chain.valid {
+                println!("OK      {} ({} entries)", chain.file, chain.entries);
+            } else if let Some(err) = &chain.error {
+                eprintln!("ERROR   {}: {}", chain.file, err);
+            } else {
+                eprintln!("INVALID {}", chain.file);
             }
+        }
+        if let Some(out) = output {
+            if !write_report_file(&report, out).await {
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+        if report.valid {
+            println!("\nAll {} chains valid", report.chains.len());
+        } else {
+            eprintln!("\nAt least one chain is invalid");
         }
     }
 
-    if all_valid {
-        println!("\nAll {} chains valid", files.len());
+    if report.valid {
         std::process::ExitCode::SUCCESS
     } else {
-        eprintln!("\nAt least one chain is invalid");
         std::process::ExitCode::FAILURE
+    }
+}
+
+/// เขียนรายงาน JSON ลงไฟล์ — คืน `false` เมื่อ serialize หรือเขียนไม่สำเร็จ
+async fn write_report_file(report: &VerifyReport, out: &PathBuf) -> bool {
+    let json = match report.to_json() {
+        Ok(json) => json,
+        Err(e) => {
+            eprintln!("Serialize report: {e}");
+            return false;
+        }
+    };
+    match tokio::fs::write(out, &json).await {
+        Ok(()) => {
+            println!("Wrote JSON report to {}", out.display());
+            true
+        }
+        Err(e) => {
+            eprintln!("Write {}: {e}", out.display());
+            false
+        }
     }
 }
