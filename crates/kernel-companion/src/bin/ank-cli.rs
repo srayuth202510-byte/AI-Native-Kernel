@@ -9,6 +9,95 @@ use std::env;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+/// ผลลัพธ์การแยกวิเคราะห์คำสั่ง verify-audit
+struct VerifyAuditArgs {
+    log_file: String,
+    format: String,
+    output: Option<String>,
+}
+
+/// แยกวิเคราะห์อาร์กิวเมนต์ของ verify-audit
+///
+/// รองรับ:
+///   - `ank-cli verify-audit <log_file>`
+///   - `ank-cli verify-audit <log_file> --format human|json`
+///   - `ank-cli verify-audit <log_file> --format=json`
+///   - `ank-cli verify-audit <log_file> --output <path>`
+///   - `ank-cli verify-audit <log_file> --output=<path>`
+///   - `ank-cli verify-audit <log_file> --format json --output <path>`
+///
+/// คืน error ถ้า:
+///   - ไม่มี log file
+///   - มี positional argument มากกว่า 1 ตัว
+///   - --format ไม่ใช่ human หรือ json
+///   - --format/--output ไม่มีค่าตามมา
+fn parse_verify_audit_args(args: &[String]) -> Result<VerifyAuditArgs, String> {
+    if args.is_empty() {
+        return Err(
+            "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>]"
+                .to_string(),
+        );
+    }
+
+    let mut log_file: Option<String> = None;
+    let mut format = "human".to_string();
+    let mut output: Option<String> = None;
+    let mut rest = args.iter().peekable();
+
+    while let Some(arg) = rest.next() {
+        if let Some(value) = arg.strip_prefix("--format=") {
+            if value != "human" && value != "json" {
+                return Err(format!(
+                    "unknown --format '{value}': expected human or json"
+                ));
+            }
+            format = value.to_string();
+        } else if arg == "--format" {
+            if let Some(value) = rest.next() {
+                if value != "human" && value != "json" {
+                    return Err(format!(
+                        "unknown --format '{value}': expected human or json"
+                    ));
+                }
+                format = value.to_string();
+            } else {
+                return Err("--format requires a value: human or json".to_string());
+            }
+        } else if let Some(value) = arg.strip_prefix("--output=") {
+            output = Some(value.to_string());
+        } else if arg == "--output" {
+            if let Some(value) = rest.next() {
+                output = Some(value.to_string());
+            } else {
+                return Err("--output requires a path".to_string());
+            }
+        } else if !arg.starts_with('-') {
+            if log_file.is_none() {
+                log_file = Some(arg.to_string());
+            } else {
+                return Err(format!(
+                    "unexpected positional argument: '{arg}' (only one log file allowed)"
+                ));
+            }
+        } else {
+            return Err(format!("unknown flag for verify-audit: {arg}"));
+        }
+    }
+
+    let Some(log_file) = log_file else {
+        return Err(
+            "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>]"
+                .to_string(),
+        );
+    };
+
+    Ok(VerifyAuditArgs {
+        log_file,
+        format,
+        output,
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -104,54 +193,13 @@ async fn main() -> Result<()> {
         }
         "verify-audit" => {
             // ank-cli verify-audit <log_file> [--format human|json] [--output <path>]
-            let mut log_arg: Option<&str> = None;
-            let mut format = "human";
-            let mut output: Option<&str> = None;
-            let mut rest = args[2..].iter().peekable();
-            while let Some(arg) = rest.next() {
-                if let Some(value) = arg.strip_prefix("--format=") {
-                    format = value;
-                } else if arg == "--format" {
-                    match rest.next() {
-                        Some(value) => format = value,
-                        None => {
-                            println!("--format requires a value: human or json");
-                            return Err(anyhow::anyhow!("--format requires a value"));
-                        }
-                    }
-                } else if let Some(value) = arg.strip_prefix("--output=") {
-                    output = Some(value);
-                } else if *arg == "--output" {
-                    match rest.next() {
-                        Some(value) => output = Some(value),
-                        None => {
-                            println!("--output requires a path");
-                            return Err(anyhow::anyhow!("--output requires a path"));
-                        }
-                    }
-                } else if !arg.starts_with('-') {
-                    if log_arg.is_none() {
-                        log_arg = Some(arg);
-                    }
-                } else {
-                    println!("Unknown flag for verify-audit: {arg}");
-                    println!(
-                        "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>]"
-                    );
-                    return Err(anyhow::anyhow!("unknown flag {arg}"));
-                }
-            }
-            let Some(log_file) = log_arg else {
-                println!(
-                    "Usage: ank-cli verify-audit <log_file> [--format human|json] [--output <path>]"
-                );
-                return Ok(());
-            };
-            if format != "human" && format != "json" {
-                println!("Unknown --format '{format}': expected human or json");
-                return Err(anyhow::anyhow!("unknown --format '{format}'"));
-            }
-            let log_path = std::path::PathBuf::from(log_file);
+            let parsed = parse_verify_audit_args(&args[2..]).map_err(|e| {
+                println!("{e}");
+                anyhow::anyhow!(e)
+            })?;
+            let log_path = std::path::PathBuf::from(&parsed.log_file);
+            let format = parsed.format;
+            let output = parsed.output.as_deref();
 
             // ตรวจผ่าน ChainedLog::validate เสมอ ไม่เขียนอัลกอริทึมซ้ำตรงนี้ —
             // อัลกอริทึมสองชุดที่ "ควรจะเหมือนกัน" จะค่อย ๆ ต่างกันไปเอง

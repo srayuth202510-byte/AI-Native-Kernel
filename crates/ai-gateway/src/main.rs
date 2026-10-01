@@ -135,9 +135,11 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    match verify {
-        Some((Some(dir), format, output)) => verify_audit(dir, &format, output.as_ref()).await,
-        _ => serve(config).await,
+    if let Some((dir_override, format, output)) = verify {
+        let dir = dir_override.unwrap_or_else(|| config.audit_dir.clone());
+        verify_audit(dir, &format, output.as_ref()).await
+    } else {
+        serve(config).await
     }
 }
 
