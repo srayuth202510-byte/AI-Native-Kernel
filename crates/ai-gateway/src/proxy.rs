@@ -219,8 +219,12 @@ pub async fn read_inspectable(response: reqwest::Response) -> Result<Bytes, Gate
 
 /// ตรวจ response ที่อ่านมาทั้งก้อน แล้วคืนเนื้อหาที่ปิดบังแล้ว
 ///
+/// เนื้อหาที่ guard ตัดสินว่า Deny จะ**ไม่ถูกส่งคืนเลย** — คืน `Err` แทนเพื่อให้
+/// ผู้เรียกปฏิเสธทั้ง response (fail-closed) เพราะการส่งคืน body พร้อมเหตุผล
+/// ว่าถูกปฏิเสธคือการปล่อยเนื้อหาต้องห้ามออกไปพร้อมป้ายกำกับ
+///
 /// # Errors
-/// คืน `Err` เมื่อ guard ทำงานผิดพลาด
+/// คืน `Err` เมื่อ guard ทำงานผิดพลาด หรือ guard ปฏิเสธเนื้อหา
 pub fn inspect_buffered(
     guard: Option<&Guard>,
     body: &Bytes,
@@ -240,22 +244,29 @@ pub fn inspect_buffered(
                 count: verdict.pii.len(),
             },
         )),
-        GuardAction::Deny => Ok((
-            body.clone(),
-            ResponseInspection::Rules(
-                verdict
-                    .injections
-                    .iter()
-                    .map(|i| i.rule_id.to_string())
-                    .collect(),
-            ),
-        )),
+        GuardAction::Deny => {
+            // ไม่ส่ง body คืนแม้แต่ไบต์เดียว — บันทึกแค่จำนวนกฎ ไม่บันทึกเนื้อหา
+            tracing::warn!(
+                rules = verdict.injections.len(),
+                bytes_withheld = body.len(),
+                "response denied by guard; content withheld"
+            );
+            Err(GatewayError::Denied(format!(
+                "response matched {} blocking rule(s)",
+                verdict.injections.len()
+            )))
+        }
     }
 }
 
 /// กัน prefix ของ stream ไว้ตรวจก่อนปล่อย แล้วปล่อยที่เหลือทันที
 ///
 /// ไม่สะสมทั้ง response ในหน่วยความจำ และไม่ปล่อยข้อมูลก่อนผ่านการตรวจ
+///
+/// ถ้าตรวจ prefix ไม่สำเร็จ (guard error ใด ๆ) จะ**กลืน prefix ทั้งหมดแล้วจบสตรีม
+/// ด้วย error** (fail-closed) — ปล่อยต่อไม่ได้แม้แต่ไบต์เดียว เพราะข้างในอาจมี
+/// PII หรือ secret และสตรีมจะถูกวางยาให้ poll ถัดไปจบลงทันที เพื่อไม่ให้ผู้เรียก
+/// ที่ละเลย error ยังอ่านข้อมูลที่ไม่ได้ตรวจต่อได้
 ///
 /// # Panics
 /// ไม่ panic — คืน error จาก upstream เป็นรายการว่างแทน
@@ -298,8 +309,16 @@ where
                 let (out, inspection) = match inspect_buffered(st.guard.as_deref(), &gathered) {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::warn!(error = %e, "stream prefix inspection failed");
-                        (gathered.clone(), ResponseInspection::Clean)
+                        // ตรวจไม่สำเร็จ = ไม่รู้ว่าข้างในมีอะไร จึงกลืน bytes ทั้งหมดไว้
+                        // แล้ววางยาสตรีมให้ poll ถัดไปจบลงทันที — บันทึกแค่ขนาด ไม่บันทึก
+                        // เนื้อหา เพราะเนื้อหาอาจมี PII หรือ secret ปนอยู่
+                        tracing::warn!(
+                            error = %e,
+                            bytes_withheld = gathered.len(),
+                            "stream prefix inspection failed; response withheld"
+                        );
+                        st.phase = Phase::Failed;
+                        return Some((Err(e), st));
                     }
                 };
                 if inspection != ResponseInspection::Clean {
@@ -312,6 +331,8 @@ where
                 Some(Err(e)) => Some((Err(GatewayError::Upstream(e.to_string())), st)),
                 None => None,
             },
+            // สตรีมที่ถูกวางยาหลังตรวจ prefix ไม่ผ่าน — จบทันทีโดยไม่ปล่อยอะไรเพิ่ม
+            Phase::Failed => None,
         }
     }))
 }
@@ -319,6 +340,8 @@ where
 enum Phase {
     Gathering,
     Releasing,
+    /// การตรวจ prefix ล้มเหลว — สตรีมถูกวางยาแล้ว poll ถัดไปต้องจบลงทันที
+    Failed,
 }
 
 struct GuardState<S, E> {
@@ -550,6 +573,73 @@ mod tests {
         let mut guarded = guard_stream_prefix(futures::stream::iter(chunks), 4096, None);
         let first = guarded.next().await.expect("first").expect("ok");
         assert_eq!(first, Bytes::from_static(b"tiny"));
+        assert!(guarded.next().await.is_none());
+    }
+
+    /// guard ที่ตรวจไม่สำเร็จเลย — ใช้บังคับให้ `inspect_buffered` คืน error
+    /// ทุกครั้ง (`BudgetExceeded`) เพื่อจำลองเส้นทาง fail-closed
+    fn failing_guard() -> Guard {
+        Guard::with_config(semantic_guard::GuardConfig {
+            budget: Duration::ZERO,
+            ..semantic_guard::GuardConfig::default()
+        })
+        .expect("guard should build")
+    }
+
+    #[test]
+    fn buffered_inspection_error_propagates_as_error() {
+        // ตรวจไม่สำเร็จต้องคืน Err ไม่ใช่ปล่อย body พร้อมป้ายว่าตรวจแล้ว
+        let body = Bytes::from_static(b"{\"secret\":\"sk-live-abc123\"}");
+        let err = inspect_buffered(Some(&failing_guard()), &body).expect_err("must fail");
+        assert!(
+            matches!(err, GatewayError::Guard(_)),
+            "expected a guard failure, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_withholds_prefix_when_inspection_fails() {
+        // ตรวจ prefix ไม่สำเร็จ = ไม่รู้ว่าข้างในมีอะไร จึงต้องกลืนไว้ทั้งหมด
+        // ห้ามปล่อยแม้แต่ไบต์เดียว แล้วสตรีมต้องจบลงทันทีหลัง error
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(b"data: {\"secret\":\"sk-live-abc1")),
+            Ok(Bytes::from_static(b"23\"}\n\ndata: [DONE]\n\n")),
+        ];
+        let mut guarded = guard_stream_prefix(
+            futures::stream::iter(chunks),
+            8,
+            Some(Arc::new(failing_guard())),
+        );
+
+        let first = guarded.next().await.expect("stream yields");
+        assert!(
+            matches!(first, Err(GatewayError::Guard(_))),
+            "failed inspection must surface as a guard error, got {first:?}"
+        );
+        assert!(
+            guarded.next().await.is_none(),
+            "withheld stream must end after the error — no tail bytes may follow"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_withholds_prefix_when_prefix_exceeds_guard_limit() {
+        // prefix ใหญ่เกิน `max_input_bytes` ต้องถูกกลืนเช่นกัน ไม่ใช่ปล่อยแบบ Clean
+        let tight = Guard::with_config(semantic_guard::GuardConfig {
+            max_input_bytes: 4,
+            ..semantic_guard::GuardConfig::default()
+        })
+        .expect("guard should build");
+        let chunks: Vec<Result<Bytes, std::io::Error>> =
+            vec![Ok(Bytes::from_static(b"eight-bytes-here"))];
+        let mut guarded =
+            guard_stream_prefix(futures::stream::iter(chunks), 8, Some(Arc::new(tight)));
+
+        let first = guarded.next().await.expect("stream yields");
+        assert!(
+            matches!(first, Err(GatewayError::Guard(_))),
+            "oversize prefix must surface as a guard error, got {first:?}"
+        );
         assert!(guarded.next().await.is_none());
     }
 }

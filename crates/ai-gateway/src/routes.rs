@@ -162,6 +162,14 @@ fn to_api_error(err: &GatewayError) -> ApiError {
             "audit_unavailable",
             "ระบบบันทึกเหตุการณ์ไม่พร้อมใช้งาน จึงปฏิเสธคำขอเพื่อความปลอดภัย",
         ),
+        // เนื้อหาถูกนโยบายปฏิเสธ — ไม่เปิดเผยเหตุผลภายในให้ผู้เรียก
+        // (กัน oracle ที่ใช้เดาว่ากฎใดทำงาน) ให้รหัสทั่วไปเท่านั้น
+        GatewayError::Denied(_) => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "policy_error",
+            "response_blocked",
+            "เนื้อหาถูกนโยบายความปลอดภัยปฏิเสธ",
+        ),
         GatewayError::Config(_) | GatewayError::Guard(_) | GatewayError::Extraction(_) => {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,

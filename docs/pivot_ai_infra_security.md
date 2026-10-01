@@ -176,7 +176,10 @@ Therefore:
 
 - Request path: inspect fully (bounded at 256 KB), then stream.
 - Response path: inspect headers + a bounded prefix (first 4 KB). Full-response inspection
-  is **not** compatible with SSE streaming and is out of scope.
+  is **not** compatible with SSE streaming and is out of scope. If prefix inspection fails
+  for any reason (guard error, budget overrun), the stream terminates with an error and the
+  buffered prefix is withheld — never released as "clean". A `Deny` verdict on a response
+  likewise returns an error (403), never the denied body with a flag attached.
 - Guard budget: P99 < 2 ms added. Enforced **after the fact** — `check_budget` compares
   elapsed time at each stage boundary (`semantic-guard/src/lib.rs`) and returns
   `GuardError::BudgetExceeded`, so an overrun is detected but the stage that overran has

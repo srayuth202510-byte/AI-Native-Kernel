@@ -75,6 +75,10 @@ pub enum GatewayError {
     /// ชั้น audit chain ทำงานผิดพลาด
     #[error("audit chain failed: {0}")]
     AuditChain(#[from] capability_security::chained_log::ChainedLogError),
+    /// นโยบายปฏิเสธเนื้อหา (fail-closed) — เช่น response ถูก guard ตัดสินว่า Deny
+    /// เนื้อหาต้องห้ามไม่ถูกส่งคืนผู้เรียกเลยแม้แต่ไบต์เดียว
+    #[error("denied by policy: {0}")]
+    Denied(String),
 }
 
 /// การตั้งค่า gateway
