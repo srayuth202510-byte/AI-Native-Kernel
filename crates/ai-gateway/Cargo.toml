@@ -27,6 +27,7 @@ bytes = { workspace = true }
 capability-security = { path = "../capability-security" }
 semantic-guard = { path = "../semantic-guard" }
 extraction-det = { path = "../extraction-det" }
+async-stream = { workspace = true }
 
 [[bin]]
 name = "ai-gateway"

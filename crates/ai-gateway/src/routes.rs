@@ -6,6 +6,7 @@
 //! ตรรกะการตัดสินใจทั้งหมดอยู่ใน `GatewayCore` ไม่ใช่ที่นี่ เพื่อให้ทดสอบได้
 //! โดยไม่ต้องเปิด socket — ไฟล์นี้มีหน้าที่แค่แปลง HTTP เป็นเรียกใช้ และแปลงผลกลับ
 
+use async_stream::stream;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -313,6 +314,40 @@ async fn handle(
             state.upstream.prefix_bytes(),
             state.guard.clone(),
         );
+
+        // สำหรับ SSE ต้องบันทึก audit หลังสตรีมจบ — wrap stream เพื่อบันทึกเมื่อจบ
+        let tenant_id = inspection.audit.tenant_id.clone();
+        let core = state.core.clone();
+        let base_audit = inspection.audit.clone();
+
+        let stream = async_stream::stream! {
+            let mut audit_recorded = false;
+            let mut final_inspection = ResponseInspection::Clean;
+
+            for await chunk in stream {
+                if let Ok(ref bytes) = chunk {
+                    // ตรวจสอบว่า chunk นี้เป็น chunk สุดท้ายหรือไม่ (SSE ends with "data: [DONE]\n\n")
+                    let is_done = bytes.windows(6).any(|w| w == b"[DONE]");
+                    if is_done && !audit_recorded {
+                        // บันทึก audit หลังสตรีมจบ
+                        let response_audit = response_audit_entry(
+                            base_audit.clone(),
+                            &final_inspection,
+                        );
+                        let _ = core.record_audit(&tenant_id, response_audit).await;
+                        audit_recorded = true;
+                    }
+                }
+                yield chunk;
+            }
+
+            // Fallback: ถ้าสตรีมจบโดยไม่มี [DONE] marker
+            if !audit_recorded {
+                let response_audit = response_audit_entry(base_audit, &final_inspection);
+                let _ = core.record_audit(&tenant_id, response_audit).await;
+            }
+        };
+
         let mut resp = Response::builder().status(status);
         for (name, value) in &out_headers {
             resp = resp.header(name, value);
@@ -334,6 +369,14 @@ async fn handle(
         .map_err(|e| to_api_error(&e))?;
     let (inspected, response_inspection) =
         proxy::inspect_buffered(state.guard.as_deref(), &raw).map_err(|e| to_api_error(&e))?;
+
+    // บันทึก audit สำหรับ response inspection
+    let response_audit = response_audit_entry(inspection.audit.clone(), &response_inspection);
+    state
+        .core
+        .record_audit(&inspection.audit.tenant_id, response_audit)
+        .await
+        .map_err(|e| to_api_error(&e))?;
 
     if response_inspection != ResponseInspection::Clean {
         tracing::info!(
