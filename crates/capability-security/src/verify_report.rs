@@ -7,6 +7,14 @@
 //!
 //! การตรวจสอบจริงทำผ่าน [`ChainedLog::validate`] เสมอ ไม่มีการเขียนอัลกอริทึมซ้ำ
 //! ในแต่ละคำสั่ง เพราะอัลกอริทึมสองชุดที่ "ควรจะเหมือนกัน" จะค่อย ๆ ต่างกันไปเอง
+//!
+//! ## ข้อจำกัดที่ต้องรู้: ตรวจการตัดทิ้ง (truncation) ไม่ได้
+//!
+//! hash chain ตรวจได้แค่ "สิ่งที่เหลืออยู่ต่อเนื่องกันหรือไม่" — การลบ entry ท้ายไฟล์
+//! ทิ้ง (หรือ truncate เหลือ 0 ไบต์) ทำให้ส่วนที่เหลือยัง valid อยู่ดี ไฟล์ว่างจึง
+//! รายงาน `valid: true` เสมอ รายงานนี้ไม่เคยแปลว่า "ไม่มีอะไรหาย" ให้ตรวจขนาดไฟล์
+//! และรอบ rotation จากภายนอกประกอบ และทุกครั้งที่ `total_entries == 0` ทั้งสอง CLI
+//! จะพิมพ์คำเตือนผ่าน [`VerifyReport::empty_log_warning`] (ดู test ประกอบ)
 use crate::chained_log::{ChainEntry, ChainedLog};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -78,6 +86,23 @@ impl VerifyReport {
     /// กฎของ repo ห้าม `unwrap` ในโค้ดที่ไม่ใช่เทสต์ จึงคืน `Result`)
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
+    }
+
+    /// คำเตือนเมื่อ log ว่าง — คืน `Some` เมื่อ `total_entries == 0`
+    ///
+    /// ไฟล์ว่าง (หรือถูก truncate เหลือ 0 บรรทัด) จะ valid เสมอตามนิยามของ
+    /// hash chain ทั้งสอง CLI ต้องพิมพ์คำเตือนนี้ทาง stderr ทุกครั้ง ไม่ว่า
+    /// `--format` จะเป็นอะไร เพื่อไม่ให้ `valid: true` ถูกอ่านว่า "ไม่มีอะไรหาย"
+    #[must_use]
+    pub fn empty_log_warning(&self) -> Option<&'static str> {
+        if self.total_entries == 0 {
+            Some(
+                "log is empty: hash chains cannot detect truncation to empty — \
+                 check file size and rotation externally",
+            )
+        } else {
+            None
+        }
     }
 }
 
@@ -232,5 +257,27 @@ mod tests {
         });
         assert!(!report.valid, "one broken shard must fail the report");
         assert_eq!(report.total_entries, 13);
+    }
+
+    #[test]
+    fn empty_report_warns_about_undetectable_truncation() {
+        // ไฟล์ว่าง valid เสมอ — ต้องมีคำเตือน ไม่ใช่ความเงียบ
+        let report = VerifyReport::new("ank-cli verify-audit", Path::new("/var/log/ank/audit.log"));
+        assert_eq!(report.total_entries, 0);
+        assert!(
+            report.empty_log_warning().is_some(),
+            "empty log must warn: truncation to empty is undetectable"
+        );
+
+        let mut report =
+            VerifyReport::new("ank-cli verify-audit", Path::new("/var/log/ank/audit.log"));
+        report.push(ChainReport {
+            chain_id: "host-plane".to_string(),
+            file: "/var/log/ank/audit.log".to_string(),
+            entries: 1,
+            valid: true,
+            error: None,
+        });
+        assert_eq!(report.empty_log_warning(), None);
     }
 }

@@ -359,6 +359,9 @@ async fn verify_audit(
             .to_string();
         report.push(verify_chain_file::<ApiAuditEntry>(file, &chain_id).await);
     }
+    if let Some(warning) = report.empty_log_warning() {
+        eprintln!("WARNING: {warning}");
+    }
 
     if format == "json" {
         if let Some(out) = output {

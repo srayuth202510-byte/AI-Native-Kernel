@@ -212,6 +212,9 @@ async fn main() -> Result<()> {
                 &log_path,
             );
             report.push(chain);
+            if let Some(warning) = report.empty_log_warning() {
+                eprintln!("WARNING: {warning}");
+            }
 
             if format == "json" {
                 let json = report
