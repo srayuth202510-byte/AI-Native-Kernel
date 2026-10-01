@@ -420,20 +420,37 @@ pub struct RedactionReport {
 /// แทนที่ข้อความที่ match ด้วย placeholder แล้วคืนรายงานการปิดบัง
 ///
 /// หาก `placeholder` เป็น `None` จะใช้รูปแบบ `[REDACTED:<ชนิด>]`
+///
+/// ช่วงที่ซ้อนกันจะถูกรวมเป็น union **ก่อน**แทนที่ — การแทนที่ด้วย offset เดิมบน
+/// ข้อความที่เปลี่ยนความยาวไปแล้วจะเพี้ยน (ข้ามหาง PII หรือแทนที่ผิดตำแหน่ง)
+/// ชนิดของ placeholder ใช้ของชิ้นที่เริ่มก่อน (เริ่มเท่ากันใช้ชิ้นที่แคบกว่า)
+/// เพราะช่วงที่ซ้อนกันใส่ได้ป้ายเดียว `span` ของผลลัพธ์คือ union ที่ถูกปิดบังจริง
 #[must_use]
 pub fn redact_with(
     original: &str,
     findings: &[PiiFinding],
     placeholder: Option<&dyn Fn(PiiKind) -> String>,
 ) -> RedactionReport {
-    // เรียงจากท้ายไปต้นเพื่อให้ byte offset ที่ยังใช้ได้อยู่
-    let mut ordered: Vec<&PiiFinding> = findings.iter().collect();
-    ordered.sort_by_key(|f| std::cmp::Reverse(f.span.start));
+    // เรียงตามตำแหน่งเริ่มต้นเพื่อกวาดรวมช่วงที่ซ้อนกันครั้งเดียว
+    let mut ordered: Vec<PiiFinding> = findings.to_vec();
+    ordered.sort_by_key(|f| (f.span.start, f.span.end));
 
-    let mut text = original.to_string();
-    let mut applied: Vec<PiiFinding> = Vec::new();
-
+    let mut merged: Vec<PiiFinding> = Vec::with_capacity(ordered.len());
     for f in ordered {
+        match merged.last_mut() {
+            // ซ้อนกันจริง (`<` ไม่ใช่ `<=` — ชิดกันแต่ไม่ซ้อนต้องแยกป้าย)
+            Some(last) if f.span.start < last.span.end => {
+                last.span.end = last.span.end.max(f.span.end);
+            }
+            _ => merged.push(f),
+        }
+    }
+
+    // ทุก span แยกกันแล้ว แทนที่จากท้ายไปต้น offset จึงถูกต้องเสมอ
+    let mut text = original.to_string();
+    let mut applied: Vec<PiiFinding> = Vec::with_capacity(merged.len());
+
+    for f in merged.iter().rev() {
         if f.span.end > text.len()
             || !text.is_char_boundary(f.span.start)
             || !text.is_char_boundary(f.span.end)
@@ -706,6 +723,79 @@ mod tests {
         dedup_overlapping(&mut findings);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].span, 0..30, "union must cover both findings");
+    }
+
+    // ช่วงซ้อนกันข้ามชนิด: เดิม `redact_with` แทนที่ด้วย offset เดิมบนข้อความที่
+    // เปลี่ยนความยาวไปแล้ว — ชิ้นที่สองถูกข้าม (หางหลุด) หรือแทนที่ผิดตำแหน่ง
+    // ต้องรวมเป็น union เดียวก่อนแทนที่ ไม่ว่าชนิดจะต่างกันหรือไม่
+
+    fn finding(kind: PiiKind, span: std::ops::Range<usize>) -> PiiFinding {
+        PiiFinding {
+            kind,
+            severity: Severity::High,
+            span,
+            snippet: String::new(),
+        }
+    }
+
+    #[test]
+    fn redact_with_merges_cross_kind_overlap_into_union() {
+        // สตริงตัวเลขยาวที่เข้าเงื่อนไขทั้งบัตรและคีย์ — สองชนิดซ้อนกันบางส่วน
+        let original = "key 4111111111111111abcdefghijklmnop end";
+        let findings = vec![
+            finding(PiiKind::CreditCard, 4..20),
+            finding(PiiKind::ApiKey, 10..36),
+        ];
+        let report = redact_with(original, &findings, Some(&|_| "X".to_string()));
+        assert_eq!(
+            report.text, "key X end",
+            "union 4..36 must be fully covered, got {:?}",
+            report.text
+        );
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].span, 4..36);
+    }
+
+    #[test]
+    fn redact_with_chained_overlaps_collapse_to_one_span() {
+        // A ซ้อน B, B ซ้อน C แต่ A ไม่ซ้อน C โดยตรง — ต้องเหลือช่วงเดียวอยู่ดี
+        let original = "0123456789ABCDEFGHIJ0123456789";
+        let findings = vec![
+            finding(PiiKind::Email, 0..10),
+            finding(PiiKind::ApiKey, 5..15),
+            finding(PiiKind::CreditCard, 12..22),
+        ];
+        let report = redact_with(original, &findings, Some(&|_| "X".to_string()));
+        assert_eq!(report.text, "X23456789", "got {:?}", report.text);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].span, 0..22);
+    }
+
+    #[test]
+    fn redact_with_touching_spans_stay_separate() {
+        // ชิดกันแต่ไม่ซ้อน (`<` ไม่ใช่ `<=`) — ต้องได้สองป้าย ไม่ใช่ป้ายเดียว
+        let original = "aaaabbbb";
+        let findings = vec![
+            finding(PiiKind::Email, 0..4),
+            finding(PiiKind::ApiKey, 4..8),
+        ];
+        let report = redact_with(original, &findings, Some(&|_| "X".to_string()));
+        assert_eq!(report.text, "XX", "got {:?}", report.text);
+        assert_eq!(report.findings.len(), 2);
+    }
+
+    #[test]
+    fn redact_with_same_start_keeps_narrower_kind_first() {
+        // เริ่มตำแหน่งเดียวกัน — ชิ้นแคบชนะป้าย (deterministic: เรียงตาม span ก่อน)
+        let original = "0123456789ABCDEF";
+        let findings = vec![
+            finding(PiiKind::ApiKey, 0..16),
+            finding(PiiKind::Email, 0..10),
+        ];
+        let report = redact_with(original, &findings, None);
+        assert_eq!(report.text, "[REDACTED:email]", "got {:?}", report.text);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].kind, PiiKind::Email);
     }
 
     #[test]
