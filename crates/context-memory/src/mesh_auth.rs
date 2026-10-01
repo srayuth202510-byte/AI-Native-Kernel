@@ -86,11 +86,15 @@ pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
 }
 
 /// เปรียบเทียบ tag 32 ไบต์แบบคงเวลา กัน timing attack ตอน verify HMAC
+///
+/// สำเนาเฉพาะจุดนี้เพราะ crate นี้ไม่ได้พึ่ง `capability-security` — canonical
+/// อยู่ที่ `capability_security::constant_time_eq_slices` ถ้าแตะฟังก์ชันนี้
+/// ให้เทียบกับต้นฉบับด้วย สะสมด้วย `u64` ทั้งตัว ห้ามตัดเหลือ `u8`
 #[must_use]
 fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    let mut acc = 0u8;
+    let mut acc = 0u64;
     for (x, y) in a.iter().zip(b.iter()) {
-        acc |= x ^ y;
+        acc |= u64::from(x ^ y);
     }
     acc == 0
 }

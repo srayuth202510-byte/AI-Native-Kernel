@@ -298,27 +298,12 @@ pub fn parse_bearer(header: &str) -> Option<&str> {
     if key.is_empty() { None } else { Some(key) }
 }
 
-/// เทียบสองสตริงแบบคงเวลา (constant-time)
+/// เทียบคีย์แบบคงเวลา — ใช้ canonical จาก `capability_security` (ห้ามเขียนเอง)
 ///
-/// ใช้กับการเทียบคีย์ลับทุกครั้งเพื่อกัน timing attack
-///
-/// ไม่มีการ `return` ก่อนจบลูป แม้ความยาวไม่เท่ากัน เพราะการออกจากลูปเร็วเมื่อ
-/// ความยาวต่างกันจะเปิดช่องให้ผู้โจมตีเดาความยาวของคีย์ที่ถูกเปรียบเทียบได้
-/// ความยาวถูกรวมเข้าไปใน `diff` แทนการแยกพิจารณา
-#[must_use]
-pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    // สะสมด้วย u64 ทั้งตัว — เดิมใช้ `as u8` ซึ่งตัดบิตสูงของผลต่างความยาวทิ้ง
-    // ทำให้คีย์ที่ยาวต่างกัน 256 เท่าตัวพอดี (บวก zero padding) เปรียบเทียบผ่าน
-    // ทั้งที่ต้องถูกปฏิเสธเสมอ
-    let mut diff = (a.len() ^ b.len()) as u64;
-    let len = a.len().max(b.len());
-    for i in 0..len {
-        let x = u64::from(a.get(i).copied().unwrap_or(0));
-        let y = u64::from(b.get(i).copied().unwrap_or(0));
-        diff |= x ^ y;
-    }
-    diff == 0
-}
+/// โมดูลนี้สร้างชนิดข้อมูลของตัวเอง แต่ฟังก์ชันเปรียบเทียบใช้ร่วมกันเพื่อไม่ให้
+/// สำเนาสองชุดค่อย ๆ ต่างกัน (สำเนาเดิมเคยมีบั๊ก `as u8`) re-export นี้รักษา
+/// ชื่อ API เดิมไว้ ผู้เรียกไม่ต้องเปลี่ยน
+pub use capability_security::constant_time_eq_slices as constant_time_eq;
 
 /// นโยบายแบบอ่านง่ายสำหรับไฟล์ config (TOML/JSON)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

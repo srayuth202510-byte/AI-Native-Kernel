@@ -93,11 +93,31 @@ pub struct CapabilitySecurityManager {
 /// เพื่อป้องกันการโจมตีประเภท Timing Attack เมื่อทำการเปรียบเทียบข้อมูลลับ (เช่น Token Secret Key)
 #[must_use]
 pub fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    let mut result = 0;
+    let mut result = 0u64;
     for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
+        result |= u64::from(x ^ y);
     }
     result == 0
+}
+
+/// เปรียบเทียบ slice ความยาวใด ๆ แบบคงเวลา — canonical สำหรับทั้ง workspace
+///
+/// `ai-gateway` และโค้ดอื่นที่เทียบคีย์ความยาวไม่คงที่ต้องใช้ฟังก์ชันนี้แทนการเขียน
+/// เอง: สะสมด้วย `u64` ทั้งตัว ห้ามตัดเหลือ `u8` เพราะผลต่างความยาวที่ลงตัว 256
+/// พอดีจะกลายเป็น 0 แล้วคีย์ปลอมแบบ zero-padding จะเปรียบเทียบผ่าน
+/// (ดู regression test ด้านล่าง และ `ai-gateway/src/policy.rs` ที่ re-export)
+#[must_use]
+pub fn constant_time_eq_slices(a: &[u8], b: &[u8]) -> bool {
+    // ไม่ return ก่อนจบลูปแม้ความยาวไม่เท่ากัน — ออกเร็วเมื่อยาวต่างกันจะเผย
+    // ความยาวคีย์ผ่าน timing ได้ จึงรวมความยาวเข้า `diff` แทนการแยกพิจารณา
+    let mut diff = (a.len() ^ b.len()) as u64;
+    let len = a.len().max(b.len());
+    for i in 0..len {
+        let x = u64::from(a.get(i).copied().unwrap_or(0));
+        let y = u64::from(b.get(i).copied().unwrap_or(0));
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 impl CapabilitySecurityManager {
@@ -474,8 +494,27 @@ impl Default for CapabilitySecurityManager {
 mod tests {
     use crate::policy::PolicyDecision;
     use crate::token::{CapabilityToken, Scope};
-    use crate::{CapabilityError, CapabilitySecurityManager};
+    use crate::{CapabilityError, CapabilitySecurityManager, constant_time_eq_slices};
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn slices_compare_matches_and_rejects() {
+        assert!(constant_time_eq_slices(b"abc", b"abc"));
+        assert!(!constant_time_eq_slices(b"abc", b"abd"));
+        assert!(!constant_time_eq_slices(b"abc", b"ab"));
+        assert!(constant_time_eq_slices(b"", b""));
+    }
+
+    #[test]
+    fn slices_reject_256_byte_length_difference() {
+        // กัน regression ของบั๊ก `as u8`: ต่างกัน 256 พอดี + zero padding ต้องไม่ผ่าน
+        let key = b"sk-live-abc123";
+        let mut padded = key.to_vec();
+        padded.extend(std::iter::repeat_n(0, 256));
+        assert_eq!(padded.len() - key.len(), 256);
+        assert!(!constant_time_eq_slices(key, &padded));
+        assert!(!constant_time_eq_slices(&padded, key));
+    }
 
     fn test_log_path(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("test_audit_{name}.log"));
