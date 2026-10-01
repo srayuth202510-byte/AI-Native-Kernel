@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 fn parse_bool_value(value: &str) -> Option<bool> {
@@ -828,6 +828,10 @@ pub struct ImmuneSystemConfig {
     #[serde(default = "default_kill_threshold")]
     /// ข้อมูล `kill_threshold` สำหรับการกำหนดค่าหรือสถานะภายใน
     pub kill_threshold: u32,
+    /// แมป UID -> tenant_id สำหรับ T-Cell (ANK-065)
+    /// ถ้า UID ไม่มีในแมป จะใช้ "default" เป็น tenant_id
+    #[serde(default)]
+    pub uid_to_tenant: HashMap<u32, String>,
 }
 
 impl Default for ImmuneSystemConfig {
@@ -841,6 +845,7 @@ impl Default for ImmuneSystemConfig {
             rate_threshold: default_rate_threshold(),
             deny_threshold: default_deny_threshold(),
             kill_threshold: default_kill_threshold(),
+            uid_to_tenant: HashMap::new(),
         }
     }
 }

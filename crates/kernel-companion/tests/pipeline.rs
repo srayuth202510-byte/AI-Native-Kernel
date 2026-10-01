@@ -44,17 +44,17 @@ async fn int_immune_system_closed_loop() {
     let pid = 42u32;
 
     // Phase 1: T-Cell observes suspicious syscalls
-    let d1 = tcell.observe_syscall(pid, "setuid", false).await;
+    let d1 = tcell.observe_syscall("test", pid, "setuid", false).await;
     assert_eq!(d1, ThreatDecision::Safe);
 
-    let d2 = tcell.observe_syscall(pid, "execve", false).await;
+    let d2 = tcell.observe_syscall("test", pid, "execve", false).await;
     assert_eq!(d2, ThreatDecision::Quarantine);
 
     // Phase 2: Subscribe before publishing (broadcast requires active subscriber)
     let mut subscriber = intent_bus.subscribe();
 
-    tcell.quarantine(pid).await;
-    assert!(tcell.is_quarantined(pid).await);
+    tcell.quarantine("test", pid).await;
+    assert!(tcell.is_quarantined("test", pid).await);
 
     let threat_intent = Intent::new(
         "threat-setuid-execve",

@@ -81,340 +81,346 @@ pub async fn start_uds_server(
     let task = tokio::spawn(async move {
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
-                    if cancel.is_cancelled() {
-                        info!("UDS Server shutting down...");
-                        break;
-                    }
-                }
-                accept_res = timeout(UDS_TIMEOUT, listener.accept()) => {
-                    match accept_res {
-                        Ok(Ok((mut socket, addr))) => {
-                            if let Some(ref auth) = authenticator {
-                                let cleaned = auth.cleanup_expired_sessions();
-                                if cleaned > 0 {
-                                    debug!("Cleaned up {} expired UDS sessions", cleaned);
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                                if cancel.is_cancelled() {
+                                    info!("UDS Server shutting down...");
+                                    break;
                                 }
                             }
+                            accept_res = timeout(UDS_TIMEOUT, listener.accept()) => {
+                                match accept_res {
+                                    Ok(Ok((mut socket, addr))) => {
+                                        if let Some(ref auth) = authenticator {
+                                            let cleaned = auth.cleanup_expired_sessions();
+                                            if cleaned > 0 {
+                                                debug!("Cleaned up {} expired UDS sessions", cleaned);
+                                            }
+                                        }
 
-                            let authenticated = match auth_manager.as_ref() {
-                                Some(_) => match check_socket_permissions(&mut socket).await {
-                                    Ok(true) => true,
-                                    Ok(false) => {
-                                        warn!("Authentication failed for UDS connection from {:#?} - dropping", addr);
-                                        false
-                                    }
-                                    Err(e) => {
-                                        error!("Peer credential check failed for UDS connection from {:#?}: {}", addr, e);
-                                        false
-                                    }
-                                },
-                                None => true,
-                            };
+                                        let authenticated = match auth_manager.as_ref() {
+                                            Some(_) => match check_socket_permissions(&mut socket).await {
+                                                Ok(true) => true,
+                                                Ok(false) => {
+                                                    warn!("Authentication failed for UDS connection from {:#?} - dropping", addr);
+                                                    false
+                                                }
+                                                Err(e) => {
+                                                    error!("Peer credential check failed for UDS connection from {:#?}: {}", addr, e);
+                                                    false
+                                                }
+                                            },
+                                            None => true,
+                                        };
 
-                            if authenticated {
-                                let bus = Arc::clone(&intent_bus);
-                                let tcell = tcell.clone();
-                                let lsm = lsm.clone();
-                                let agent_scheduler = agent_scheduler.clone();
-                                let compute_scheduler = compute_scheduler.clone();
-                                let context_memory = context_memory.clone();
-                                let p2p_mesh = p2p_mesh.clone();
-                                let authenticator = authenticator.clone();
+                                        if authenticated {
+                                            let bus = Arc::clone(&intent_bus);
+                                            let tcell = tcell.clone();
+                                            let lsm = lsm.clone();
+                                            let agent_scheduler = agent_scheduler.clone();
+                                            let compute_scheduler = compute_scheduler.clone();
+                                            let context_memory = context_memory.clone();
+                                            let p2p_mesh = p2p_mesh.clone();
+                                            let authenticator = authenticator.clone();
 
-                                let creds = getsockopt(&socket, PeerCredentials).ok();
-                                let (peer_uid, peer_pid) = match creds {
-                                    Some(c) => (c.uid(), c.pid() as u32),
-                                    None => (0, 0),
-                                };
+                                            let creds = getsockopt(&socket, PeerCredentials).ok();
+                                            let (peer_uid, peer_pid) = match creds {
+                                                Some(c) => (c.uid(), c.pid() as u32),
+                                                None => (0, 0),
+                                            };
 
-                                tokio::spawn(async move {
-                                    let (reader, mut writer) = socket.split();
-                                    let mut buf_reader = BufReader::new(reader);
-                                    let mut line = String::new();
-                                    let mut connection_session_id: Option<u64> = None;
+                                            tokio::spawn(async move {
+                                                let (reader, mut writer) = socket.split();
+                                                let mut buf_reader = BufReader::new(reader);
+                                                let mut line = String::new();
+                                                let mut connection_session_id: Option<u64> = None;
 
-                                    loop {
-                                        line.clear();
-                                        match timeout(UDS_TIMEOUT, buf_reader.read_line(&mut line)).await {
-                                            Ok(Ok(0)) => break, // EOF
-                                            Ok(Ok(_)) => {
-                                                if let Ok(intent) = serde_json::from_str::<Intent>(&line) {
-                                                    debug!("Received intent via UDS: {:?}", intent.id);
+                                                loop {
+                                                    line.clear();
+                                                    match timeout(UDS_TIMEOUT, buf_reader.read_line(&mut line)).await {
+                                                        Ok(Ok(0)) => break, // EOF
+                                                        Ok(Ok(_)) => {
+                                                            if let Ok(intent) = serde_json::from_str::<Intent>(&line) {
+                                                                debug!("Received intent via UDS: {:?}", intent.id);
 
-                                                    // ── Zero-Trust authorization check ──
-                                                    if let Some(ref auth) = authenticator {
-                                                        if intent.intent_type == IntentType::Command && intent.payload == "auth" {
-                                                            let token_id_opt = intent.metadata.get("token_id").and_then(|t| t.parse::<u64>().ok());
-                                                            let secret_hex_opt = intent.metadata.get("secret");
+                                                                // ── Zero-Trust authorization check ──
+                                                                if let Some(ref auth) = authenticator {
+                                                                    if intent.intent_type == IntentType::Command && intent.payload == "auth" {
+                                                                        let token_id_opt = intent.metadata.get("token_id").and_then(|t| t.parse::<u64>().ok());
+                                                                        let secret_hex_opt = intent.metadata.get("secret");
 
-                                                            let mut auth_success = false;
-                                                            let mut msg = String::from("Missing token_id or secret");
-                                                            let mut new_sess_id = 0;
+                                                                        let mut auth_success = false;
+                                                                        let mut msg = String::from("Missing token_id or secret");
+                                                                        let mut new_sess_id = 0;
 
-                                                            if let (Some(token_id), Some(secret_hex)) = (token_id_opt, secret_hex_opt) {
-                                                                if let Some(secret_bytes) = hex_to_bytes(secret_hex) {
-                                                                    match auth.authenticate(peer_uid, peer_pid, token_id, &secret_bytes).await {
-                                                                        Ok(session) => {
-                                                                            auth_success = true;
-                                                                            new_sess_id = session.session_id;
-                                                                            connection_session_id = Some(session.session_id);
-                                                                            msg = String::from("Authenticated successfully");
+                                                                        if let (Some(token_id), Some(secret_hex)) = (token_id_opt, secret_hex_opt) {
+                                                                            if let Some(secret_bytes) = hex_to_bytes(secret_hex) {
+                                                                                match auth.authenticate(peer_uid, peer_pid, token_id, &secret_bytes).await {
+                                                                                    Ok(session) => {
+                                                                                        auth_success = true;
+                                                                                        new_sess_id = session.session_id;
+                                                                                        connection_session_id = Some(session.session_id);
+                                                                                        msg = String::from("Authenticated successfully");
+                                                                                    }
+                                                                                    Err(e) => {
+                                                                                        msg = e.to_string();
+                                                                                    }
+                                                                                }
+                                                                            } else {
+                                                                                msg = String::from("Invalid secret hex format");
+                                                                            }
                                                                         }
-                                                                        Err(e) => {
-                                                                            msg = e.to_string();
-                                                                        }
-                                                                    }
-                                                                } else {
-                                                                    msg = String::from("Invalid secret hex format");
-                                                                }
-                                                            }
 
-                                                            let response = serde_json::json!({
-                                                                "success": auth_success,
-                                                                "session_id": new_sess_id,
-                                                                "message": msg,
-                                                            });
-                                                            let resp_json = format!("{}\n", response);
-                                                            let _ = timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes())).await;
-                                                            let _ = timeout(UDS_TIMEOUT, writer.flush()).await;
-                                                            continue;
-                                                        } else {
-                                                            let sess_id_opt = intent.metadata.get("session_id")
-                                                                .and_then(|s| s.parse::<u64>().ok())
-                                                                .or(connection_session_id);
-
-                                                            if let Some(sess_id) = sess_id_opt {
-                                                                let cmd_name = if intent.intent_type == IntentType::Command {
-                                                                    intent.payload.as_str()
-                                                                } else {
-                                                                    "spawn-agent"
-                                                                };
-
-                                                                match auth.authorize_command(sess_id, cmd_name) {
-                                                                    Ok(_) => {
-                                                                        // Authorized, proceed to execute
-                                                                    }
-                                                                    Err(e) => {
                                                                         let response = serde_json::json!({
-                                                                            "success": false,
-                                                                            "message": format!("Unauthorized: {e}"),
+                                                                            "success": auth_success,
+                                                                            "session_id": new_sess_id,
+                                                                            "message": msg,
                                                                         });
                                                                         let resp_json = format!("{}\n", response);
                                                                         let _ = timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes())).await;
                                                                         let _ = timeout(UDS_TIMEOUT, writer.flush()).await;
                                                                         continue;
+                                                                    } else {
+                                                                        let sess_id_opt = intent.metadata.get("session_id")
+                                                                            .and_then(|s| s.parse::<u64>().ok())
+                                                                            .or(connection_session_id);
+
+                                                                        if let Some(sess_id) = sess_id_opt {
+                                                                            let cmd_name = if intent.intent_type == IntentType::Command {
+                                                                                intent.payload.as_str()
+                                                                            } else {
+                                                                                "spawn-agent"
+                                                                            };
+
+                                                                            match auth.authorize_command(sess_id, cmd_name) {
+                                                                                Ok(_) => {
+                                                                                    // Authorized, proceed to execute
+                                                                                }
+                                                                                Err(e) => {
+                                                                                    let response = serde_json::json!({
+                                                                                        "success": false,
+                                                                                        "message": format!("Unauthorized: {e}"),
+                                                                                    });
+                                                                                    let resp_json = format!("{}\n", response);
+                                                                                    let _ = timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes())).await;
+                                                                                    let _ = timeout(UDS_TIMEOUT, writer.flush()).await;
+                                                                                    continue;
+                                                                                }
+                                                                            }
+                                                                        } else {
+                                                                            let response = serde_json::json!({
+                                                                                "success": false,
+                                                                                "message": "Unauthorized: Session token required. Perform 'auth' handshake first.",
+                                                                            });
+                                                                            let resp_json = format!("{}\n", response);
+                                                                            let _ = timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes())).await;
+                                                                            let _ = timeout(UDS_TIMEOUT, writer.flush()).await;
+                                                                            continue;
+                                                                        }
                                                                     }
                                                                 }
-                                                            } else {
-                                                                let response = serde_json::json!({
-                                                                    "success": false,
-                                                                    "message": "Unauthorized: Session token required. Perform 'auth' handshake first.",
-                                                                });
-                                                                let resp_json = format!("{}\n", response);
-                                                                let _ = timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes())).await;
-                                                                let _ = timeout(UDS_TIMEOUT, writer.flush()).await;
-                                                                continue;
-                                                            }
-                                                        }
-                                                    }
 
-                                                // ตรวจจับคำสั่งดึงข้อมูล หรือควบคุมความปลอดภัยของ CLI
-                                                if intent.intent_type == IntentType::Command {
-                                                    let cmd = intent.payload.as_str();
-                                                    // กรณีคำสั่งดึงสถานะโดยรวม
-                                                     if cmd == "status" {
-                                                        let mut running_agents = 0;
-                                                        let mut quarantined_pids = Vec::new();
-                                                        let mut blocked_syscalls = Vec::new();
-                                                        let mut hardware_targets = Vec::new();
-                                                        let mut active_lsm_profile = String::from("unknown");
-                                                        let mut allowed_syscalls_count = 0usize;
+                                                            // ตรวจจับคำสั่งดึงข้อมูล หรือควบคุมความปลอดภัยของ CLI
+                                                            if intent.intent_type == IntentType::Command {
+                                                                let cmd = intent.payload.as_str();
+                                                                // กรณีคำสั่งดึงสถานะโดยรวม
+                                                                 if cmd == "status" {
+                                                                    let mut running_agents = 0;
+                                                                    let mut quarantined_pids = Vec::new();
+                                                                    let mut blocked_syscalls = Vec::new();
+                                                                    let mut hardware_targets = Vec::new();
+                                                                    let mut active_lsm_profile = String::from("unknown");
+                                                                    let mut allowed_syscalls_count = 0usize;
 
-                                                        if let Some(ref sched) = agent_scheduler {
-                                                            running_agents = sched.get_running_agents().await.len();
-                                                        }
-                                                        if let Some(ref tc) = tcell {
-                                                            quarantined_pids = tc.get_quarantined_pids().await;
-                                                        }
-                                                        if let Some(ref l) = lsm {
-                                                            blocked_syscalls = l.get_blocked_syscalls();
-                                                            active_lsm_profile = l.active_profile_name().to_string();
-                                                            allowed_syscalls_count = l.get_allowed_syscalls().len();
-                                                        }
-                                                        if let Some(ref cs) = compute_scheduler {
-                                                            let hardware_profiles = timeout(
-                                                                UDS_TIMEOUT,
-                                                                cs.scan_real_hardware(),
-                                                            )
-                                                            .await
-                                                            .unwrap_or_default();
-                                                            for (target, profile) in hardware_profiles {
-                                                                hardware_targets.push(serde_json::json!({
-                                                                    "target": format!("{:?}", target),
-                                                                    "latency_ms": profile.latency_ms,
-                                                                    "power_watts": profile.power_watts,
-                                                                    "cost_units": profile.cost_units,
-                                                                }));
-                                                            }
-                                                        }
-
-                                                        let mut vram_allocated = 0;
-                                                        let mut vram_capacity = 0;
-                                                        let mut p2p_peers = 0;
-                                                        let mut p2p_enabled = false;
-
-                                                        if let Some(ref cm) = context_memory {
-                                                            vram_allocated = cm.vram_allocated();
-                                                            vram_capacity = cm.vram_capacity();
-                                                        }
-                                                        if let Some(ref pm) = p2p_mesh {
-                                                            p2p_enabled = true;
-                                                            p2p_peers = pm.get_alive_peers().await.len();
-                                                        }
-
-                                                        let response = serde_json::json!({
-                                                            "status": "online",
-                                                            "running_agents": running_agents,
-                                                            "quarantined_pids": quarantined_pids,
-                                                            "blocked_syscalls": blocked_syscalls,
-                                                            "active_lsm_profile": active_lsm_profile,
-                                                            "allowed_syscalls_count": allowed_syscalls_count,
-                                                            "hardware_targets": hardware_targets,
-                                                            "vram_allocated": vram_allocated,
-                                                            "vram_capacity": vram_capacity,
-                                                            "p2p_peers": p2p_peers,
-                                                            "p2p_enabled": p2p_enabled,
-                                                        });
-                                                        let resp_json = format!("{}\n", response);
-                                                        timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
-                                                            .await
-                                                            .ok();
-                                                        timeout(UDS_TIMEOUT, writer.flush())
-                                                            .await
-                                                            .ok();
-                                                        continue;
-                                                    // กรณีดึงรายการ PID ที่กำลังโดนกักกัน
-                                                    } else if cmd == "list-quarantine" {
-                                                        let mut pids = Vec::new();
-                                                        if let Some(ref tc) = tcell {
-                                                            pids = tc.get_quarantined_pids().await;
-                                                        }
-                                                        let response = serde_json::json!({
-                                                            "quarantined_pids": pids
-                                                        });
-                                                        let resp_json = format!("{}\n", response);
-                                                        timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
-                                                            .await
-                                                            .ok();
-                                                        timeout(UDS_TIMEOUT, writer.flush())
-                                                            .await
-                                                            .ok();
-                                                        continue;
-                                                    // กรณีตั้งค่า Threshold ความปลอดภัยของ T-Cell
-                                                    } else if cmd == "set-threshold" {
-                                                        let rate = intent.metadata.get("rate").and_then(|r| r.parse::<u64>().ok());
-                                                        let deny = intent.metadata.get("deny").and_then(|d| d.parse::<u32>().ok());
-                                                        let kill = intent.metadata.get("kill").and_then(|k| k.parse::<u32>().ok());
-
-                                                        let mut success = false;
-                                                        if let (Some(r), Some(d)) = (rate, deny) {
-                                                            if let Some(ref tc) = tcell {
-                                                                tc.update_thresholds(r, d, kill.unwrap_or(15));
-                                                                success = true;
-                                                            }
-                                                        }
-
-                                                        let response = serde_json::json!({
-                                                            "success": success,
-                                                            "message": if success { "Thresholds updated successfully" } else { "Failed to parse rate or deny from metadata" }
-                                                        });
-                                                        let resp_json = format!("{}\n", response);
-                                                        timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
-                                                            .await
-                                                            .ok();
-                                                        timeout(UDS_TIMEOUT, writer.flush())
-                                                            .await
-                                                            .ok();
-                                                        continue;
-                                                    // กรณีสลับ LSM allowlist profile runtime
-                                                    } else if cmd == "set-lsm-profile" {
-                                                        let requested_profile = intent.metadata.get("profile").cloned();
-                                                        let mut success = false;
-                                                        let mut message = String::from("Missing profile metadata");
-                                                        let mut active_lsm_profile = String::from("unknown");
-                                                        let mut allowed_syscalls_count = 0usize;
-                                                        let mut available_profiles = Vec::new();
-
-                                                        if let Some(profile) = requested_profile {
-                                                            if let Some(ref l) = lsm {
-                                                                available_profiles = l.available_profiles();
-                                                                match l.set_active_profile(&profile) {
-                                                                    Ok(()) => {
-                                                                        success = true;
-                                                                        message = format!("LSM profile switched to {profile}");
-                                                                        active_lsm_profile = l.active_profile_name();
-                                                                        allowed_syscalls_count = l.get_allowed_syscalls().len();
+                                                                    if let Some(ref sched) = agent_scheduler {
+                                                                        running_agents = sched.get_running_agents().await.len();
                                                                     }
-                                                                    Err(err) => {
-                                                                        message = err.to_string();
-                                                                        active_lsm_profile = l.active_profile_name();
-                                                                        allowed_syscalls_count = l.get_allowed_syscalls().len();
+            if let Some(ref tc) = tcell {
+                                                                    for tenant_id in tc.tenant_ids() {
+                                                                        let mut tenant_pids = tc.get_quarantined_pids(&tenant_id).await;
+                                                                        quarantined_pids.append(&mut tenant_pids);
                                                                     }
                                                                 }
-                                                            } else {
-                                                                message = "LSM engine unavailable".to_string();
-                                                            }
-                                                        }
+                                                                    if let Some(ref l) = lsm {
+                                                                        blocked_syscalls = l.get_blocked_syscalls();
+                                                                        active_lsm_profile = l.active_profile_name().to_string();
+                                                                        allowed_syscalls_count = l.get_allowed_syscalls().len();
+                                                                    }
+                                                                    if let Some(ref cs) = compute_scheduler {
+                                                                        let hardware_profiles = timeout(
+                                                                            UDS_TIMEOUT,
+                                                                            cs.scan_real_hardware(),
+                                                                        )
+                                                                        .await
+                                                                        .unwrap_or_default();
+                                                                        for (target, profile) in hardware_profiles {
+                                                                            hardware_targets.push(serde_json::json!({
+                                                                                "target": format!("{:?}", target),
+                                                                                "latency_ms": profile.latency_ms,
+                                                                                "power_watts": profile.power_watts,
+                                                                                "cost_units": profile.cost_units,
+                                                                            }));
+                                                                        }
+                                                                    }
 
-                                                        let response = serde_json::json!({
-                                                            "success": success,
-                                                            "message": message,
-                                                            "active_lsm_profile": active_lsm_profile,
-                                                            "allowed_syscalls_count": allowed_syscalls_count,
-                                                            "available_profiles": available_profiles,
-                                                        });
-                                                        let resp_json = format!("{}\n", response);
-                                                        timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
-                                                            .await
-                                                            .ok();
-                                                        timeout(UDS_TIMEOUT, writer.flush())
-                                                            .await
-                                                            .ok();
-                                                        continue;
+                                                                    let mut vram_allocated = 0;
+                                                                    let mut vram_capacity = 0;
+                                                                    let mut p2p_peers = 0;
+                                                                    let mut p2p_enabled = false;
+
+                                                                    if let Some(ref cm) = context_memory {
+                                                                        vram_allocated = cm.vram_allocated();
+                                                                        vram_capacity = cm.vram_capacity();
+                                                                    }
+                                                                    if let Some(ref pm) = p2p_mesh {
+                                                                        p2p_enabled = true;
+                                                                        p2p_peers = pm.get_alive_peers().await.len();
+                                                                    }
+
+                                                                    let response = serde_json::json!({
+                                                                        "status": "online",
+                                                                        "running_agents": running_agents,
+                                                                        "quarantined_pids": quarantined_pids,
+                                                                        "blocked_syscalls": blocked_syscalls,
+                                                                        "active_lsm_profile": active_lsm_profile,
+                                                                        "allowed_syscalls_count": allowed_syscalls_count,
+                                                                        "hardware_targets": hardware_targets,
+                                                                        "vram_allocated": vram_allocated,
+                                                                        "vram_capacity": vram_capacity,
+                                                                        "p2p_peers": p2p_peers,
+                                                                        "p2p_enabled": p2p_enabled,
+                                                                    });
+                                                                    let resp_json = format!("{}\n", response);
+                                                                    timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
+                                                                        .await
+                                                                        .ok();
+                                                                    timeout(UDS_TIMEOUT, writer.flush())
+                                                                        .await
+                                                                        .ok();
+                                                                    continue;
+                                                                // กรณีดึงรายการ PID ที่กำลังโดนกักกัน
+                                                                } else if cmd == "list-quarantine" {
+                                                                    let mut pids = Vec::new();
+                                                                    if let Some(ref tc) = tcell {
+                                                                        for tenant_id in tc.tenant_ids() {
+                                                                            let mut tenant_pids = tc.get_quarantined_pids(&tenant_id).await;
+                                                                            pids.append(&mut tenant_pids);
+                                                                        }
+                                                                    }
+                                                                    let response = serde_json::json!({
+                                                                        "quarantined_pids": pids
+                                                                    });
+                                                                    let resp_json = format!("{}\n", response);
+                                                                    timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
+                                                                        .await
+                                                                        .ok();
+                                                                    timeout(UDS_TIMEOUT, writer.flush())
+                                                                        .await
+                                                                        .ok();
+                                                                    continue;
+                                                                // กรณีตั้งค่า Threshold ความปลอดภัยของ T-Cell
+                                                                } else if cmd == "set-threshold" {
+                                                                    let rate = intent.metadata.get("rate").and_then(|r| r.parse::<u64>().ok());
+                                                                    let deny = intent.metadata.get("deny").and_then(|d| d.parse::<u32>().ok());
+                                                                    let kill = intent.metadata.get("kill").and_then(|k| k.parse::<u32>().ok());
+
+                                                                    let mut success = false;
+                                                                    if let (Some(r), Some(d)) = (rate, deny) {
+                                                                        if let Some(ref tc) = tcell {
+                                                                            tc.update_thresholds(r, d, kill.unwrap_or(15));
+                                                                            success = true;
+                                                                        }
+                                                                    }
+
+                                                                    let response = serde_json::json!({
+                                                                        "success": success,
+                                                                        "message": if success { "Thresholds updated successfully" } else { "Failed to parse rate or deny from metadata" }
+                                                                    });
+                                                                    let resp_json = format!("{}\n", response);
+                                                                    timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
+                                                                        .await
+                                                                        .ok();
+                                                                    timeout(UDS_TIMEOUT, writer.flush())
+                                                                        .await
+                                                                        .ok();
+                                                                    continue;
+                                                                // กรณีสลับ LSM allowlist profile runtime
+                                                                } else if cmd == "set-lsm-profile" {
+                                                                    let requested_profile = intent.metadata.get("profile").cloned();
+                                                                    let mut success = false;
+                                                                    let mut message = String::from("Missing profile metadata");
+                                                                    let mut active_lsm_profile = String::from("unknown");
+                                                                    let mut allowed_syscalls_count = 0usize;
+                                                                    let mut available_profiles = Vec::new();
+
+                                                                    if let Some(profile) = requested_profile {
+                                                                        if let Some(ref l) = lsm {
+                                                                            available_profiles = l.available_profiles();
+                                                                            match l.set_active_profile(&profile) {
+                                                                                Ok(()) => {
+                                                                                    success = true;
+                                                                                    message = format!("LSM profile switched to {profile}");
+                                                                                    active_lsm_profile = l.active_profile_name();
+                                                                                    allowed_syscalls_count = l.get_allowed_syscalls().len();
+                                                                                }
+                                                                                Err(err) => {
+                                                                                    message = err.to_string();
+                                                                                    active_lsm_profile = l.active_profile_name();
+                                                                                    allowed_syscalls_count = l.get_allowed_syscalls().len();
+                                                                                }
+                                                                            }
+                                                                        } else {
+                                                                            message = "LSM engine unavailable".to_string();
+                                                                        }
+                                                                    }
+
+                                                                    let response = serde_json::json!({
+                                                                        "success": success,
+                                                                        "message": message,
+                                                                        "active_lsm_profile": active_lsm_profile,
+                                                                        "allowed_syscalls_count": allowed_syscalls_count,
+                                                                        "available_profiles": available_profiles,
+                                                                    });
+                                                                    let resp_json = format!("{}\n", response);
+                                                                    timeout(UDS_TIMEOUT, writer.write_all(resp_json.as_bytes()))
+                                                                        .await
+                                                                        .ok();
+                                                                    timeout(UDS_TIMEOUT, writer.flush())
+                                                                        .await
+                                                                        .ok();
+                                                                    continue;
+                                                                }
+                                                            }
+
+                                                            // สำหรับ Intent ทั่วไป ให้ส่งเข้าสู่บัส Intent เพื่อโปรเซสตามปกติ (อนุญาตได้)
+                                                            if let Err(e) = bus.publish(intent).await {
+                                                                error!("Failed to publish UDS intent: {}", e);
+                                                            }
+                                                        } else {
+                                                            error!("Failed to parse intent JSON: {}", line);
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        error!("UDS read error: {}", e);
+                                                        break;
+                                                    }
+                                                    Ok(Err(e)) => {
+                                                        error!("UDS read failed: {}", e);
+                                                        break;
                                                     }
                                                 }
-
-                                                // สำหรับ Intent ทั่วไป ให้ส่งเข้าสู่บัส Intent เพื่อโปรเซสตามปกติ (อนุญาตได้)
-                                                if let Err(e) = bus.publish(intent).await {
-                                                    error!("Failed to publish UDS intent: {}", e);
-                                                }
-                                            } else {
-                                                error!("Failed to parse intent JSON: {}", line);
                                             }
-                                        }
-                                        Err(e) => {
-                                            error!("UDS read error: {}", e);
-                                            break;
-                                        }
-                                        Ok(Err(e)) => {
-                                            error!("UDS read failed: {}", e);
-                                            break;
-                                        }
+                                        });
+                                    } // if authenticated
+                                    }
+                                    Err(e) => {
+                                        error!("UDS accept error: {}", e);
+                                    }
+                                    Ok(Err(e)) => {
+                                        error!("UDS accept failed: {}", e);
                                     }
                                 }
-                            });
-                        } // if authenticated
+                            }
                         }
-                        Err(e) => {
-                            error!("UDS accept error: {}", e);
-                        }
-                        Ok(Err(e)) => {
-                            error!("UDS accept failed: {}", e);
-                        }
-                    }
-                }
-            }
         }
     });
 

@@ -135,7 +135,7 @@ async fn chaos_tcell_survives_concurrent_observe_and_quarantine() {
         handles.push(tokio::spawn(async move {
             for i in 0..200u32 {
                 let denied = i % 13 == 0;
-                let _ = tcell.observe_syscall(pid, "read", denied).await;
+                let _ = tcell.observe_syscall("test", pid, "read", denied).await;
             }
         }));
     }
@@ -146,11 +146,11 @@ async fn chaos_tcell_survives_concurrent_observe_and_quarantine() {
         handles.push(tokio::spawn(async move {
             for round in 0..50u32 {
                 let pid = (round % 16) + 1 + offset;
-                tcell.quarantine(pid).await;
+                tcell.quarantine("test", pid).await;
                 tokio::task::yield_now().await;
-                tcell.release(pid).await;
+                tcell.release("test", pid).await;
                 let _ = tcell
-                    .release_expired_quarantine(std::time::Duration::from_nanos(1))
+                    .release_expired_quarantine("test", std::time::Duration::from_nanos(1))
                     .await;
             }
         }));
@@ -161,12 +161,12 @@ async fn chaos_tcell_survives_concurrent_observe_and_quarantine() {
     }
 
     // สถานะสุดท้ายต้อง consistent: ทุก PID ที่รายงานว่าถูกกักกัน ต้องตอบ true จริง
-    for pid in tcell.get_quarantined_pids().await {
-        assert!(tcell.is_quarantined(pid).await);
+    for pid in tcell.get_quarantined_pids("test").await {
+        assert!(tcell.is_quarantined("test", pid).await);
     }
     // สถิติของทุก observer PID ต้องครบและไม่เสียหาย
     for pid in 1..=16u32 {
-        let stats = tcell.get_stats(pid).expect("stats must exist");
+        let stats = tcell.get_stats("test", pid).expect("stats must exist");
         assert!(stats.syscall_count > 0);
     }
 }

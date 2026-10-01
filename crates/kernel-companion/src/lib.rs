@@ -603,6 +603,8 @@ impl KernelCompanion {
             let audit_logger = AuditLogger::new(std::path::PathBuf::from(
                 &self.config.capability_security.audit_log_path,
             ));
+            // UID -> tenant_id mapping สำหรับ ANK-065 (tenant-keyed T-Cell)
+            let uid_to_tenant = self.config.immune_system.uid_to_tenant.clone();
             let mut tcell_shutdown_rx = shutdown_tx.subscribe();
             self.tcell_task = Some(tokio::spawn(async move {
                 loop {
@@ -617,8 +619,15 @@ impl KernelCompanion {
                                 tcell.set_pid_sensitivity_factor(event.pid, 1.0);
                             }
 
+                            // แปลง UID เป็น tenant_id (ANK-065: tenant-keyed T-Cell)
+                            // ถ้า UID ไม่มีในแมป ใช้ "default"
+                            let tenant_id = uid_to_tenant
+                                .get(&event.uid)
+                                .cloned()
+                                .unwrap_or_else(|| "default".to_string());
+
                             let denied = matches!(event.decision, PolicyDecision::Deny);
-                            let decision = tcell.observe_syscall(event.pid, &event.syscall_name, denied).await;
+                            let decision = tcell.observe_syscall(&tenant_id, event.pid, &event.syscall_name, denied).await;
 
                             if decision == ThreatDecision::Quarantine || decision == ThreatDecision::Kill {
                                 // ── H4: real-time revocation ──
@@ -633,12 +642,12 @@ impl KernelCompanion {
                                 .await;
 
                                 if decision == ThreatDecision::Quarantine {
-                                    tcell.quarantine(event.pid).await;
+                                    tcell.quarantine(&tenant_id, event.pid).await;
                                 }
 
                                 // Audit logging with full context
                                 let reason = format!("{:?}", decision);
-                                let anomaly_score = tcell.get_stats(event.pid)
+                                let anomaly_score = tcell.get_stats(&tenant_id, event.pid)
                                     .map(|s| s.anomaly_score)
                                     .unwrap_or(0.0);
                                 let entry = match decision {
@@ -658,6 +667,7 @@ impl KernelCompanion {
 
                                 let payload = serde_json::json!({
                                     "pid": event.pid,
+                                    "tenant_id": tenant_id,
                                     "syscall": event.syscall_name,
                                     "decision": reason,
                                     "anomaly_score": anomaly_score,
@@ -700,12 +710,16 @@ impl KernelCompanion {
                             if intent.intent_type == IntentType::Event && intent.source == "tcell" {
                                 if let Ok(data) = serde_json::from_str::<serde_json::Value>(&intent.payload) {
                                     if let Some(pid) = data.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) {
+                                        // ใช้ tenant_id จาก payload ถ้ามี ไม่งั้นใช้ "default"
+                                        let tenant_id = data.get("tenant_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("default");
                                         let severity = match data.get("decision").and_then(|v| v.as_str()) {
                                             Some("Kill") => 10,
                                             Some("Quarantine") => 8,
                                             _ => 5,
                                         };
-                                        if let Some(stats) = tcell_for_immune.get_stats(pid) {
+                                        if let Some(stats) = tcell_for_immune.get_stats(tenant_id, pid) {
                                             let syscalls: Vec<String> = stats.syscall_history.iter().map(|s| s.to_string()).collect();
                                             if !syscalls.is_empty() {
                                                 bcell.learn_threat(syscalls, severity).await;
@@ -744,10 +758,12 @@ impl KernelCompanion {
                                 info!("Immune System: Macrophage cleaned {} expired context entries", swept);
                             }
 
-                            // ปลดกักกัน process ที่หมดอายุของ T-Cell
-                            let released = tcell_for_immune.release_expired_quarantine(std::time::Duration::from_secs(300)).await;
-                            if !released.is_empty() {
-                                info!("Immune System: auto-released {} processes from T-Cell quarantine", released.len());
+                            // ปลดกักกัน process ที่หมดอายุของ T-Cell ในทุก tenant
+                            for tenant_id in tcell_for_immune.tenant_ids() {
+                                let released = tcell_for_immune.release_expired_quarantine(&tenant_id, std::time::Duration::from_secs(300)).await;
+                                if !released.is_empty() {
+                                    info!("Immune System: auto-released {} processes from T-Cell quarantine (tenant: {})", released.len(), tenant_id);
+                                }
                             }
                         }
                         changed = shutdown_rx.changed() => {

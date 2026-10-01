@@ -19,13 +19,17 @@ fn bench_tcell() -> TCellAgent {
     tcell
 }
 
+const BENCH_TENANT: &str = "bench";
+
 fn bench_observe_syscall_single_pid(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let tcell = bench_tcell();
 
     c.bench_function("observe_syscall_single_pid", |b| {
         b.to_async(&rt).iter(|| async {
-            let decision = tcell.observe_syscall(1, black_box("read"), false).await;
+            let decision = tcell
+                .observe_syscall(BENCH_TENANT, 1, black_box("read"), false)
+                .await;
             black_box(decision)
         })
     });
@@ -42,7 +46,9 @@ fn bench_observe_syscall_multi_pid(c: &mut Criterion) {
             let tcell = &tcell;
             let pid = pid;
             async move {
-                let decision = tcell.observe_syscall(pid, black_box("read"), false).await;
+                let decision = tcell
+                    .observe_syscall(BENCH_TENANT, pid, black_box("read"), false)
+                    .await;
                 black_box(decision)
             }
         })
@@ -69,7 +75,12 @@ fn bench_observe_syscall_concurrent(c: &mut Criterion) {
                             for i in 0..EVENTS_PER_TASK {
                                 let denied = i % 17 == 0;
                                 let decision = tcell
-                                    .observe_syscall(task_id + 1, black_box("read"), denied)
+                                    .observe_syscall(
+                                        BENCH_TENANT,
+                                        task_id + 1,
+                                        black_box("read"),
+                                        denied,
+                                    )
                                     .await;
                                 black_box(decision);
                             }
@@ -89,12 +100,12 @@ fn bench_get_stats(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let tcell = bench_tcell();
     rt.block_on(async {
-        let _ = tcell.observe_syscall(42, "read", false).await;
+        let _ = tcell.observe_syscall(BENCH_TENANT, 42, "read", false).await;
     });
 
     c.bench_function("get_stats", |b| {
         b.iter(|| {
-            let stats = tcell.get_stats(black_box(42));
+            let stats = tcell.get_stats(BENCH_TENANT, black_box(42));
             black_box(stats)
         })
     });
