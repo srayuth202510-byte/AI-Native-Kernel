@@ -161,9 +161,10 @@ CI_STAGE_TIMEOUT_SECS=300 run_stage "rocksdb warm prereq check" bash "$SCRIPT_DI
 CI_STAGE_TIMEOUT_SECS=1200 run_stage "rocksdb warm benchmark compile" cargo bench -p context-memory --bench rocksdb_bench --features rocksdb-warm --no-run
 # งบ latency 2ms ของ data plane วัดได้เฉพาะ release เท่านั้น (ดู ai-gateway/tests/perf_budget.rs)
 # ใน debug เทสต์ถูก ignore อยู่แล้ว จึงต้องรันแยกจาก debug test suite ไม่เช่นนั้นไม่มีอะไรถูกตรวจ
-# ใช้ non-blocking เพราะ shared runner ไม่นิ่งพอสำหรับ latency assertion —
-# ถ้าพังเฉพาะบน runner จะได้ WARN ให้สืบสวนแทนที่จะบล็อกทั้ง pipeline
-CI_STAGE_TIMEOUT_SECS=1200 run_stage "data plane latency budget (release)" non-blocking \
+# เป็น required (blocking) ตาม buyer decision §9.1 ใน pivot doc: latency คืองบที่
+# AI platform team ใช้ตัดสินใจซื้อ — regression ต้องแดง ไม่ใช่แค่ WARN
+# ถ้า shared runner ไม่นิ่งจน flake ให้กลับเป็น non-blocking พร้อมหลักฐาน ไม่ใช่เงียบ
+CI_STAGE_TIMEOUT_SECS=1200 run_stage "data plane latency budget (release)" \
     cargo test -p ai-gateway --release --test perf_budget -- --test-threads=1 --nocapture
 CI_STAGE_TIMEOUT_SECS=1500 run_stage "release build" cargo build --release
 

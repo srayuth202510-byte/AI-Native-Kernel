@@ -253,11 +253,11 @@ Stated up front so we can watch the signals:
    regardless of features. **Measured** — see "Measured" above: the full `inspect_request`
    path including its inline audit write is 36–52 µs P99 in release, ~40x under budget at the
    worst observed run, and the
-   per-layer tests assert that budget on every release run. Caveat: the CI stage runs it
-   `non-blocking`, so a regression surfaces as `WARN` rather than a red build — it will not
-   actually block a merge until that stage is flipped to `required`. Still not validated
-   against a real vLLM host with TLS and concurrent tenants, which is where the tail could
-   still move.
+   per-layer tests assert that budget on every release run. The CI stage runs it as
+   `required` since 2026-10-02 (buyer decision §9.1) — a regression blocks the merge.
+   If shared-runner noise ever flakes it, revert to `non-blocking` only with evidence
+   attached, not silently. Still not validated against a real vLLM host with TLS and
+   concurrent tenants, which is where the tail could still move.
 2. **The PII/signature layer gets dismissed as "just regex."** It probably will be. The
    answer is the host plane — the regex layer is the on-ramp, not the pitch.
 3. **eBPF/LSM deployment friction.** Requiring privileged, kernel-specific setup to get
