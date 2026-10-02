@@ -9,11 +9,12 @@ on:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -21,22 +22,16 @@ jobs:
           toolchain: nightly-2026-06-25
           components: rustfmt, clippy
           override: true
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          # Built-in Swatinem/rust-cache handles registry + target caching.
+          # Do NOT add a manual actions/cache of `target/` — uploading
+          # multi-GB release + rocksdb artifacts hangs the job for hours.
 
       - name: Install eBPF toolchain
+        timeout-minutes: 10
         run: bash scripts/install-ebpf-deps.sh --skip-check
 
       - name: Generate eBPF prebuilt objects (if BTF available)
+        timeout-minutes: 10
         run: |
           if [ -f /sys/kernel/btf/vmlinux ]; then
             bash scripts/build-ebpf-objects.sh || echo "eBPF build script failed — using committed prebuilt objects"
@@ -45,11 +40,30 @@ jobs:
           ls -la crates/kernel-companion/prebuilt-bpf/
 
       - name: Run CI validation suite
+        timeout-minutes: 45
         run: bash scripts/run-ci-validations.sh
+
+      - name: Ensure CI validation summary exists
+        if: always()
+        run: |
+          if [ ! -f target/ci-validation-summary.md ]; then
+            mkdir -p target
+            {
+              echo "# CI Validation Summary"
+              echo
+              echo "- Overall: UNKNOWN (validation step was cancelled or timed out before writing summary)"
+              echo "- Failed stages: unknown"
+              echo "- Non-blocking stage warnings: unknown"
+              echo
+              echo "The validation script did not produce a summary — check the"
+              echo "\`Run CI validation suite\` step log for a timeout/cancel."
+            } > target/ci-validation-summary.md
+          fi
+          cat target/ci-validation-summary.md
 
       - name: Upload CI validation summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ci-validation-summary
           path: target/ci-validation-summary.md
@@ -68,6 +82,7 @@ jobs:
     # เพราะต้องมี endpoint) — ปิดช่องว่างที่ gRPC upsert/search path ไม่มี
     # regression coverage อัตโนมัติ pin เวอร์ชันให้ตรงกับที่ validate ด้วยมือ
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     env:
       CARGO_TERM_COLOR: always
       # run-qdrant-tests.sh เห็น QDRANT_URL แล้วใช้ endpoint นี้ (ไม่สตาร์ท mock)
@@ -82,7 +97,7 @@ jobs:
           - 6334:6334
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -90,28 +105,19 @@ jobs:
           toolchain: nightly-2026-06-25
           override: true
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       # run-qdrant-tests.sh มี wait loop รอ endpoint พร้อม แล้วรัน
       # `cargo test -p context-memory --lib -- --ignored` ครอบทั้ง 4 ตัว
       # (semantic store x3 + semantic file system x1)
       - name: Run Qdrant-backed integration tests
+        timeout-minutes: 20
         run: bash scripts/run-qdrant-tests.sh
 
   security-audit:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -120,7 +126,9 @@ jobs:
           override: true
 
       - name: Install cargo-audit
+        timeout-minutes: 10
         run: cargo install cargo-audit --locked
 
       - name: Run cargo audit
+        timeout-minutes: 5
         run: cargo audit

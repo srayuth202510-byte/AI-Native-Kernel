@@ -16,11 +16,12 @@ on:
 jobs:
   validate-ebpf:
     runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -29,28 +30,23 @@ jobs:
           components: rustfmt, clippy
           override: true
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Install host dependencies
         if: ${{ inputs.install_dependencies }}
+        timeout-minutes: 10
         run: bash scripts/install-ebpf-deps.sh --skip-check
 
       - name: Run eBPF prerequisite check
+        timeout-minutes: 10
         run: |
           mkdir -p target
           bash scripts/check-ebpf-prereqs.sh | tee target/ebpf-prereqs.log
 
       - name: Run privileged eBPF validation
-        run: bash scripts/run-privileged.sh bash scripts/run.sh validate-ebpf | tee target/ebpf-validation.log
+        timeout-minutes: 30
+        run: |
+          mkdir -p target
+          touch target/ebpf-validation.log
+          bash scripts/run-privileged.sh bash scripts/run.sh validate-ebpf | tee target/ebpf-validation.log
 
       - name: Write workflow summary
         if: always()
@@ -69,7 +65,7 @@ jobs:
 
       - name: Upload eBPF validation artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ebpf-validation-artifacts
           path: |
