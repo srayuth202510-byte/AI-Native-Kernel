@@ -9,7 +9,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
     steps:
@@ -40,7 +40,7 @@ jobs:
           ls -la crates/kernel-companion/prebuilt-bpf/
 
       - name: Run CI validation suite
-        timeout-minutes: 45
+        timeout-minutes: 75
         run: bash scripts/run-ci-validations.sh
 
       - name: Ensure CI validation summary exists

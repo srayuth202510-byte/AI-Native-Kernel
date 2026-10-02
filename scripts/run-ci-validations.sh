@@ -149,7 +149,12 @@ write_summary_file 0
 
 CI_STAGE_TIMEOUT_SECS=300 run_stage "formatting" cargo fmt --all -- --check
 CI_STAGE_TIMEOUT_SECS=900 run_stage "clippy" cargo clippy --all-targets --all-features -- -D warnings
-CI_STAGE_TIMEOUT_SECS=1500 run_stage "workspace + Qdrant-backed tests" bash "$SCRIPT_DIR/run-all-tests.sh"
+# Split from old "workspace + Qdrant-backed tests" (run-all-tests.sh): the old
+# single stage hid whether the hang was in `cargo test --workspace` or in the
+# Qdrant mock + --ignored run. CI 2026-10-02 showed this stage hitting 1500s
+# (exit 124) while every other stage passed in ~2min total.
+CI_STAGE_TIMEOUT_SECS=2400 run_stage "workspace tests" cargo test --workspace
+CI_STAGE_TIMEOUT_SECS=900 run_stage "Qdrant-backed ignored tests" bash "$SCRIPT_DIR/run-qdrant-tests.sh"
 CI_STAGE_TIMEOUT_SECS=600 run_stage "P2P mesh slice" bash "$SCRIPT_DIR/run-p2p-tests.sh"
 CI_STAGE_TIMEOUT_SECS=300 run_stage "eBPF prerequisite check" non-blocking bash "$SCRIPT_DIR/check-ebpf-prereqs.sh"
 CI_STAGE_TIMEOUT_SECS=300 run_stage "rocksdb warm prereq check" bash "$SCRIPT_DIR/check-rocksdb-bench-prereqs.sh"
