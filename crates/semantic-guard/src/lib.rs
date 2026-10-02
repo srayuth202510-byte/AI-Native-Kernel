@@ -16,10 +16,12 @@
 
 #![deny(unsafe_code)]
 
+pub mod detector;
 pub mod injection;
 pub mod normalize;
 pub mod pii;
 
+pub use detector::Detector;
 pub use injection::{InjectionError, InjectionFinding, InjectionMatcher, InjectionRule};
 pub use normalize::{Normalized, normalize};
 pub use pii::{PiiDetector, PiiError, PiiFinding, PiiKind, RedactionReport, Severity};
@@ -192,9 +194,13 @@ impl Default for GuardConfig {
 }
 
 /// ชั้นปกป้องระดับข้อมูลที่ประกอบตัวตรวจจับ PII และ injection เข้าด้วยกัน
+///
+/// ตัวจับลายเซ็นในตัวทำงานเสมอ (ตาม `detection_mode`) ส่วนตัวตรวจจับของลูกค้า
+/// เสียบเพิ่มได้ด้วย [`Guard::with_detector`] — ดูสัญญาใน [`detector`]
 pub struct Guard {
     pii: PiiDetector,
     injection: InjectionMatcher,
+    extra_detectors: Vec<Box<dyn Detector>>,
     config: GuardConfig,
 }
 
@@ -202,6 +208,14 @@ impl std::fmt::Debug for Guard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Guard")
             .field("config", &self.config)
+            .field(
+                "extra_detectors",
+                &self
+                    .extra_detectors
+                    .iter()
+                    .map(|d| d.id())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -223,8 +237,26 @@ impl Guard {
         Ok(Self {
             pii: PiiDetector::new()?,
             injection: InjectionMatcher::new()?,
+            extra_detectors: Vec::new(),
             config,
         })
+    }
+
+    /// เสียบตัวตรวจจับของลูกค้า (เช่น transformer classifier) ต่อท้ายห่วงโซ่
+    ///
+    /// finding ที่ได้รวมกับของ built-in แล้วตัดสินด้วยกฎเดิมทั้งหมด
+    /// (deny เมื่อ High, fail-closed เมื่องบหมด) — ดู [`detector`] ประกอบ
+    #[must_use]
+    pub fn with_detector(mut self, detector: impl Detector + 'static) -> Self {
+        self.extra_detectors.push(Box::new(detector));
+        self
+    }
+
+    /// รหัสของ detector ที่เสียบเพิ่ม (ใช้เป็น metric label ฝั่งผู้เรียก)
+    /// — ตัวจับลายเซ็นในตัวรายงานผ่าน `detection_mode` เดิม ไม่รวมในนี้
+    #[must_use]
+    pub fn detector_ids(&self) -> Vec<&'static str> {
+        self.extra_detectors.iter().map(|d| d.id()).collect()
     }
 
     /// การตั้งค่าที่ใช้งานอยู่
@@ -253,13 +285,23 @@ impl Guard {
         let pii_found = self.pii.detect(&normalized);
         self.check_budget(started)?;
 
-        let injections = match (direction, self.config.detection_mode) {
+        let mut injections = match (direction, self.config.detection_mode) {
             (Direction::Outbound, _) | (_, DetectionMode::PiiOnly) => Vec::new(),
             (Direction::Inbound, DetectionMode::PiiAndSignatures) => {
                 self.injection.scan(&normalized)
             }
         };
         self.check_budget(started)?;
+
+        // ตัวตรวจจับที่เสียบเพิ่มทำงานเฉพาะขาเข้าเหมือนลายเซ็น (ดูเหตุผลที่
+        // `Direction::Outbound`) — แต่ละตัวจับเวลาแยก เกินงบคือ fail-closed
+        if direction == Direction::Inbound {
+            for detector in &self.extra_detectors {
+                injections.extend(detector.scan(&normalized));
+                self.check_budget(started)?;
+            }
+            injections.sort_by_key(|f| (f.span.start, f.rule_id));
+        }
 
         // 1. Injection ระดับ High → ปฏิเสธทันที (ถ้าเปิดโหมดเข้มงวด)
         let peak_injection = InjectionMatcher::peak_severity(&injections);
