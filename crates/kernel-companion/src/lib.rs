@@ -1969,6 +1969,154 @@ mod tests {
 
         let _ = std::fs::remove_file(&audit_path);
     }
+
+    #[tokio::test]
+    async fn validate_h4_revocation_cuts_real_syscalls_under_load() {
+        // Privileged H4: same cut path as the simulation load test, but
+        // against a REAL attach — the proof is a live child process whose
+        // next file open is denied by the kernel after the cut.
+        //
+        // Needs root + CAP_BPF + BTF + cgroup v2. Anything less (including
+        // plain CI runners) SKIPs politely via the boot error below — same
+        // convention as the other `validate_*` tests in this file.
+        // Run: `sudo -E cargo test -p kernel-companion --lib
+        //        validate_h4_revocation_cuts_real_syscalls_under_load -- --nocapture`
+        // or `bash scripts/run-privileged.sh bash scripts/run.sh validate-ebpf`.
+        use capability_security::{CapabilityToken, Scope};
+        use std::time::Duration;
+
+        const PRIV_CUT_BUDGET: Duration = Duration::from_secs(2);
+
+        let run_id = uuid::Uuid::new_v4();
+        let cgroup_path = format!("/sys/fs/cgroup/ank-h4-priv-{}", std::process::id());
+        let mut config = Config::default();
+        config.kernel_companion.uds_socket_path = format!("/tmp/ank-h4-priv-{run_id}.sock");
+        config.kernel_companion.metrics_server_addr = "127.0.0.1:0".to_string();
+        config.capability_security.audit_log_path = format!("/tmp/ank-h4-priv-{run_id}-audit.log");
+        // Real eBPF only — a failed boot means "no privilege here", not failure.
+        config.ebpf.enable_fallback = false;
+        config.lsm.agent_cgroup_path = Some(cgroup_path.clone());
+
+        let mut companion = KernelCompanion::with_config(&config);
+        if let Err(e) = companion.boot().await {
+            eprintln!("SKIP validate_h4_revocation_cuts_real_syscalls_under_load: {e:#}");
+            return;
+        }
+
+        // Minimal probe child: answers one line per line received by opening
+        // a host file (its own open, hence its own PID, is what the LSM
+        // hook judges). EOF on stdin ends the loop.
+        let mut child = tokio::process::Command::new("bash")
+            .arg("-c")
+            .arg("while read -r _line; do if read -r _ < /etc/hostname; then echo OK; else echo DENIED; fi; done")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn probe child");
+        let child_pid = child.id().expect("child must have a PID");
+        let mut stdin = child.stdin.take().expect("child stdin");
+        let mut lines = {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            BufReader::new(child.stdout.take().expect("child stdout")).lines()
+        };
+
+        async fn probe(
+            stdin: &mut tokio::process::ChildStdin,
+            lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+        ) -> String {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(b"go\n").await.expect("write probe trigger");
+            stdin.flush().await.expect("flush probe trigger");
+            tokio::time::timeout(Duration::from_secs(10), lines.next_line())
+                .await
+                .expect("probe must answer within 10s")
+                .expect("probe stdout must be readable")
+                .expect("probe must not close stdout")
+        }
+
+        // 1. Baseline: host world opens files.
+        assert_eq!(
+            probe(&mut stdin, &mut lines).await,
+            "OK",
+            "priv H4: host-world probe must open files"
+        );
+
+        // 2. Authorize the child (moves it into the agent cgroup allow-list).
+        let token = CapabilityToken::new(
+            7401,
+            Scope::Process(child_pid),
+            vec!["read".to_string()],
+            Duration::from_secs(60),
+            [0x44; 32],
+        );
+        companion
+            .capability_security
+            .issue_token(token.clone())
+            .await
+            .expect("issue token");
+        let allowed = companion
+            .authorize_process_token(child_pid, token.id, &[0x44; 32], "read")
+            .await
+            .expect("authorize must not error");
+        assert!(allowed, "priv H4: valid token must authorize");
+        assert_eq!(
+            probe(&mut stdin, &mut lines).await,
+            "OK",
+            "priv H4: authorized agent must still open files"
+        );
+
+        // 3. Drive the companion's own TCell past Quarantine for this PID.
+        // Jitter off for determinism; default rate_threshold (100) trips well
+        // inside 300 rapid observes, all inside one window (no Kill path).
+        companion.tcell.set_jitter_enabled(false);
+        let mut tripped = false;
+        for _ in 0..300 {
+            let decision = companion
+                .tcell
+                .observe_syscall("h4-priv", child_pid, "read", false)
+                .await;
+            if decision == ThreatDecision::Quarantine || decision == ThreatDecision::Kill {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(tripped, "priv H4: child PID must trip TCell under load");
+
+        // 4. The production cut — deny at kernel first, revoke token after —
+        // timed so the privileged run also records real-attach cut latency.
+        let start = std::time::Instant::now();
+        apply_immune_revocation(
+            &companion.attachment,
+            &companion.capability_security,
+            child_pid,
+        )
+        .await;
+        let cut_latency = start.elapsed();
+        println!("[H4-PRIV] real-attach cut latency: {cut_latency:?} (budget {PRIV_CUT_BUDGET:?})");
+
+        // 5. The kernel must now deny the child's next open.
+        assert_eq!(
+            probe(&mut stdin, &mut lines).await,
+            "DENIED",
+            "priv H4: quarantined agent must be blocked by the kernel"
+        );
+        assert!(
+            cut_latency < PRIV_CUT_BUDGET,
+            "priv H4: cut {cut_latency:?} exceeds {PRIV_CUT_BUDGET:?}"
+        );
+
+        // ── cleanup ──
+        drop(stdin);
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        companion.shutdown().await;
+        let _ = tokio::fs::remove_file(&config.kernel_companion.uds_socket_path).await;
+        let _ = tokio::fs::remove_file(&config.capability_security.audit_log_path).await;
+        let _ = std::fs::remove_dir(&cgroup_path);
+
+        eprintln!("PASS: H4 real-attach cut validated end-to-end (kernel DENIED after cut)");
+    }
 }
 
 #[cfg(test)]

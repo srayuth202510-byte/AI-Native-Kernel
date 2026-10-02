@@ -53,6 +53,7 @@ validate_ebpf() {
         validate_lsm_hooks_attach_to_kernel
         validate_tracepoint_attach_to_kernel
         validate_lsm_full_attachment_lifecycle
+        validate_h4_revocation_cuts_real_syscalls_under_load
     )
     local test_name
     for test_name in "${tests[@]}"; do
