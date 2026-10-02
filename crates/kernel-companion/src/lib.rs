@@ -1836,6 +1836,139 @@ mod tests {
 
         let _ = std::fs::remove_file(&audit_path);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn immune_revocation_under_syscall_load_cuts_all_within_budget() {
+        // H4 under load: 8 PIDs x 200 rapid observes through the real
+        // TCellAgent (jitter off, low rate threshold) — every PID trips
+        // Quarantine, and each cut (deny_pid + token revoke) must land
+        // synchronously within budget even under concurrent pressure.
+        // Simulation attachment: no kernel privilege needed; deny_pid updates
+        // the same state allows_pid reflects. A real-attach cut-latency
+        // proof still needs a privileged host (validate-ebpf workflow).
+        use capability_security::{CapabilityToken, Scope};
+        use std::time::Duration;
+
+        const PIDS: u32 = 8;
+        const EVENTS_PER_PID: usize = 200;
+        const RATE_THRESHOLD: u64 = 50;
+        const CUT_BUDGET: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let tcell = Arc::new(TCellAgent::new(RATE_THRESHOLD, 1_000_000));
+        tcell.set_jitter_enabled(false);
+
+        let audit_path =
+            std::env::temp_dir().join(format!("ank-h4-load-{}-audit.log", uuid::Uuid::new_v4()));
+        let cap = Arc::new(CapabilitySecurityManager::new_with_log_path(
+            audit_path.clone(),
+        ));
+
+        let attachment = Arc::new(parking_lot::Mutex::new(Some(LsmAttachment::new())));
+        {
+            let attachment_cb = Arc::clone(&attachment);
+            cap.register_revocation_callback(Arc::new(move |_token_id, scope| {
+                if let Scope::Process(p) = scope {
+                    if let Some(a) = attachment_cb.lock().as_mut() {
+                        let _ = a.deny_pid(p);
+                    }
+                }
+            }));
+        }
+
+        // One token per PID so revoke has something to revoke — mirrors the
+        // boot path where authorize_process_token binds token scope to the PID.
+        for i in 0..PIDS {
+            let pid = 9200 + i;
+            attachment
+                .lock()
+                .as_mut()
+                .expect("attachment present")
+                .allow_pid(pid)
+                .expect("allow_pid should succeed in simulation");
+            let token = CapabilityToken::new(
+                9300 + u64::from(i),
+                Scope::Process(pid),
+                vec!["read".to_string()],
+                Duration::from_secs(60),
+                [0x22; 32],
+            );
+            cap.issue_token(token).await.expect("issue token");
+        }
+
+        // Concurrent syscall storm — each task drives one PID past Quarantine
+        // and times its own cut, mirroring the boot loop
+        // (observe -> cut -> quarantine) per event.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(u32, std::time::Duration)>(PIDS as usize);
+        let mut handles = Vec::new();
+        for i in 0..PIDS {
+            let pid = 9200 + i;
+            let tcell = Arc::clone(&tcell);
+            let cap = Arc::clone(&cap);
+            let attachment = Arc::clone(&attachment);
+            let tx = tx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut cut_latency = None;
+                for _ in 0..EVENTS_PER_PID {
+                    let decision = tcell.observe_syscall("h4-load", pid, "read", false).await;
+                    if (decision == ThreatDecision::Quarantine || decision == ThreatDecision::Kill)
+                        && cut_latency.is_none()
+                    {
+                        let start = std::time::Instant::now();
+                        apply_immune_revocation(&attachment, &cap, pid).await;
+                        cut_latency = Some(start.elapsed());
+                        tcell.quarantine("h4-load", pid).await;
+                    }
+                }
+                let latency = cut_latency.expect("PID must trip Quarantine under load");
+                tx.send((pid, latency)).await.expect("report cut");
+            }));
+        }
+        drop(tx);
+        for h in handles {
+            h.await.expect("storm task must not panic");
+        }
+
+        let mut latencies: Vec<std::time::Duration> = Vec::new();
+        while let Some((_pid, d)) = rx.recv().await {
+            latencies.push(d);
+        }
+        assert_eq!(
+            latencies.len(),
+            PIDS as usize,
+            "every PID must report a cut"
+        );
+
+        {
+            let guard = attachment.lock();
+            let sim = guard.as_ref().expect("attachment present");
+            for i in 0..PIDS {
+                assert!(!sim.allows_pid(9200 + i), "H4 load: PID must be blocked");
+            }
+        }
+        for i in 0..PIDS {
+            assert!(
+                cap.is_revoked(9300 + u64::from(i)),
+                "H4 load: token must be revoked"
+            );
+        }
+        assert_eq!(
+            tcell.get_quarantined_pids("h4-load").await.len(),
+            PIDS as usize,
+            "H4 load: TCell must track all quarantined PIDs"
+        );
+
+        latencies.sort();
+        let p50 = latencies[latencies.len() / 2];
+        let p99 = latencies[((latencies.len() as f64) * 0.99) as usize];
+        let max = *latencies.last().expect("non-empty");
+        println!("[H4-LOAD] cuts={PIDS} P50={p50:?} P99={p99:?} MAX={max:?} budget={CUT_BUDGET:?}");
+        assert!(
+            p99 < CUT_BUDGET,
+            "H4 load: cut P99 {p99:?} exceeds {CUT_BUDGET:?} — revocation must land synchronously"
+        );
+
+        let _ = std::fs::remove_file(&audit_path);
+    }
 }
 
 #[cfg(test)]
