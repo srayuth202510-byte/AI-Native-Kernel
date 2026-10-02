@@ -266,3 +266,27 @@ Stated up front so we can watch the signals:
 4. **Tunnel/indirect-prompt blind spots.** A signature matcher will miss genuinely novel
    injections. Ship `detection_mode` telemetry and per-tenant tuning so operators can see
    coverage instead of believing a guarantee we cannot make.
+
+## 9. Buyer decision (locked 2026-10-02)
+
+**Buyer: the AI platform team** — the team that runs inference infrastructure (vLLM/TGI/
+Ollama fleets, gateways, tenants) and owns latency, cost, and incident response. Not the
+SOC, not compliance-as-buyer (they are beneficiaries of the audit chain, not the wedge).
+
+Consequences of this choice:
+
+1. **Latency proof outranks feature breadth.** §8.1 is the buying criterion: the next
+   load-bearing milestone is P99 validation on a real inference host (TLS + concurrent
+   tenants), not more detectors. No new detection layer ships until the current path is
+   proven under production-shaped load.
+2. **Gateway-first, kernel as upsell.** The gateway must be fully useful without the LSM
+   layer loaded (§8.3) — platform teams adopt the gateway in an afternoon; the host plane
+   (ank-run scoping, revocation, audit) is the defense-in-depth expansion once trust is
+   earned, because it carries the privileged-deployment tax.
+3. **Phase 2 order follows platform pain:** (a) pluggable detector interface (bring-your-
+   own-model — we do not out-classify Lakera/Mindgard, we host the customer's classifier
+   under our budget + audit), then (b) RAG/vector-store poisoning, then (c) SIEM delivery
+   beyond JSON export (syslog/webhook) driven by the first design partner's SOC.
+4. **What we still refuse:** EDR-style host breadth beyond the model-server scope,
+   transformer-grade classifiers as a built product, and compliance-led positioning.
+   Those serve different buyers with different budgets.
