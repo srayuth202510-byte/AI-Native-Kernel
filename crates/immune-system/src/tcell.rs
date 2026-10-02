@@ -356,42 +356,56 @@ impl TCellAgent {
 
     /// สั่ง quarantine process ภายใน Tenant
     pub async fn quarantine(&self, tenant_id: &str, pid: u32) {
-        let tenant_state = self.tenants.entry(tenant_id.to_string()).or_default();
-        let mut q = tenant_state.quarantined.write().await;
-        q.insert(pid, Instant::now());
+        // ห้าม await ขณะถือ DashMap guard: `entry`/`get` จับ shard lock ที่
+        // block ฝั่ง OS (parking_lot) — worker ที่ถูก park ค้างใน shard จะ
+        // ไม่ได้ poll task ที่ถือ tokio lock อยู่ เกิด deadlock ทั้ง runtime
+        // ใต้ load ขนาน จึง clone `Arc` ออกมาก่อนแล้วค่อย await ข้างนอก guard
+        // เสมอ (`quarantined` ถูกห่อเป็น `Arc` ไว้เพื่อการนี้โดยเฉพาะ)
+        let lock = {
+            let tenant_state = self.tenants.entry(tenant_id.to_string()).or_default();
+            Arc::clone(&tenant_state.quarantined)
+        };
+        lock.write().await.insert(pid, Instant::now());
         warn!(tenant = %tenant_id, pid, "T-Cell: process quarantined");
     }
 
     /// ตรวจสอบว่า process ถูก quarantine หรือไม่ภายใน Tenant
     #[instrument(skip(self))]
     pub async fn is_quarantined(&self, tenant_id: &str, pid: u32) -> bool {
-        if let Some(tenant_state) = self.tenants.get(tenant_id) {
-            tenant_state.quarantined.read().await.contains_key(&pid)
-        } else {
-            false
+        let lock = self
+            .tenants
+            .get(tenant_id)
+            .map(|s| Arc::clone(&s.quarantined));
+        match lock {
+            Some(lock) => lock.read().await.contains_key(&pid),
+            None => false,
         }
     }
 
     /// ปลด quarantine ภายใน Tenant
+    ///
+    /// เช่นเดียวกับ `quarantine`: clone `Arc` ออกจาก DashMap guard ก่อน
+    /// await (ดูเหตุผลเรื่อง deadlock ในคอมเมนต์ของ `quarantine`)
     pub async fn release(&self, tenant_id: &str, pid: u32) {
-        if let Some(tenant_state) = self.tenants.get(tenant_id) {
-            tenant_state.quarantined.write().await.remove(&pid);
+        let lock = self
+            .tenants
+            .get(tenant_id)
+            .map(|s| Arc::clone(&s.quarantined));
+        if let Some(lock) = lock {
+            lock.write().await.remove(&pid);
             debug!(tenant = %tenant_id, pid, "T-Cell: quarantine released");
         }
     }
 
     /// ดึงรายการ PID ทั้งหมดที่อยู่ระหว่างการกักกันใน Tenant
     pub async fn get_quarantined_pids(&self, tenant_id: &str) -> Vec<u32> {
-        if let Some(tenant_state) = self.tenants.get(tenant_id) {
-            tenant_state
-                .quarantined
-                .read()
-                .await
-                .keys()
-                .copied()
-                .collect()
-        } else {
-            Vec::new()
+        let lock = self
+            .tenants
+            .get(tenant_id)
+            .map(|s| Arc::clone(&s.quarantined));
+        match lock {
+            Some(lock) => lock.read().await.keys().copied().collect(),
+            None => Vec::new(),
         }
     }
 
@@ -401,8 +415,13 @@ impl TCellAgent {
         tenant_id: &str,
         duration: Duration,
     ) -> Vec<u32> {
-        if let Some(tenant_state) = self.tenants.get(tenant_id) {
-            let mut q = tenant_state.quarantined.write().await;
+        // clone `Arc` ออกจาก DashMap guard ก่อน await — ดู `quarantine`
+        let lock = self
+            .tenants
+            .get(tenant_id)
+            .map(|s| Arc::clone(&s.quarantined));
+        if let Some(lock) = lock {
+            let mut q = lock.write().await;
             let now = Instant::now();
             let mut expired = Vec::new();
 
