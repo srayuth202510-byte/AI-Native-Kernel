@@ -58,6 +58,7 @@ tokio-test = "0.4"
 mockall = "0.12"
 mockall_derive = "0.12"
 mockiato = "0.31"
+testcontainers = { version = "0.28", default-features = false, features = ["http_wait"] }
 pretty_env_logger = "0.5"
 env_logger = "0.10"
 derive_more = "0.99"

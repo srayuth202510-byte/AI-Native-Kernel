@@ -617,18 +617,25 @@ mod tests {
     // ── Integration tests (require Qdrant) ─────────────────────────
 
     #[tokio::test]
-    #[ignore = "requires a reachable Qdrant endpoint"]
     async fn test_semantic_file_system_operations() -> Result<()> {
-        if !check_qdrant_online().await {
-            println!(
-                "Skipping SFS test: Qdrant server is not reachable at {}",
-                qdrant_url()
-            );
-            return Ok(());
-        }
+        // Try testcontainers first, fall back to external Qdrant if Docker unavailable
+        let url = match crate::test_utils::qdrant_container().await {
+            Ok(container) => container.http_url(),
+            Err(e) if e.to_string().contains("Docker not available") => {
+                if check_qdrant_online().await {
+                    qdrant_url()
+                } else {
+                    eprintln!(
+                        "Skipping test: No Qdrant available (Docker not available, no external QDRANT_URL)"
+                    );
+                    return Ok(());
+                }
+            }
+            Err(e) => return Err(e),
+        };
 
         let temp_dir = std::env::temp_dir().join(format!("ank-sfs-{}", uuid::Uuid::new_v4()));
-        let store = Arc::new(SemanticStore::new(&qdrant_url(), "ank_sfs_test", 128).await?);
+        let store = Arc::new(SemanticStore::new(&url, "ank_sfs_test", 128).await?);
         let sfs = SemanticFileSystem::new(&temp_dir, store, 128).await?;
 
         sfs.write_file(

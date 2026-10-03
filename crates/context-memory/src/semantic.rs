@@ -365,6 +365,7 @@ impl SemanticStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{qdrant_container, with_qdrant};
     use std::env;
 
     fn qdrant_url() -> String {
@@ -457,17 +458,72 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a reachable Qdrant endpoint"]
     async fn test_qdrant_semantic_store() -> Result<()> {
-        if !check_qdrant_online().await {
-            println!(
-                "Skipping test: Qdrant server is not reachable at {}",
-                qdrant_url()
-            );
-            return Ok(());
+        // Try testcontainers first, fall back to external Qdrant if Docker unavailable
+        match qdrant_container().await {
+            Ok(container) => {
+                let url = container.http_url();
+                run_qdrant_semantic_store_test(&url).await
+            }
+            Err(e) if e.to_string().contains("Docker not available") => {
+                // Fall back to external Qdrant if configured
+                if check_qdrant_online().await {
+                    run_qdrant_semantic_store_test(&qdrant_url()).await
+                } else {
+                    eprintln!(
+                        "Skipping test: No Qdrant available (Docker not available, no external QDRANT_URL)"
+                    );
+                    Ok(())
+                }
+            }
+            Err(e) => Err(e),
         }
+    }
 
-        let store = SemanticStore::new(&qdrant_url(), "ank_context", 128).await?;
+    #[tokio::test]
+    async fn test_qdrant_semantic_store_multiple_points() -> Result<()> {
+        match qdrant_container().await {
+            Ok(container) => {
+                let url = container.http_url();
+                run_qdrant_semantic_store_multiple_points_test(&url).await
+            }
+            Err(e) if e.to_string().contains("Docker not available") => {
+                if check_qdrant_online().await {
+                    run_qdrant_semantic_store_multiple_points_test(&qdrant_url()).await
+                } else {
+                    eprintln!(
+                        "Skipping test: No Qdrant available (Docker not available, no external QDRANT_URL)"
+                    );
+                    Ok(())
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_qdrant_semantic_store_empty_search() -> Result<()> {
+        match qdrant_container().await {
+            Ok(container) => {
+                let url = container.http_url();
+                run_qdrant_semantic_store_empty_search_test(&url).await
+            }
+            Err(e) if e.to_string().contains("Docker not available") => {
+                if check_qdrant_online().await {
+                    run_qdrant_semantic_store_empty_search_test(&qdrant_url()).await
+                } else {
+                    eprintln!(
+                        "Skipping test: No Qdrant available (Docker not available, no external QDRANT_URL)"
+                    );
+                    Ok(())
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn run_qdrant_semantic_store_test(url: &str) -> Result<()> {
+        let store = SemanticStore::new(url, "ank_context", 128).await?;
 
         let vector1 = vec![0.1; 128];
         let mut payload1 = HashMap::new();
@@ -500,18 +556,8 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    #[ignore = "requires a reachable Qdrant endpoint"]
-    async fn test_qdrant_semantic_store_multiple_points() -> Result<()> {
-        if !check_qdrant_online().await {
-            println!(
-                "Skipping test: Qdrant server is not reachable at {}",
-                qdrant_url()
-            );
-            return Ok(());
-        }
-
-        let store = SemanticStore::new(&qdrant_url(), "ank_context_multi", 64).await?;
+    async fn run_qdrant_semantic_store_multiple_points_test(url: &str) -> Result<()> {
+        let store = SemanticStore::new(url, "ank_context_multi", 64).await?;
 
         let vec1 = vec![1.0; 64];
         let vec2 = vec![-1.0; 64];
@@ -565,18 +611,8 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    #[ignore = "requires a reachable Qdrant endpoint"]
-    async fn test_qdrant_semantic_store_empty_search() -> Result<()> {
-        if !check_qdrant_online().await {
-            println!(
-                "Skipping test: Qdrant server is not reachable at {}",
-                qdrant_url()
-            );
-            return Ok(());
-        }
-
-        let store = SemanticStore::new(&qdrant_url(), "ank_context_empty", 32).await?;
+    async fn run_qdrant_semantic_store_empty_search_test(url: &str) -> Result<()> {
+        let store = SemanticStore::new(url, "ank_context_empty", 32).await?;
 
         let results = store.search(vec![0.5; 32], 5).await?;
         assert!(results.len() <= 5);

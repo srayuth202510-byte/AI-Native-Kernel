@@ -39,6 +39,7 @@ rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"]
 [dev-dependencies]
 criterion = { workspace = true }
 tonic = "0.12"
+testcontainers = { workspace = true }
 
 [[bench]]
 name = "rocksdb_bench"

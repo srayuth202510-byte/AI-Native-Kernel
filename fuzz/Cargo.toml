@@ -18,6 +18,8 @@ intent-bus = { path = "../crates/intent-bus" }
 capability-security = { path = "../crates/capability-security" }
 context-memory = { path = "../crates/context-memory" }
 kernel-companion = { path = "../crates/kernel-companion" }
+semantic-guard = { path = "../crates/semantic-guard" }
+extraction-det = { path = "../crates/extraction-det" }
 
 [[bin]]
 name = "capability_token"
@@ -58,5 +60,29 @@ doc = false
 [[bin]]
 name = "uds_command"
 path = "fuzz_targets/uds_command.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "semantic_guard_injection"
+path = "fuzz_targets/semantic_guard_injection.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "semantic_guard_pii"
+path = "fuzz_targets/semantic_guard_pii.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "extraction_detector"
+path = "fuzz_targets/extraction_detector.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "nlp_parser"
+path = "fuzz_targets/nlp_parser.rs"
 test = false
 doc = false

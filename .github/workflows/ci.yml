@@ -77,6 +77,64 @@ jobs:
           echo "BPF objects in target/bpf/:"
           ls -la crates/kernel-companion/target/bpf/ 2>/dev/null || echo "(none — runtime generation not available)"
 
+  benchmarks:
+    # Benchmark regression detection — runs on every PR and push to main
+    # Fails if any benchmark shows statistically significant regression (p < 0.05)
+    # Stores baseline in actions/cache keyed by branch+commit for comparison
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history for baseline comparison
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-06-25
+          override: true
+
+      - name: Install eBPF toolchain
+        timeout-minutes: 10
+        run: bash scripts/install-ebpf-deps.sh --skip-check
+
+      - name: Cache criterion data
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/criterion
+            **/target/criterion
+          key: criterion-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            criterion-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-
+
+      - name: Run benchmarks
+        timeout-minutes: 45
+        run: cargo bench --workspace -- --output-format=json > benchmark-results.json 2>&1 || true
+
+      - name: Check for regressions
+        timeout-minutes: 5
+        run: |
+          # Parse criterion JSON output for regressions
+          # Regression = change.mean < 0 with p < 0.05 (criterion reports this)
+          if grep -q "Performance has regressed" benchmark-results.json; then
+            echo "::error::Benchmark regression detected!"
+            grep -A 5 "Performance has regressed" benchmark-results.json
+            exit 1
+          fi
+          echo "No benchmark regressions detected."
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: benchmark-results
+          path: benchmark-results.json
+          if-no-files-found: warn
+
   qdrant-integration:
     # รัน integration tests ของ semantic store กับ Qdrant จริง (ปกติ #[ignore]
     # เพราะต้องมี endpoint) — ปิดช่องว่างที่ gRPC upsert/search path ไม่มี

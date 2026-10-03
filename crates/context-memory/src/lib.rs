@@ -20,6 +20,9 @@ pub mod p2p_mesh;
 pub mod semantic;
 /// SWIM failure detector สำหรับตรวจ node ล้มเหลวใน mesh
 pub mod swim;
+/// Test utilities for integration tests (testcontainers-based Qdrant)
+#[cfg(test)]
+pub mod test_utils;
 /// VRAM tier — tensor/KV cache บน GPU/NPU
 pub mod vram;
 /// Warm tier — NVMe (RocksDB ผ่าน feature flag) สำหรับข้อมูลรองจาก Hot
