@@ -40,12 +40,25 @@ pub struct Dispatcher<S = crate::sink::WebhookSink> {
 
 impl<S: AlertSink + Send + Sync + 'static> Dispatcher<S> {
     /// เริ่ม dispatcher task เบื้องหลัง (ต้องเรียกใน tokio runtime)
+    ///
+    /// `auto_response=None` = notify-only (ส่ง webhook อย่างเดียว ไม่ลงโทษใคร)
     #[must_use]
-    pub fn start(sink: S, capacity: usize, metrics: Option<Arc<WatchtowerMetrics>>) -> Self {
+    pub fn start(
+        sink: S,
+        capacity: usize,
+        metrics: Option<Arc<WatchtowerMetrics>>,
+        auto_response: Option<crate::action::AutoResponse>,
+    ) -> Self {
         let (tx, mut rx) = mpsc::channel::<FiredAlert>(capacity);
         let dropped = Arc::new(AtomicU64::new(0));
+        let task_metrics = metrics.clone();
         let task = tokio::spawn(async move {
             while let Some(alert) = rx.recv().await {
+                // ลำดับ: ประหารก่อน แจ้งทีหลัง (protect first, notify best-effort)
+                // ถ้า webhook ล้มหลังประหารแล้ว ยังมี audit entry เป็นหลักฐาน
+                if let Some(auto) = auto_response.as_ref() {
+                    Self::apply_actions(auto, &alert, &sink, task_metrics.as_ref()).await;
+                }
                 let rule_id = alert.rule_id.clone();
                 let tenant_id = alert.tenant_id.clone();
                 if let Err(e) = sink.send(alert).await {
@@ -66,6 +79,74 @@ impl<S: AlertSink + Send + Sync + 'static> Dispatcher<S> {
             metrics,
             task,
             _sink: std::marker::PhantomData,
+        }
+    }
+
+    /// ประหาร auto-action ของ alert นี้ (ถ้ามีสิทธิ์) แล้วแจ้งทุก action
+    /// ผ่าน sink ตรง — action ที่ไม่มี alert ของตัวเองคือบั๊ก (design §4)
+    async fn apply_actions(
+        auto: &crate::action::AutoResponse,
+        alert: &FiredAlert,
+        sink: &S,
+        metrics: Option<&Arc<WatchtowerMetrics>>,
+    ) {
+        for action in auto.actions_for(alert) {
+            match auto.breaker.try_permit() {
+                crate::action::BreakerDecision::Permit => {
+                    // notice + metric เฉพาะเมื่อลงมือทำจริง — ข้าม (opt-out,
+                    // core หาย) ต้องเงียบ ไม่ใช่แกล้งว่ามี action
+                    if !auto.executor.execute(action.clone()).await {
+                        continue;
+                    }
+                    if let Some(m) = metrics {
+                        m.auto_actions_total
+                            .with_label_values(&[
+                                action.kind.as_str(),
+                                &action.tenant_id,
+                                &action.rule_id,
+                            ])
+                            .inc();
+                    }
+                    let notice = FiredAlert {
+                        rule_id: "auto-action-taken".to_string(),
+                        tenant_id: action.tenant_id.clone(),
+                        severity: crate::Severity::High,
+                        total: 1,
+                        window_started_ms: auto.breaker.now_ms(),
+                        sample: alert.sample.clone(),
+                    };
+                    if let Err(e) = sink.send(notice).await {
+                        tracing::warn!(
+                            action = %action.kind.as_str(),
+                            tenant = %action.tenant_id,
+                            error = %e,
+                            "auto-action notice delivery failed"
+                        );
+                    }
+                }
+                crate::action::BreakerDecision::Denied { became_frozen } => {
+                    // ร้องแค่ครั้งแรกที่ freeze — ครั้งต่อไปเงียบจนกว่าจะหาย
+                    // (ไม่งั้น meta-alert เองกลายเป็น spam ที่ต้องมี meta-meta-alert)
+                    if became_frozen {
+                        tracing::error!(
+                            rule = %alert.rule_id,
+                            tenant = %alert.tenant_id,
+                            "circuit breaker tripped — automation frozen, notifying once"
+                        );
+                        let meta = FiredAlert {
+                            rule_id: "auto-response-frozen".to_string(),
+                            tenant_id: "*".to_string(),
+                            severity: crate::Severity::Critical,
+                            total: 1,
+                            window_started_ms: auto.breaker.now_ms(),
+                            sample: alert.sample.clone(),
+                        };
+                        if let Err(e) = sink.send(meta).await {
+                            tracing::error!(error = %e, "frozen meta-alert delivery failed");
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -162,6 +243,7 @@ mod tests {
             },
             2,
             Some(metrics.clone()),
+            None,
         );
 
         assert_eq!(dispatcher.try_enqueue(alert("a")), Enqueue::Queued);
@@ -210,7 +292,7 @@ mod tests {
         });
 
         let sink = WebhookSink::new(&format!("http://{addr}/hook"), None).expect("sink");
-        let dispatcher = Dispatcher::start(sink, 16, None);
+        let dispatcher = Dispatcher::start(sink, 16, None, None);
         assert!(dispatcher.is_alive());
         assert_eq!(dispatcher.try_enqueue(alert("a")), Enqueue::Queued);
         assert_eq!(dispatcher.try_enqueue(alert("b")), Enqueue::Queued);

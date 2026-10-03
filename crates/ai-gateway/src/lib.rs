@@ -116,6 +116,29 @@ pub struct GatewayConfig {
     /// `#[serde(default)]` เพื่อให้ไฟล์ config เก่าที่ไม่มีฟิลด์นี้ยังโหลดได้
     #[serde(default)]
     pub alert_webhook_url: Option<String>,
+    /// รหัสกฎที่อนุญาตให้ auto-suspend — default ว่าง = ไม่ลงโทษใคร
+    /// (notify-only) ต้องเปิดทีละกฎโดย operator
+    #[serde(default)]
+    pub auto_suspend_rules: Vec<String>,
+    /// รหัสกฎที่อนุญาตให้ auto-revoke key — default ว่าง
+    #[serde(default)]
+    pub auto_revoke_rules: Vec<String>,
+    /// ระยะเวลาระงับต่อครั้ง (วินาที)
+    #[serde(default = "default_auto_suspend_secs")]
+    pub auto_suspend_duration_secs: u64,
+    /// เพดาน action ต่อชั่วโมงทั้งระบบ (circuit breaker กัน automation คลั่ง)
+    #[serde(default = "default_auto_action_quota")]
+    pub auto_action_max_per_hour: u64,
+}
+
+/// ระงับครั้งละ 30 นาที — นานพอให้ operator ตื่นมาดู สั้นพอให้พลาดแล้วไม่เจ็บมาก
+const fn default_auto_suspend_secs() -> u64 {
+    1800
+}
+
+/// เกิน 10 action/ชม. ทั้งระบบ = ผิดปกติแล้ว แช่แข็งก่อนถามทีหลัง
+const fn default_auto_action_quota() -> u64 {
+    10
 }
 
 impl Default for GatewayConfig {
@@ -132,6 +155,10 @@ impl Default for GatewayConfig {
             extraction_enabled: true,
             tls: None,
             alert_webhook_url: None,
+            auto_suspend_rules: Vec::new(),
+            auto_revoke_rules: Vec::new(),
+            auto_suspend_duration_secs: default_auto_suspend_secs(),
+            auto_action_max_per_hour: default_auto_action_quota(),
         }
     }
 }
@@ -237,6 +264,105 @@ pub struct Inspection {
     pub audit: ApiAuditEntry,
 }
 
+/// สถานะลงโทษชั่วคราวของผู้เช่าหนึ่งราย (watchtower Phase B)
+///
+/// เก็บแยกจาก `TenantPolicy` โดยตั้งใจ: นโยบายคือสิ่งที่ operator เขียนในไฟล์
+/// (เปลี่ยนเฉพาะตอน reload) ส่วน override คือสิ่งที่ระบบทำเองตอนเกิดเหตุ
+/// (มีวันหมดอายุ หายไปเมื่อ restart — restart แล้วลงโทษค้างคือกับดัก)
+#[derive(Debug, Clone, Default)]
+struct TenantOverride {
+    /// ระงับถึงเวลาใด (ms epoch) — `None` คือไม่ถูกระงับ
+    suspended_until_ms: Option<u64>,
+    /// คีย์ถูกเพิกถอนหรือไม่ (ติดจนกว่า restart/reload — คีย์หลุดต้องไม่กลับมาเอง)
+    key_revoked: bool,
+}
+
+impl TenantOverride {
+    /// ยังถูกระงับอยู่หรือไม่ ณ เวลาที่กำหนด
+    fn is_suspended(&self, now_ms: u64) -> bool {
+        self.suspended_until_ms.is_some_and(|until| now_ms < until)
+    }
+}
+
+/// ผู้ประหาร auto-action ของ gateway — ถือ `Weak` เพื่อไม่วน Arc กับ dispatcher
+/// (dispatcher อยู่ใน core ส่วน executor กลับมาชี้ core — Strong ทั้งคู่คือ leak)
+pub struct CoreActionExecutor {
+    core: std::sync::Weak<GatewayCore>,
+}
+
+impl CoreActionExecutor {
+    /// ประกอบจาก core ที่ dispatcher จะแนบด้วย
+    #[must_use]
+    pub fn new(core: &Arc<GatewayCore>) -> Self {
+        Self {
+            core: Arc::downgrade(core),
+        }
+    }
+}
+
+impl watchtower::ActionExecutor for CoreActionExecutor {
+    fn execute(
+        &self,
+        action: watchtower::ExecutedAction,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
+        let core = self.core.upgrade();
+        Box::pin(async move {
+            let Some(core) = core else {
+                tracing::error!("core gone, cannot execute auto-action — alert without action");
+                return false;
+            };
+            // opt-in ชั้นที่สองอยู่ตรงนี้: กฎอยู่ใน allowlist แล้ว แต่ tenant
+            // ไม่ได้เปิด flag = ไม่ทำอะไร (default ปิดทั้งระบบอยู่แล้ว)
+            if !core.tenant_auto_response(&action.tenant_id) {
+                tracing::info!(
+                    tenant = %action.tenant_id,
+                    rule = %action.rule_id,
+                    "auto-action skipped: tenant not opted in"
+                );
+                return false;
+            }
+            match action.kind {
+                watchtower::ActionKind::Suspend => {
+                    core.suspend_tenant_for(&action.tenant_id, action.suspend_duration);
+                }
+                watchtower::ActionKind::RevokeKey => {
+                    core.revoke_tenant_key(&action.tenant_id);
+                }
+            }
+            // ทุก action เขียน audit (design §4: action ที่เงียบคือบั๊ก) —
+            // ถ้าเขียนไม่ได้อย่างน้อยต้องมีร่องรอยใน log
+            let request_id = new_request_id();
+            let entry = ApiAuditEntry::new(&action.tenant_id, &request_id, "watchtower", "-")
+                .with_decision(ApiDecision::Deny, action.kind.audit_reason());
+            if let Err(e) = core.record_audit(&action.tenant_id, entry).await {
+                tracing::error!(
+                    tenant = %action.tenant_id,
+                    error = %e,
+                    "auto-action audit write failed"
+                );
+            }
+            // event หมวด response — ไม่มีกฎจับหมวดนี้ จึงไม่วนลูปกลับมาลงโทษซ้ำ
+            core.observe_security(watchtower::SecurityEvent::new(
+                &action.tenant_id,
+                "response",
+                action.kind.audit_reason(),
+                watchtower::Severity::High,
+                &request_id,
+                now_epoch_ms(),
+            ));
+            true
+        })
+    }
+}
+
+/// เวลาปัจจุบันเป็น ms นับจาก UNIX epoch (สำหรับวันหมดอายุของ override)
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// ผลการตรวจสอบที่พร้อมทำงานต่อ (รวม permit)
 ///
 /// ใช้เพียงใน data plane เท่านั้น เพื่อให้แน่ใจว่า permit ไม่หลุดออกมาก่อนได้รับอนุญาต
@@ -272,6 +398,8 @@ pub struct GatewayCore {
     /// dispatcher ส่ง alert — `None` คือ observe-only (นับ + ประเมินกฎ แต่ไม่ส่ง
     /// ออก) ต่อเมื่อ operator ตั้ง `alert_webhook_url` เท่านั้น
     dispatcher: parking_lot::Mutex<Option<Arc<watchtower::Dispatcher>>>,
+    /// override ลงโทษชั่วคราวต่อผู้เช่า (suspend/revoke โดยระบบ — ดู `TenantOverride`)
+    overrides: DashMap<String, TenantOverride>,
     config: GatewayConfig,
 }
 
@@ -361,8 +489,49 @@ impl GatewayCore {
             watch_metrics,
             watch_registry,
             dispatcher: parking_lot::Mutex::new(None),
+            overrides: DashMap::new(),
             config,
         })
+    }
+
+    /// ระงับผู้เช่าเป็นเวลาที่กำหนด (ระบบตอบโต้อัตโนมัติเรียก)
+    ///
+    /// หมดอายุแล้วกลับมาเอง ไม่ต้องมีคนปลด — การลงโทษที่ต้องมีคนมาจำว่าปลด
+    /// คือการลงโทษที่จะลืมปลด
+    pub fn suspend_tenant_for(&self, tenant_id: &str, duration: Duration) {
+        let until = now_epoch_ms().saturating_add(duration.as_millis() as u64);
+        self.overrides
+            .entry(tenant_id.to_string())
+            .or_default()
+            .suspended_until_ms = Some(until);
+        tracing::warn!(
+            tenant = %tenant_id,
+            duration_secs = duration.as_secs(),
+            "tenant auto-suspended"
+        );
+    }
+
+    /// เพิกถอนคีย์ของผู้เช่า (ระบบตอบโต้อัตโนมัติเรียก)
+    ///
+    /// ติดจนกว่า restart/reload นโยบาย — คีย์ที่หลุดแล้วต้องไม่กลับมาใช้ได้เอง
+    /// กลับกันกับการระงับชั่วคราวโดยตั้งใจ (revoke = ของเสีย, suspend = พัก)
+    pub fn revoke_tenant_key(&self, tenant_id: &str) {
+        self.overrides
+            .entry(tenant_id.to_string())
+            .or_default()
+            .key_revoked = true;
+        tracing::warn!(tenant = %tenant_id, "tenant key auto-revoked");
+    }
+
+    /// ล้าง override ทั้งหมดของผู้เช่า (operator ปลดมือ — ใช้ในเทสต์และ CLI ในอนาคต)
+    pub fn clear_tenant_override(&self, tenant_id: &str) {
+        self.overrides.remove(tenant_id);
+    }
+
+    /// ผู้เช่านี้เปิดระบบตอบโต้อัตโนมัติหรือไม่ (อ่านจากนโยบายตอนโหลด)
+    #[must_use]
+    pub fn tenant_auto_response(&self, tenant_id: &str) -> bool {
+        self.policy.tenant_auto_response(tenant_id)
     }
 
     /// metrics ของ watchtower (สำหรับ `/metrics` และงาน dispatch)
@@ -441,6 +610,52 @@ impl GatewayCore {
                 return Err(e.into());
             }
         };
+
+        // 1.5) override ลงโทษชั่วคราว — ตรวจหลังยืนยันตัวตน (รู้ tenant แล้ว)
+        // แต่ก่อนตรวจสิทธิ์อื่น (คนถูกระงับไม่ควรได้ข้อมูลว่า endpoint ไหนมีอยู่)
+        //
+        // อ่านค่าแล้วปล่อย guard ทันที ห้ามถือ shard lock ข้าม await
+        // (กฎเดียวกับ chains/concurrency — ดู ANK-069)
+        let now_wall = now_epoch_ms();
+        let punishment = self
+            .overrides
+            .get(&identity.tenant_id)
+            .map(|ov| (ov.key_revoked, ov.is_suspended(now_wall)));
+        if let Some((revoked, suspended)) = punishment {
+            if revoked {
+                let reason = DenyReason::KeyRevoked;
+                let audit =
+                    ApiAuditEntry::new(&identity.tenant_id, &request_id, endpoint.as_str(), model)
+                        .with_decision(ApiDecision::Deny, reason.as_str());
+                self.record_audit(&identity.tenant_id, audit).await?;
+                self.observe_security(watchtower::SecurityEvent::new(
+                    &identity.tenant_id,
+                    "auth",
+                    reason.as_str(),
+                    watchtower::Severity::Warn,
+                    &request_id,
+                    now_ms,
+                ));
+                return Err(GatewayError::Auth(AuthError::RevokedKey));
+            }
+            if suspended {
+                let reason = DenyReason::TenantSuspended;
+                let mut audit =
+                    ApiAuditEntry::new(&identity.tenant_id, &request_id, endpoint.as_str(), model)
+                        .with_decision(ApiDecision::Deny, reason.as_str());
+                audit.latency_ms = Some(elapsed_ms(started));
+                self.record_audit(&identity.tenant_id, audit).await?;
+                self.observe_security(watchtower::SecurityEvent::new(
+                    &identity.tenant_id,
+                    "suspended",
+                    reason.as_str(),
+                    watchtower::Severity::High,
+                    &request_id,
+                    now_ms,
+                ));
+                return Err(GatewayError::Auth(AuthError::TenantSuspended));
+            }
+        }
 
         // 2) ตรวจสิทธิ์ตามเส้นทางและโมเดล
         if let Verdict::Deny(reason) = self.policy.authorize(&identity, endpoint, model) {
@@ -905,6 +1120,7 @@ mod tests {
             allowed_models: ["gpt-x".to_string()].into_iter().collect(),
             max_concurrent: 10,
             suspended: false,
+            auto_response: false,
         }];
         let creds = vec![policy::TenantCredential {
             tenant_id: "acme".to_string(),
@@ -951,6 +1167,7 @@ mod tests {
             allowed_models: ["gpt-x".to_string()].into_iter().collect(),
             max_concurrent,
             suspended: false,
+            auto_response: false,
         }];
         let creds = vec![policy::TenantCredential {
             tenant_id: "acme".to_string(),
@@ -1331,6 +1548,7 @@ mod tests {
                 allowed_models: ["gpt-x".to_string()].into_iter().collect(),
                 max_concurrent: 1,
                 suspended: false,
+                auto_response: false,
             },
             policy::TenantPolicy {
                 tenant_id: "globex".to_string(),
@@ -1338,6 +1556,7 @@ mod tests {
                 allowed_models: ["gpt-x".to_string()].into_iter().collect(),
                 max_concurrent: 1,
                 suspended: false,
+                auto_response: false,
             },
         ];
         let creds = ["acme", "globex"]
@@ -1558,6 +1777,7 @@ mod tests {
             sink,
             64,
             Some(c.watch_metrics().clone()),
+            None,
         ));
         c.attach_dispatcher(dispatcher);
 
@@ -1590,6 +1810,308 @@ mod tests {
         assert_eq!(body["rule_id"], "injection-burst");
         assert_eq!(body["tenant_id"], "acme");
         assert_eq!(body["schema"], "watchtower.alert/v1");
+        cleanup(&c);
+    }
+
+    /// core ที่ tenant เปิด auto-response (Phase B) — ที่เหลือเหมือน core guard ปกติ
+    async fn core_with_opt_in_named(name: &str) -> GatewayCore {
+        let tenants = vec![policy::TenantPolicy {
+            tenant_id: "acme".to_string(),
+            allowed_endpoints: ["chat_completions", "embeddings"].into_iter().collect(),
+            allowed_models: ["gpt-x".to_string()].into_iter().collect(),
+            max_concurrent: 64,
+            suspended: false,
+            auto_response: true,
+        }];
+        let creds = vec![policy::TenantCredential {
+            tenant_id: "acme".to_string(),
+            key: b"secret-key".to_vec(),
+            expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
+        }];
+        let config = GatewayConfig {
+            guard_enabled: true,
+            extraction_enabled: false,
+            ..isolated_config(name)
+        };
+        let guard = GuardConfig {
+            budget: Duration::from_secs(30),
+            ..GuardConfig::default()
+        };
+        GatewayCore::new(
+            config,
+            policy::DataPlanePolicy::new(tenants, creds),
+            Some(guard),
+            None,
+        )
+        .await
+        .expect("core should build")
+    }
+
+    /// mock webhook ที่นับ POST และเก็บ body — คืน (url, จำนวนโพสต์, bodies)
+    async fn start_mock_webhook(
+        name: &str,
+    ) -> (
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<parking_lot::Mutex<Vec<String>>>,
+    ) {
+        let _ = name;
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let bodies = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock webhook");
+        let addr = listener.local_addr().expect("mock addr");
+        let posts_clone = Arc::clone(&posts);
+        let bodies_clone = Arc::clone(&bodies);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+                let mut buf = vec![0u8; 16384];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                posts_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                bodies_clone
+                    .lock()
+                    .push(text.split("\r\n\r\n").nth(1).unwrap_or("").to_string());
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .await;
+            }
+        });
+        (format!("http://{addr}/hook"), posts, bodies)
+    }
+
+    fn webhook_rule_ids(bodies: &parking_lot::Mutex<Vec<String>>) -> Vec<String> {
+        bodies
+            .lock()
+            .iter()
+            .filter_map(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+            .filter_map(|v| v["rule_id"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn suspend_blocks_traffic_and_expires_by_itself() {
+        let c = core_named("suspend-expiry").await;
+        // ระงับ 1 ชม. → แม้คำขอสะอาดก็ต้องโดน 403 ด้วยเหตุผลที่ถูกต้อง
+        c.suspend_tenant_for("acme", Duration::from_secs(3600));
+        let err = c
+            .inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                0,
+            )
+            .await
+            .expect_err("suspended tenant must be denied");
+        assert!(matches!(
+            err,
+            GatewayError::Auth(AuthError::TenantSuspended)
+        ));
+        let chain =
+            std::fs::read_to_string(c.config().audit_dir.join("acme.jsonl")).expect("audit chain");
+        assert!(chain.contains("tenant_suspended"), "got {chain:?}");
+
+        // ระงับ 100ms → รอ 200ms → กลับมาเองโดยไม่ต้องมีคนปลด
+        c.suspend_tenant_for("acme", Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        c.inspect_request(
+            Some("Bearer secret-key"),
+            Endpoint::ChatCompletions,
+            "gpt-x",
+            GOOD_PAYLOAD,
+            1,
+        )
+        .await
+        .expect("expiry must release automatically");
+        cleanup(&c);
+    }
+
+    #[tokio::test]
+    async fn revoked_key_is_distinguishable_from_unknown_key() {
+        // คีย์ถูกเพิกถอนต้องตอบต่างจากคีย์มั่ว — incident response ต้องแยก
+        // "attacker เดาคีย์" ออกจาก "tenant นี้โดน revoke แล้วแต่ยังยิงมา" ได้
+        let c = core_named("revoke-shape").await;
+        c.revoke_tenant_key("acme");
+        let err = c
+            .inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                0,
+            )
+            .await
+            .expect_err("revoked key must be denied");
+        assert!(matches!(err, GatewayError::Auth(AuthError::RevokedKey)));
+        assert_eq!(
+            DenyReason::from_error(&AuthError::RevokedKey).as_str(),
+            "key_revoked"
+        );
+        let chain =
+            std::fs::read_to_string(c.config().audit_dir.join("acme.jsonl")).expect("audit chain");
+        assert!(chain.contains("key_revoked"), "got {chain:?}");
+
+        // revoke ติดจนกว่าจะล้างมือ — ไม่หมดอายุเอง (ต่างจาก suspend)
+        c.clear_tenant_override("acme");
+        c.inspect_request(
+            Some("Bearer secret-key"),
+            Endpoint::ChatCompletions,
+            "gpt-x",
+            GOOD_PAYLOAD,
+            1,
+        )
+        .await
+        .expect("manual release must restore traffic");
+        cleanup(&c);
+    }
+
+    #[tokio::test]
+    async fn auto_suspend_end_to_end_when_rule_fires() {
+        // burst ครบ 10 → alert ยิง → executor ระงับ (tenant opt-in + กฎ allowlist)
+        // → คำขอสะอาดถัดไปโดน 403 + webhook ได้ทั้ง alert และ action notice
+        // + audit มีร่องรอยการลงโทษ
+        let c = Arc::new(core_with_opt_in_named("auto-suspend-e2e").await);
+        let (url, posts, bodies) = start_mock_webhook("suspend").await;
+        let sink = watchtower::WebhookSink::new(&url, None).expect("sink");
+        let auto = watchtower::AutoResponse {
+            executor: Arc::new(CoreActionExecutor::new(&c)),
+            breaker: Arc::new(watchtower::CircuitBreaker::new(
+                10,
+                Duration::from_secs(3600),
+            )),
+            suspend_rules: vec!["injection-burst".to_string()],
+            revoke_rules: vec![],
+            suspend_duration: Duration::from_secs(3600),
+        };
+        let dispatcher = Arc::new(watchtower::Dispatcher::start(
+            sink,
+            64,
+            Some(c.watch_metrics().clone()),
+            Some(auto),
+        ));
+        c.attach_dispatcher(dispatcher);
+
+        for i in 0..10u64 {
+            c.inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                INJECT_PAYLOAD,
+                i,
+            )
+            .await
+            .expect("should inspect");
+        }
+        // รอ dispatcher ประหาร + ส่ง webhook (async มีขอบเขต)
+        let mut waited = 0;
+        while posts.load(std::sync::atomic::Ordering::SeqCst) < 2 && waited < 300 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        let rules = webhook_rule_ids(&bodies);
+        assert!(
+            rules.contains(&"injection-burst".to_string()),
+            "burst alert must arrive, got {rules:?}"
+        );
+        assert!(
+            rules.contains(&"auto-action-taken".to_string()),
+            "action must have its own alert, got {rules:?}"
+        );
+
+        // tenant ถูกระงับแล้ว — แม้คำขอสะอาดก็โดน
+        let err = c
+            .inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                100,
+            )
+            .await
+            .expect_err("suspended tenant must be denied");
+        assert!(matches!(
+            err,
+            GatewayError::Auth(AuthError::TenantSuspended)
+        ));
+        let chain =
+            std::fs::read_to_string(c.config().audit_dir.join("acme.jsonl")).expect("audit chain");
+        assert!(chain.contains("auto_suspended"), "action must be audited");
+        assert_eq!(
+            c.watch_metrics()
+                .auto_actions_total
+                .with_label_values(&["suspend", "acme", "injection-burst"])
+                .get(),
+            1
+        );
+        cleanup(&c);
+    }
+
+    #[tokio::test]
+    async fn auto_response_skipped_without_tenant_opt_in() {
+        // กฎอยู่ใน allowlist แต่ tenant ไม่ได้เปิด flag = ไม่ลงโทษ
+        // (opt-in สองชั้น — ชั้นเดียวไม่พอ)
+        let c = Arc::new(core_with_guard_named("auto-optout").await);
+        let (url, posts, bodies) = start_mock_webhook("optout").await;
+        let sink = watchtower::WebhookSink::new(&url, None).expect("sink");
+        let auto = watchtower::AutoResponse {
+            executor: Arc::new(CoreActionExecutor::new(&c)),
+            breaker: Arc::new(watchtower::CircuitBreaker::new(
+                10,
+                Duration::from_secs(3600),
+            )),
+            suspend_rules: vec!["injection-burst".to_string()],
+            revoke_rules: vec![],
+            suspend_duration: Duration::from_secs(3600),
+        };
+        let dispatcher = Arc::new(watchtower::Dispatcher::start(
+            sink,
+            64,
+            Some(c.watch_metrics().clone()),
+            Some(auto),
+        ));
+        c.attach_dispatcher(dispatcher);
+
+        for i in 0..10u64 {
+            c.inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                INJECT_PAYLOAD,
+                i,
+            )
+            .await
+            .expect("should inspect");
+        }
+        let mut waited = 0;
+        while posts.load(std::sync::atomic::Ordering::SeqCst) == 0 && waited < 300 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        let rules = webhook_rule_ids(&bodies);
+        assert!(
+            rules.contains(&"injection-burst".to_string()),
+            "burst alert must still arrive, got {rules:?}"
+        );
+        assert!(
+            !rules.contains(&"auto-action-taken".to_string()),
+            "no action without opt-in, got {rules:?}"
+        );
+        // traffic ปกติไม่สะดุด — คำขอสะอาดยังผ่าน
+        c.inspect_request(
+            Some("Bearer secret-key"),
+            Endpoint::ChatCompletions,
+            "gpt-x",
+            GOOD_PAYLOAD,
+            100,
+        )
+        .await
+        .expect("traffic unaffected without opt-in");
         cleanup(&c);
     }
 

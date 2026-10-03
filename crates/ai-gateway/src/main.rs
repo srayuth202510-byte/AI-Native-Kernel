@@ -295,10 +295,32 @@ async fn serve(config: GatewayConfig) -> std::process::ExitCode {
         };
         match watchtower::WebhookSink::new(&url, bearer) {
             Ok(sink) => {
+                // auto-response: ต้องมีรายชื่อกฎอนุญาต ไม่งั้นเป็น notify-only
+                // (ต่อให้ tenant opt-in — opt-in อย่างเดียวไม่พอถ้าไม่มีกฎ)
+                let auto_response = if config.auto_suspend_rules.is_empty()
+                    && config.auto_revoke_rules.is_empty()
+                {
+                    tracing::info!("auto-response disabled (no rules allowlisted) — notify-only");
+                    None
+                } else {
+                    Some(watchtower::AutoResponse {
+                        executor: Arc::new(ai_gateway::CoreActionExecutor::new(&core)),
+                        breaker: Arc::new(watchtower::CircuitBreaker::new(
+                            config.auto_action_max_per_hour,
+                            std::time::Duration::from_secs(3600),
+                        )),
+                        suspend_rules: config.auto_suspend_rules.clone(),
+                        revoke_rules: config.auto_revoke_rules.clone(),
+                        suspend_duration: std::time::Duration::from_secs(
+                            config.auto_suspend_duration_secs,
+                        ),
+                    })
+                };
                 let dispatcher = Arc::new(watchtower::Dispatcher::start(
                     sink,
                     watchtower::DEFAULT_QUEUE_CAPACITY,
                     Some(core.watch_metrics().clone()),
+                    auto_response,
                 ));
                 core.attach_dispatcher(dispatcher.clone());
                 core.watch_metrics().pipeline_healthy.set(1);

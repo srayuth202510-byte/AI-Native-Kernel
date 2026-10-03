@@ -1,0 +1,120 @@
+{
+  "title": "AI Security Gateway — Watchtower",
+  "description": "Monitoring for ai-gateway alerting plane (ANK-073/074). Import: Dashboards → New → Import → upload this file. Requires Prometheus scraping the gateway /metrics.",
+  "tags": ["ai-security", "watchtower"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "definition": "label_values(watchtower_events_total, tenant)",
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Pipeline healthy (0 = blind, page immediately)",
+      "type": "stat",
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [{ "expr": "watchtower_pipeline_healthy", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": 0, "color": "red" },
+              { "value": 1, "color": "green" }
+            ]
+          }
+        }
+      },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "id": 2,
+      "title": "Alerts dropped (must stay 0)",
+      "type": "stat",
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [{ "expr": "increase(watchtower_alerts_dropped_total[1h])", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": 0, "color": "green" },
+              { "value": 1, "color": "red" }
+            ]
+          }
+        }
+      },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "id": 3,
+      "title": "Auto actions executed (must be explainable)",
+      "type": "stat",
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [{ "expr": "increase(watchtower_auto_actions_total[1h])", "refId": "A" }],
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "id": 4,
+      "title": "Alerts fired by rule",
+      "type": "timeseries",
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {
+          "expr": "sum by (rule, severity) (rate(watchtower_alerts_fired_total{tenant=~\"$tenant\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{rule}} / {{severity}}"
+        }
+      ],
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "id": 5,
+      "title": "Security events by category",
+      "type": "timeseries",
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {
+          "expr": "sum by (category) (rate(watchtower_events_total{tenant=~\"$tenant\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{category}}"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 6 }
+    },
+    {
+      "id": 6,
+      "title": "Auto actions by action × tenant",
+      "type": "timeseries",
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {
+          "expr": "sum by (action, tenant) (rate(watchtower_auto_actions_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{action}} / {{tenant}}"
+        }
+      ],
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 6 }
+    },
+    {
+      "id": 7,
+      "title": "Detection mode per tenant (nothing must be 'disabled' by surprise)",
+      "type": "table",
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        { "expr": "watchtower_detection_mode{tenant=~\"$tenant\"}", "refId": "A", "format": "table" }
+      ],
+      "gridPos": { "x": 0, "y": 10, "w": 24, "h": 6 }
+    }
+  ]
+}

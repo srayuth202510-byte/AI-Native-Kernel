@@ -126,6 +126,12 @@ fn to_api_error(err: &GatewayError) -> ApiError {
             "invalid_api_key",
             "คีย์ที่ใช้ไม่ถูกต้อง",
         ),
+        GatewayError::Auth(AuthError::RevokedKey) => ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid_request_error",
+            "revoked_api_key",
+            "คีย์นี้ถูกเพิกถอนแล้ว ติดต่อผู้ดูแลระบบ",
+        ),
         GatewayError::Auth(AuthError::KeyExpired) => ApiError::new(
             StatusCode::UNAUTHORIZED,
             "invalid_request_error",
@@ -494,6 +500,7 @@ mod tests {
             allowed_models: ["gpt-x".to_string()].into_iter().collect(),
             max_concurrent: 10,
             suspended: false,
+            auto_response: false,
         }];
         let creds = vec![TenantCredential {
             tenant_id: "acme".to_string(),
@@ -519,6 +526,15 @@ mod tests {
     }
 
     const BODY: &str = r#"{"model":"gpt-x","messages":[{"role":"user","content":"hi"}]}"#;
+
+    #[test]
+    fn revoked_key_maps_to_401_with_distinct_code() {
+        // ต้องแยกจาก invalid_api_key — incident response แยก "เดาคีย์" กับ
+        // "tenant โดน revoke แล้วยังยิงมา" ไม่ได้ถ้า code เดียวกัน
+        let err = to_api_error(&crate::GatewayError::Auth(AuthError::RevokedKey));
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.code, "revoked_api_key");
+    }
 
     #[tokio::test]
     async fn missing_auth_returns_401_with_openai_shape() {
@@ -774,6 +790,7 @@ mod tests {
             allowed_models: ["gpt-x".to_string()].into_iter().collect(),
             max_concurrent,
             suspended: false,
+            auto_response: false,
         }];
         let creds = vec![TenantCredential {
             tenant_id: "acme".to_string(),

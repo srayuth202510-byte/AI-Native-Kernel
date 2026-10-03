@@ -137,6 +137,7 @@ fn policy() -> (DataPlanePolicy, Vec<String>) {
                 .collect(),
             max_concurrent: 8,
             suspended: false,
+            auto_response: false,
         });
         let key = format!("sk-real-{i:016}");
         creds.push(TenantCredential {

@@ -83,6 +83,7 @@ fn bench_policy() -> DataPlanePolicy {
             allowed_models: models,
             max_concurrent: 10,
             suspended: false,
+            auto_response: false,
         }],
         vec![TenantCredential {
             tenant_id: "acme".to_string(),
@@ -595,6 +596,7 @@ async fn concurrent_fixture_full(
             allowed_models: ["demo-model".to_string()].into_iter().collect(),
             max_concurrent,
             suspended: false,
+            auto_response: false,
         });
         creds.push(TenantCredential {
             tenant_id: format!("tenant-{i}"),

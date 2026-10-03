@@ -801,5 +801,16 @@
     "module": "watchtower",
     "assignee": "AI",
     "due": ""
+  },
+  {
+    "id": "ANK-074",
+    "type": "feature",
+    "title": "Watchtower Phase B: auto-response (suspend/revoke) + dashboard + runbook",
+    "desc": "[done] auto-suspend (มี expiry) / revoke key ต่อ tenant เมื่อกฎ CRITICAL ยิง + tenant opt-in + circuit breaker + audit+alert ทุก action + Grafana dashboard JSON + runbook ไทย default ปิดทั้งหมด (notify-only) เสร็จ: override suspend (มี expiry)/revoke ใน core + KeyRevoked reason (401 แยก code) + AutoAction trait/executor + circuit breaker (edge-triggered meta-alert) + config knobs (default ปิดหมด) + tenant opt-in flag + Grafana dashboard JSON + runbook ไทย dispatcher ประหารก่อนแจ้งทีหลัง executor คืน acted-bool (ข้ามแล้วเงียบ ไม่แกล้งว่ามี action)",
+    "status": "done",
+    "priority": "high",
+    "module": "ai-gateway",
+    "assignee": "AI",
+    "due": ""
   }
 ]

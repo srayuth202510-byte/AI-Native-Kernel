@@ -80,6 +80,7 @@ fn test_policy() -> DataPlanePolicy {
             allowed_models: ["gpt-x".to_string()].into_iter().collect(),
             max_concurrent: 10,
             suspended: false,
+            auto_response: false,
         }],
         vec![TenantCredential {
             tenant_id: "acme".to_string(),

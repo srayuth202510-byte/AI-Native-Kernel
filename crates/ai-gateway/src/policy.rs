@@ -35,6 +35,9 @@ pub enum AuthError {
     /// คีย์หมดอายุ
     #[error("tenant key expired")]
     KeyExpired,
+    /// คีย์ถูกเพิกถอนโดยระบบตอบโต้อัตโนมัติ (watchtower Phase B)
+    #[error("tenant key revoked")]
+    RevokedKey,
     /// ไม่มีสิทธิ์เรียกเส้นทางที่ร้องขอ
     #[error("tenant not permitted for endpoint {endpoint}")]
     EndpointNotPermitted {
@@ -67,6 +70,8 @@ pub enum DenyReason {
     TenantSuspended,
     /// คีย์หมดอายุ
     KeyExpired,
+    /// คีย์ถูกเพิกถอนโดยระบบตอบโต้อัตโนมัติ
+    KeyRevoked,
     /// ไม่มีสิทธิ์ตามเส้นทาง
     EndpointNotPermitted,
     /// ไม่มีสิทธิ์ตามโมเดล
@@ -85,6 +90,7 @@ impl DenyReason {
             Self::UnknownTenant => "unknown_tenant",
             Self::TenantSuspended => "tenant_suspended",
             Self::KeyExpired => "key_expired",
+            Self::KeyRevoked => "key_revoked",
             Self::EndpointNotPermitted => "endpoint_not_permitted",
             Self::ModelNotPermitted => "model_not_permitted",
             Self::ConcurrencyLimit => "concurrency_limit",
@@ -100,6 +106,7 @@ impl DenyReason {
             AuthError::UnknownTenant => Self::UnknownTenant,
             AuthError::TenantSuspended => Self::TenantSuspended,
             AuthError::KeyExpired => Self::KeyExpired,
+            AuthError::RevokedKey => Self::KeyRevoked,
             AuthError::EndpointNotPermitted { .. } => Self::EndpointNotPermitted,
             AuthError::ModelNotPermitted { .. } => Self::ModelNotPermitted,
             AuthError::ConcurrencyLimit => Self::ConcurrencyLimit,
@@ -146,6 +153,9 @@ pub struct TenantPolicy {
     pub max_concurrent: u32,
     /// หยุดใช้งานชั่วคราวหรือไม่
     pub suspended: bool,
+    /// เปิดระบบตอบโต้อัตโนมัติ (watchtower Phase B) สำหรับผู้เช่านี้ —
+    /// default ปิด (notify-only) ต้องเปิดทีละรายหลังดูข้อมูลแล้วเท่านั้น
+    pub auto_response: bool,
 }
 
 /// ข้อมูลรับรองของผู้เช่าหนึ่งราย
@@ -289,6 +299,13 @@ impl DataPlanePolicy {
     pub fn has_tenant(&self, tenant_id: &str) -> bool {
         self.tenants.contains_key(tenant_id)
     }
+
+    /// ผู้เช่านี้เปิดระบบตอบโต้อัตโนมัติหรือไม่ — ไม่รู้จัก = ปิด (fail-closed
+    /// สำหรับการลงโทษ: ไม่ลงโทษคนที่ไม่รู้จักนโยบาย)
+    #[must_use]
+    pub fn tenant_auto_response(&self, tenant_id: &str) -> bool {
+        self.tenants.get(tenant_id).is_some_and(|t| t.auto_response)
+    }
 }
 
 /// แยกคีย์ออกจาก header `Authorization`
@@ -337,6 +354,9 @@ pub struct TenantFile {
     /// ระงับการใช้งาน
     #[serde(default)]
     pub suspended: bool,
+    /// เปิดระบบตอบโต้อัตโนมัติสำหรับผู้เช่านี้ (default ปิด)
+    #[serde(default)]
+    pub auto_response: bool,
 }
 
 impl PolicyFile {
@@ -374,6 +394,7 @@ impl PolicyFile {
                 allowed_models: t.allowed_models.into_iter().collect(),
                 max_concurrent: t.max_concurrent,
                 suspended: t.suspended,
+                auto_response: t.auto_response,
             });
         }
 
@@ -412,6 +433,7 @@ mod tests {
             allowed_models: models.iter().map(|s| (*s).to_string()).collect(),
             max_concurrent: 10,
             suspended: false,
+            auto_response: false,
         }
     }
 

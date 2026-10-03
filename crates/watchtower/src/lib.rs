@@ -17,12 +17,16 @@
 
 #![deny(unsafe_code)]
 
+pub mod action;
 pub mod dispatch;
 pub mod event;
 pub mod metrics;
 pub mod rules;
 pub mod sink;
 
+pub use action::{
+    ActionExecutor, ActionKind, AutoResponse, BreakerDecision, CircuitBreaker, ExecutedAction,
+};
 pub use dispatch::{DEFAULT_QUEUE_CAPACITY, Dispatcher, Enqueue};
 pub use event::{SecurityEvent, Severity};
 pub use metrics::WatchtowerMetrics;

@@ -15,6 +15,8 @@ pub struct WatchtowerMetrics {
     pub alerts_fired_total: IntCounterVec,
     /// alert ที่ทิ้งเพราะ queue เต็ม (ทิ้งเงียบโดยไม่มีตัวนับคือการโกหก)
     pub alerts_dropped_total: IntCounter,
+    /// auto-action ที่ประหารไปแล้ว แยกตาม action × tenant × กฎต้นเหตุ
+    pub auto_actions_total: IntCounterVec,
     /// pipeline มีชีวิตหรือไม่ (1 = ปกติ, 0 = ตาบอด — ดู A9 ใน design doc)
     pub pipeline_healthy: IntGauge,
     /// โหมดตรวจจับปัจจุบันต่อ tenant (ค่า 1 ที่ label mode ตรงกับสถานะจริง)
@@ -45,6 +47,13 @@ impl WatchtowerMetrics {
             "watchtower_alerts_dropped_total",
             "alerts dropped because the dispatch queue was full",
         ))?;
+        let auto_actions_total = IntCounterVec::new(
+            Opts::new(
+                "watchtower_auto_actions_total",
+                "automatic response actions executed",
+            ),
+            &["action", "tenant", "rule"],
+        )?;
         let pipeline_healthy = IntGauge::with_opts(Opts::new(
             "watchtower_pipeline_healthy",
             "1 when the alerting pipeline is alive, 0 when blind",
@@ -61,6 +70,7 @@ impl WatchtowerMetrics {
             Box::new(events_total.clone()) as Box<dyn prometheus::core::Collector>,
             Box::new(alerts_fired_total.clone()),
             Box::new(alerts_dropped_total.clone()),
+            Box::new(auto_actions_total.clone()),
             Box::new(pipeline_healthy.clone()),
             Box::new(detection_mode.clone()),
         ] {
@@ -71,6 +81,7 @@ impl WatchtowerMetrics {
             events_total,
             alerts_fired_total,
             alerts_dropped_total,
+            auto_actions_total,
             pipeline_healthy,
             detection_mode,
         }))

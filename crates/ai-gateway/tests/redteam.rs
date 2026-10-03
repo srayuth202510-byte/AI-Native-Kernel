@@ -109,6 +109,7 @@ async fn replay_core(audit_dir: PathBuf) -> GatewayCore {
             allowed_models: ["gpt-x".to_string()].into_iter().collect(),
             max_concurrent: 64,
             suspended: false,
+            auto_response: false,
         }],
         vec![TenantCredential {
             tenant_id: "red".to_string(),
