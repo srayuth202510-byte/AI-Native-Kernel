@@ -1,10 +1,11 @@
 # Pivot: AI-Native Kernel → AI Infrastructure Security Platform
 
 > Status: **accepted — in execution.** Committed 2026-09; Phase 1 steps 1–8 of §7
-> are shipped. Supersedes the "AI agent kernel" positioning in `README.md` /
+> are shipped, plus step 9 (ANK-068, TLS + concurrent-tenant P99). Supersedes the
+> "AI agent kernel" positioning in `README.md` /
 > `docs/ai_native_kernel_plan_v2.html`. The kernel code is **retained**, not replaced.
 >
-> Step-to-task mapping and current state live in `docs/tasks.json` (ANK-060..067) and
+> Step-to-task mapping and current state live in `docs/tasks.json` (ANK-060..069) and
 > `README.md` §9. This document remains the rationale for *why*; those two track *what*.
 
 ## 1. Thesis
@@ -143,7 +144,10 @@ Phase 1.
 
 1. **`crates/ai-gateway`** — axum + hyper, TLS termination, OpenAI-compatible
    `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, plus `/healthz`.
-   Bearer/JWT tenant auth. Streaming SSE passthrough.
+   Bearer/JWT tenant auth. Streaming SSE passthrough. TLS ยุติในตัว process
+   (`tls.rs`, rustls ring, TLS 1.3 only) — ถ้าไม่ใส่ `--tls-cert/--tls-key`
+   รับ HTTP เปล่าเพื่อให้วางหลัง reverse proxy ได้ แต่ถ้าใส่ค่าไม่ครบคู่จะ
+   **ไม่ยอมสตาร์ท** ไม่ใช่ fallback ไป plaintext (fail-closed)
 2. **`crates/semantic-guard`** — deliberately thin, and honest about it:
    - **PII detection + redaction** on request *and* response. Regex/entropy for emails,
      keys, card numbers, national IDs. Returns `AllowRedacted`. This is genuinely
@@ -204,21 +208,40 @@ ordering of layers is the durable result, not the third digit.
 | extraction-det `observe` | ~1.86 µs | ~2.49 µs | ~10 µs |
 | CPU layers only (no audit write) | ~5.9 µs | ~11.8 µs | ~206 µs |
 | **`inspect_request`, everything incl. audit write** | **~23 µs** | **~36–52 µs** | **~380–550 µs** |
+| 8 tenants concurrent (250 req each, 4 workers) | ~46 µs | ~111 µs | ~1.3 ms |
+| **1 tenant, 16 concurrent writers on one chain** | **~414 µs** | **~706 µs** | **~2.0 ms** |
 
-The last row is the one that matters: `inspect_request` is what the handler actually calls,
-and it writes the per-tenant audit chain **inline** — `record_audit().await` is on the request
-path, not spawned to a background task, and it fails closed if the write fails. Audit write
-costs ~17–40 µs on top of the CPU-only path (measured as the delta between the last two rows),
-so the full request path sits ~40x under the 2 ms budget even at the worst P99 observed
-across runs.
+The last row of the single-stream block is the one that matters: `inspect_request` is what the
+handler actually calls, and it writes the per-tenant audit chain **inline** —
+`record_audit().await` is on the request path, not spawned to a background task, and it fails
+closed if the write fails. Audit write costs ~17–40 µs on top of the CPU-only path (measured as
+the delta between the last two rows of that block), so the full request path sits ~40x under
+the 2 ms budget even at the worst P99 observed across runs.
+
+The two concurrency rows (ANK-068) close the gap this section used to admit to. They measure
+`inspect_request` — audit write included — under real task-level concurrency:
+
+- **Different tenants do not interfere.** 8 tenants × 250 requests at 4 workers: P99 ~111 µs,
+  ~142k req/s aggregate, and every per-tenant chain still validates afterwards. Sharding does
+  what §5 claimed it would.
+- **Same tenant serializes, and that is now a measured number rather than a hope.** 16 writers
+  on one chain: P50 jumps from ~23 µs to ~414 µs and P99 reaches ~706 µs — roughly the queueing
+  delay you would expect from 16 writers × ~30 µs of serialized audit work. It stays inside the
+  2 ms budget at this concurrency, but the max outlier (~2.0 ms) sits *on* the budget line.
+  Tail latency for one tenant is therefore a **function of how many requests that tenant sends
+  at once**, and there is currently no ceiling on it: `max_concurrent` is read from the policy
+  (`policy.rs:146`) and `AuthError::ConcurrencyLimit` already maps to 429 (`routes.rs:148`),
+  but nothing enforces it (ANK-069). Until that lands, "concurrent requests to the same tenant"
+  is the honest weak spot in this table.
 
 Caveats: the redaction path is ~2.2x the clean path because it allocates and copies a
-rewritten string; the max outliers (~100–550 µs) are scheduler noise on a shared dev box, not
-guard work; and `ChainedLog` calls `flush()` without `fsync`, so these numbers cover a
-page-cache write, not durable-to-disk — on a slow or loaded volume the tail will move.
-Concurrent tenants do not block each other (per-tenant `DashMap` shard + per-chain mutex), but
-concurrent requests *to the same tenant* serialize on that chain lock, which is not exercised
-by this single-stream test.
+rewritten string; the max outliers (~100–550 µs on single-stream, ~2 ms on the same-tenant
+chain) are scheduler noise plus queueing on a shared dev box, not guard work; and `ChainedLog`
+calls `flush()` without `fsync`, so these numbers cover a page-cache write, not durable-to-disk
+— on a slow or loaded volume the tail will move. TLS is exercised end-to-end
+(`crates/ai-gateway/tests/tls_e2e.rs`: enforcement over HTTPS, plaintext rejected, untrusted CA
+rejected, graceful drain) but its cost is **not** in these rows — the numbers are in-process
+inspection, not socket round-trips.
 
 ## 7. Migration order
 
@@ -234,6 +257,7 @@ Each step is independently shippable and independently revertable.
 | 6 | Adapt `tcell.rs` to tenant keys | ANK-065 | ✅ | `DashMap<tenant, TenantState>`; rate/anomaly per tenant, quarantine per PID; `uid_to_tenant` mapping in config |
 | 7 | `ank verify-audit` + audit export | ANK-066 | ✅ | Same JSON schema on both planes (`capability_security::verify_report`); golden-shape test pins field names |
 | 8 | Reposition docs/README | ANK-067 | ✅ | — |
+| 9 | TLS termination in-process + P99 under concurrent tenants | ANK-068 | ✅ | HTTPS enforced E2E; plaintext/untrusted-CA rejected; per-tenant and same-tenant chain P99 asserted in `perf_budget` |
 
 On step 7, verification is done (`ank-cli verify-audit <file>` for the host plane,
 `ai-gateway verify-audit --dir <dir>` across every data-plane shard) and SIEM export is
@@ -252,12 +276,16 @@ Stated up front so we can watch the signals:
 1. **Latency.** If the added P99 exceeds ~2 ms in a real vLLM deployment, buyers reject it
    regardless of features. **Measured** — see "Measured" above: the full `inspect_request`
    path including its inline audit write is 36–52 µs P99 in release, ~40x under budget at the
-   worst observed run, and the
-   per-layer tests assert that budget on every release run. The CI stage runs it as
-   `required` since 2026-10-02 (buyer decision §9.1) — a regression blocks the merge.
-   If shared-runner noise ever flakes it, revert to `non-blocking` only with evidence
-   attached, not silently. Still not validated against a real vLLM host with TLS and
-   concurrent tenants, which is where the tail could still move.
+   worst observed run, and it holds at ~111 µs P99 with 8 tenants running concurrently. The
+   same-tenant case (16 writers on one chain) is the tight one: 706 µs P99 with a ~2 ms max.
+   The CI stage runs the budget as `required` since 2026-10-02 (buyer decision §9.1) — a
+   regression blocks the merge. If shared-runner noise ever flakes it, revert to `non-blocking`
+   only with evidence attached, not silently. Two gaps remain, and they are the reason this is
+   still a tripwire rather than a published benchmark: (a) not validated against a real vLLM
+   host with TLS and concurrent tenants on separate cores — the numbers above are in-process
+   inspection on a shared dev box, and TLS socket cost is excluded entirely; (b) no ceiling on
+   per-tenant concurrency, so a single tenant can still queue itself onto the budget line
+   (ANK-069).
 2. **The PII/signature layer gets dismissed as "just regex."** It probably will be. The
    answer is the host plane — the regex layer is the on-ramp, not the pitch.
 3. **eBPF/LSM deployment friction.** Requiring privileged, kernel-specific setup to get

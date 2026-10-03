@@ -140,7 +140,7 @@ Last verified: 2026-07-11 — **519 tests pass** (4 ignored, Qdrant-backed — n
 ## Not Implemented Yet
 
 <!-- NOT_IMPLEMENTED_YET_START -->
-
+- **[ANK-069] Enforce per-tenant max_concurrent (concurrency ceiling)** (todo, high): [todo] พบระหว่างงาน ANK-068: policy อ่าน `max_concurrent` มาแล้ว (policy.rs:146) และมี `AuthError::ConcurrencyLimit` พร้อมการแมปเป็น 429 อยู่แล้ว (routes.rs:148) แต่**ไม่มีตัวนับใครเป็นจริง** — ค่านี้ถูกอ่านแล้วไม่ถูกบังคับใช้ที่ไหนเลย ผู้เช่าหนึ่งจึงยิงพร้อมกันได้ไม่จำกัดและแย่ง lock ของ chain ตัวเองจนกระทบคิวของตัวเอง ต้องมี inflight counter ต่อผู้เช่า (DashMap<tenant, AtomicU32> หรือ semaphore) คืน permit แบบ RAII ครอบ request รวมช่วง SSE stream และเขียน audit เมื่อเกินเพดาน (fail-closed + audited ตาม house rule) พร้อมเทสต์แย่งเพดานและเทสต์ว่า chain ยัง validate ได้
 <!-- NOT_IMPLEMENTED_YET_END -->
 
 ## Validation Status

@@ -241,6 +241,11 @@ pub trait ChainEntry: Serialize + DeserializeOwned + Send + Sync + 'static {
 ai-gateway serve --listen 127.0.0.1:8890 --upstream http://127.0.0.1:8000 \
   --audit-dir /var/lib/ai-gateway/audit --policy-file /etc/ai-gateway/policy.json
 
+# Same, but terminating TLS in-process (TLS 1.3 only; cert/key must be given as a pair —
+# half a pair refuses to start rather than silently falling back to plaintext)
+ai-gateway serve --listen 0.0.0.0:8443 --tls-cert /etc/ai-gateway/tls.crt \
+  --tls-key /etc/ai-gateway/tls.key --upstream http://127.0.0.1:8000
+
 # Verify audit hash chains
 ai-gateway verify-audit --dir /var/lib/ai-gateway/audit
 ```
@@ -261,7 +266,9 @@ Policy file example (`/etc/ai-gateway/policy.json`):
 }
 ```
 
-Environment variables: `ANK_GATEWAY_LISTEN`, `ANK_GATEWAY_UPSTREAM`, `ANK_GATEWAY_AUDIT_DIR`, `ANK_GATEWAY_POLICY_FILE`, `ANK_GATEWAY_GUARD`, `ANK_GATEWAY_EXTRACTION`, `ANK_LOG`.
+Environment variables: `ANK_GATEWAY_LISTEN`, `ANK_GATEWAY_UPSTREAM`, `ANK_GATEWAY_AUDIT_DIR`, `ANK_GATEWAY_POLICY_FILE`, `ANK_GATEWAY_GUARD`, `ANK_GATEWAY_EXTRACTION`, `ANK_GATEWAY_TLS_CERT`, `ANK_GATEWAY_TLS_KEY`, `ANK_LOG`.
+
+> ⚠️ `max_concurrent` ใน policy file ถูกอ่านแล้วแต่ **ยังไม่ถูกบังคับใช้** (ดู ANK-069) — ผู้เช่าหนึ่งยิงพร้อมกันได้ไม่จำกัดในตอนนี้
 
 ---
 
@@ -305,7 +312,7 @@ Environment variables: `ANK_GATEWAY_LISTEN`, `ANK_GATEWAY_UPSTREAM`, `ANK_GATEWA
 Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `scripts/run-privileged.sh cargo test -p kernel-companion --test privileged_h1_h2` (H2/H3).
 ---
 
-## 9. Task Tracking (ANK-060..067)
+## 9. Task Tracking (ANK-060..069)
 
 | ID | Title | Module | Status |
 |---|-------|--------|--------|
@@ -317,8 +324,10 @@ Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `sc
 | ANK-065 | Multi-tenant Keys for Immune Tcell | immune-system | ✅ done |
 | ANK-066 | `verify-audit` & Audit Export | capability-security | ✅ done — JSON export ทั้งสอง plane + golden-shape test |
 | ANK-067 | Reposition Docs & README for AI Security Pivot | infra | ✅ done |
+| ANK-068 | TLS termination + P99 under concurrent tenants | ai-gateway | ✅ done — TLS 1.3 in-process + 8-tenant P99 ~111 µs / same-tenant chain P99 ~706 µs |
+| ANK-069 | Enforce per-tenant `max_concurrent` | ai-gateway | 🔲 todo — ค่าถูกอ่านจาก policy แต่ยังไม่มีตัวนับ |
 
-งาน Phase 1 ครบทั้ง 8 ขั้นตอนแล้ว — ดู `docs/pivot_ai_infra_security.md` §7 สำหรับรายละเอียด
+งาน Phase 1 ครบทั้ง 8 ขั้นตอนแล้ว (บวกขั้นที่ 9 = TLS + concurrency proof) — ดู `docs/pivot_ai_infra_security.md` §7 สำหรับรายละเอียด
 
 ---
 

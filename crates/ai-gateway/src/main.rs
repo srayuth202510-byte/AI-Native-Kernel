@@ -1,6 +1,6 @@
 use ai_gateway::{
-    AppState, GatewayConfig, GatewayCore, build_router, entry::ApiAuditEntry, policy::PolicyFile,
-    proxy::Upstream,
+    AppState, GatewayConfig, GatewayCore, TlsSettings, build_router, entry::ApiAuditEntry,
+    policy::PolicyFile, proxy::Upstream,
 };
 use capability_security::verify_report::{AuditCheckpoint, VerifyReport, verify_chain_checked};
 use clap::{Parser, Subcommand};
@@ -47,6 +47,14 @@ struct Args {
     /// Log level
     #[arg(long, env = "ANK_LOG")]
     log_level: Option<String>,
+
+    /// PEM certificate for TLS termination (must be paired with --tls-key)
+    #[arg(long, env = "ANK_GATEWAY_TLS_CERT")]
+    tls_cert: Option<PathBuf>,
+
+    /// PEM private key for TLS termination (must be paired with --tls-cert)
+    #[arg(long, env = "ANK_GATEWAY_TLS_KEY")]
+    tls_key: Option<PathBuf>,
 }
 
 /// AI Infrastructure Security Gateway
@@ -103,6 +111,8 @@ fn merge_args(outer: &Args, inner: &Args) -> Args {
         guard_enabled: inner.guard_enabled.or(outer.guard_enabled),
         extraction_enabled: inner.extraction_enabled.or(outer.extraction_enabled),
         log_level: inner.log_level.clone().or_else(|| outer.log_level.clone()),
+        tls_cert: inner.tls_cert.clone().or_else(|| outer.tls_cert.clone()),
+        tls_key: inner.tls_key.clone().or_else(|| outer.tls_key.clone()),
     }
 }
 
@@ -162,10 +172,27 @@ fn build_config(args: &Args) -> Result<GatewayConfig, String> {
         policy_file: args.policy_file.clone().unwrap_or(defaults.policy_file),
         guard_enabled: args.guard_enabled.unwrap_or(true),
         extraction_enabled: args.extraction_enabled.unwrap_or(true),
+        tls: tls_settings(args)?,
         ..defaults
     };
     config.validate().map_err(|e| e.to_string())?;
     Ok(config)
+}
+
+/// สร้างค่า TLS จาก flag — ต้องมาครบคู่เสมอ
+///
+/// ถ้ามีแค่ใบรับรองหรือมีแค่กุญแจ เราปฏิเสธการสตาร์ทแทนที่จะรับ plaintext
+/// เพราะ operator ที่ตั้งค่าไม่ครบมักคิดว่ากำลังเข้าผ่าน TLS
+fn tls_settings(args: &Args) -> Result<Option<TlsSettings>, String> {
+    match (&args.tls_cert, &args.tls_key) {
+        (None, None) => Ok(None),
+        (Some(cert), Some(key)) => Ok(Some(TlsSettings {
+            cert_file: cert.clone(),
+            key_file: key.clone(),
+        })),
+        (Some(_), None) => Err("--tls-cert requires --tls-key".to_string()),
+        (None, Some(_)) => Err("--tls-key requires --tls-cert".to_string()),
+    }
 }
 
 async fn load_policy(path: &PathBuf) -> Result<ai_gateway::DataPlanePolicy, String> {
@@ -266,19 +293,40 @@ async fn serve(config: GatewayConfig) -> std::process::ExitCode {
         }
     };
 
+    // โหลด TLS ก่อน bind log — ถ้า cert/key ใช้ไม่ได้ต้องไม่รับ traffic เลย
+    let tls_acceptor = match &config.tls {
+        Some(settings) => match ai_gateway::tls::load_acceptor(settings) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                eprintln!("TLS setup failed: {e}");
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+
     tracing::info!(
         listen = %addr,
         upstream = %config.upstream_url,
         audit_dir = %config.audit_dir.display(),
         guard_enabled = config.guard_enabled,
         extraction_enabled = config.extraction_enabled,
+        tls = tls_acceptor.is_some(),
         "gateway ready"
     );
 
-    if let Err(e) = axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-    {
+    let serve_result = match tls_acceptor {
+        Some(acceptor) => {
+            ai_gateway::tls::serve_tls(listener, router, acceptor, shutdown_signal()).await
+        }
+        None => {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+        }
+    };
+
+    if let Err(e) = serve_result {
         eprintln!("Server error: {e}");
         return std::process::ExitCode::FAILURE;
     }

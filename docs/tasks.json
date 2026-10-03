@@ -735,5 +735,27 @@
     "module": "infra",
     "assignee": "AI",
     "due": ""
+  },
+  {
+    "id": "ANK-068",
+    "type": "feature",
+    "title": "TLS termination + concurrent-tenant P99 proof (ai-gateway)",
+    "desc": "[done] ยุติ TLS ในตัว process (rustls ring, TLS 1.3 only, cert/key จากไฟล์, handshake 10s timeout + เพดาน 256 pending, graceful drain ผ่าน hyper-util GracefulShutdown) แก้ข้อจำกัดเดิมใน lib.rs ที่บังคับให้วางหลัง reverse proxy + เพิ่มการวัง P99 ภายใต้โหลดจริง: หลายผู้เช่าพร้อมกัน (8 tenants, P99 111µs, ~142k req/s) และผู้เช่าเดียวเขียน chain เดียวพร้อมกัน 16 writers (P50 414µs, P99 706µs, MAX 2.0ms) ซึ่งเป็นช่องว่างที่ pivot §8.1 เคยระบุว่ายังไม่ได้วัด + เทสต์ TLS end-to-end 5 ตัว (HTTPS บังคับนโยบาย, plaintext ถูกปฏิเสธ, CA ที่ไม่เชื่อถูกปฏิเสธ, audit ถูกเขียน, graceful drain)",
+    "status": "done",
+    "priority": "high",
+    "module": "ai-gateway",
+    "assignee": "AI",
+    "due": ""
+  },
+  {
+    "id": "ANK-069",
+    "type": "feature",
+    "title": "Enforce per-tenant max_concurrent (concurrency ceiling)",
+    "desc": "[todo] พบระหว่างงาน ANK-068: policy อ่าน `max_concurrent` มาแล้ว (policy.rs:146) และมี `AuthError::ConcurrencyLimit` พร้อมการแมปเป็น 429 อยู่แล้ว (routes.rs:148) แต่**ไม่มีตัวนับใครเป็นจริง** — ค่านี้ถูกอ่านแล้วไม่ถูกบังคับใช้ที่ไหนเลย ผู้เช่าหนึ่งจึงยิงพร้อมกันได้ไม่จำกัดและแย่ง lock ของ chain ตัวเองจนกระทบคิวของตัวเอง ต้องมี inflight counter ต่อผู้เช่า (DashMap<tenant, AtomicU32> หรือ semaphore) คืน permit แบบ RAII ครอบ request รวมช่วง SSE stream และเขียน audit เมื่อเกินเพดาน (fail-closed + audited ตาม house rule) พร้อมเทสต์แย่งเพดานและเทสต์ว่า chain ยัง validate ได้",
+    "status": "todo",
+    "priority": "high",
+    "module": "ai-gateway",
+    "assignee": "AI",
+    "due": ""
   }
 ]

@@ -23,6 +23,7 @@
 #![deny(unsafe_code)]
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ai_gateway::policy::TenantCredential;
@@ -366,4 +367,220 @@ async fn budget_inspect_request_including_audit_p99_within_budget() {
     );
 
     let _ = std::fs::remove_dir_all(&audit_dir);
+}
+
+/// ---- BUDGET-7: หลายผู้เช่าพร้อมกัน ----
+///
+/// เทสต์ก่อนหน้าวัดทีละ request ตามลำดับ ซึ่งพิสูจน์ได้แค่ว่า "ชั้นไหนช้า" แต่ไม่ได้
+/// พิสูจน์สิ่งที่ผู้ซื้อจะเจอจริง: หลายผู้เช่ายิงพร้อมกัน ซึ่งเป็นรูปแบบการใช้งาน
+/// ปกติของ platform team เพราะผู้เช่าคนละรายก็ยิงพร้อมกัน
+///
+/// สิ่งที่ต้องการพิสูจน์คือ sharding ทำงานจริง: ผู้เช่าคนละ shard เขียน chain
+/// คนละไฟล์ จึงไม่ควรแย่ง lock กัน (`GatewayCore::record_audit` clone `Arc` ออก
+/// ก่อน `await`) ถ้าวันนี้หนึ่งผู้เช่าเขียนช้าลง P99 ของทุกผู้เช่าต้องไม่ขยับตาม
+#[cfg_attr(
+    debug_assertions,
+    ignore = "perf budget is only meaningful in --release; debug regex/MinHash exceeds 2ms"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn budget_concurrent_tenants_p99_within_budget() {
+    const TENANTS: usize = 8;
+    const PER_TENANT: usize = 250;
+
+    let (core, audit_dir, headers) = concurrent_fixture("concurrent-tenants", TENANTS).await;
+    let body = bench_body();
+
+    let started = Instant::now();
+    let mut tasks = Vec::with_capacity(TENANTS);
+    for header in headers {
+        let core = core.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut latencies = Vec::with_capacity(PER_TENANT);
+            for i in 0..PER_TENANT {
+                let start = Instant::now();
+                let inspection = core
+                    .inspect_request(
+                        Some(&header),
+                        Endpoint::ChatCompletions,
+                        "demo-model",
+                        body,
+                        u64::try_from(i).unwrap_or(0) * 10,
+                    )
+                    .await
+                    .expect("request must pass enforcement");
+                latencies.push(start.elapsed());
+                assert!(
+                    matches!(
+                        inspection.decision,
+                        ai_gateway::ApiDecision::Allow | ai_gateway::ApiDecision::Redacted
+                    ),
+                    "unexpected decision {:?}",
+                    inspection.decision
+                );
+            }
+            latencies
+        }));
+    }
+
+    let mut latencies = Vec::with_capacity(TENANTS * PER_TENANT);
+    for task in tasks {
+        latencies.extend(task.await.expect("tenant task must not panic"));
+    }
+    let wall = started.elapsed();
+    let total = TENANTS * PER_TENANT;
+
+    // ทุกผู้เช่าต้องมี chain ของตัวเอง และ chain ต้องผ่าน — ถ้ามีการแย่ง lock
+    // แบบผิด จะเห็นเป็น entry หายหรือ chain ที่ validate ไม่ผ่าน
+    let results = core.verify_all_chains().await.expect("verify chains");
+    assert_eq!(results.len(), TENANTS, "one chain per tenant expected");
+    for (tenant, valid) in &results {
+        assert!(
+            valid,
+            "chain for {tenant} must validate after concurrent load"
+        );
+    }
+
+    report(
+        &format!("concurrent tenants ({TENANTS} tenants x {PER_TENANT} requests)"),
+        &mut latencies,
+        GUARD_BUDGET,
+    );
+    println!(
+        "[PERF]   Wall: {total} requests in {wall:?} ({:.0} req/s)",
+        total as f64 / wall.as_secs_f64()
+    );
+
+    let _ = std::fs::remove_dir_all(&audit_dir);
+}
+
+/// ---- BUDGET-8: ผู้เช่าเดียวยิงพร้อมกัน ----
+///
+/// นี่คือช่องว่างที่ pivot doc §8.1 ยอมรับเองว่ายังไม่ได้วัด: *"concurrent requests
+/// to the same tenant serialize on that chain lock, which is not exercised by this
+/// single-stream test"* การ serialize เป็นเรื่องถูกต้องสำหรับ hash chain
+/// (ลำดับต้องไม่ถูกแทรก) แต่ต้องพิสูจน์ว่ามันไม่พา tail พ้นงบ 2ms
+///
+/// ความหมายของตัวเลข: ที่ concurrency ที่กำหนด คำขอที่เข้าคิวท้ายสุดต้องจบได้
+/// ภายในงบเดียวกับ request เดี่ยว ถ้าเกิน แปลว่า chain lock เป็นคอขวด ไม่ใช่ disk
+#[cfg_attr(
+    debug_assertions,
+    ignore = "perf budget is only meaningful in --release; debug regex/MinHash exceeds 2ms"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn budget_concurrent_same_tenant_chain_lock_p99_within_budget() {
+    const CONCURRENCY: usize = 16;
+    const PER_WORKER: usize = 125;
+
+    // ผู้เช่าคนเดียว — ทุก request เขียน chain ไฟล์เดียวกัน จึง serialize บน mutex
+    // ของ chain นั้นตามการออกแบบ (ดู §5 "per-tenant chains")
+    let (core, audit_dir, headers) = concurrent_fixture("concurrent-same-tenant", 1).await;
+    let header = headers.first().expect("fixture has one tenant").clone();
+    let body = bench_body();
+
+    let mut tasks = Vec::with_capacity(CONCURRENCY);
+    for worker in 0..CONCURRENCY {
+        let core = core.clone();
+        let header = header.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut latencies = Vec::with_capacity(PER_WORKER);
+            for i in 0..PER_WORKER {
+                let start = Instant::now();
+                core.inspect_request(
+                    Some(&header),
+                    Endpoint::ChatCompletions,
+                    "demo-model",
+                    body,
+                    u64::try_from(worker * PER_WORKER + i).unwrap_or(0) * 10,
+                )
+                .await
+                .expect("request must pass enforcement");
+                latencies.push(start.elapsed());
+            }
+            latencies
+        }));
+    }
+
+    let mut latencies = Vec::with_capacity(CONCURRENCY * PER_WORKER);
+    for task in tasks {
+        latencies.extend(task.await.expect("worker task must not panic"));
+    }
+
+    // chain เดียวต้องมี entry ครบทุก request — การ serialize ต้องไม่ทำให้
+    // entry หาย ซึ่งคือบั๊กจริงของการเขียน audit แบบมี lock
+    let entries = std::fs::read_to_string(audit_dir.join("tenant-0.jsonl"))
+        .expect("audit chain written")
+        .lines()
+        .count();
+    assert_eq!(
+        entries,
+        CONCURRENCY * PER_WORKER,
+        "every concurrent request must land in the chain"
+    );
+
+    let results = core.verify_all_chains().await.expect("verify chains");
+    assert_eq!(results.get("tenant-0"), Some(&true));
+
+    report(
+        &format!("same tenant, {CONCURRENCY} concurrent writers on one chain"),
+        &mut latencies,
+        GUARD_BUDGET,
+    );
+
+    let _ = std::fs::remove_dir_all(&audit_dir);
+}
+
+/// สร้าง core สำหรับเทสต์ concurrent พร้อมผู้เช่าตามจำนวนที่ขอ
+///
+/// คืน `(core, audit_dir, headers)` — header แต่ละตัวคือ credential ของผู้เช่า
+/// คนละคน ผู้เช่าชื่อ `tenant-{i}` เพื่อให้ชื่อไฟล์ chain ทำนายได้
+async fn concurrent_fixture(
+    name: &str,
+    tenants: usize,
+) -> (std::sync::Arc<GatewayCore>, PathBuf, Vec<String>) {
+    let audit_dir = std::env::temp_dir().join(format!(
+        "ai-gw-perf-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let config = GatewayConfig {
+        audit_dir: audit_dir.clone(),
+        guard_enabled: true,
+        extraction_enabled: true,
+        ..GatewayConfig::default()
+    };
+
+    let mut policies = Vec::with_capacity(tenants);
+    let mut creds = Vec::with_capacity(tenants);
+    for i in 0..tenants {
+        policies.push(TenantPolicy {
+            tenant_id: format!("tenant-{i}"),
+            allowed_endpoints: ["chat_completions"].into_iter().collect(),
+            allowed_models: ["demo-model".to_string()].into_iter().collect(),
+            max_concurrent: 10,
+            suspended: false,
+        });
+        creds.push(TenantCredential {
+            tenant_id: format!("tenant-{i}"),
+            key: format!("sk-bench-{i:016}").into_bytes(),
+            expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
+        });
+    }
+
+    let core = GatewayCore::new(config, DataPlanePolicy::new(policies, creds), None, None)
+        .await
+        .expect("core must build");
+
+    let headers = (0..tenants)
+        .map(|i| format!("Bearer sk-bench-{i:016}"))
+        .collect();
+    (std::sync::Arc::new(core), audit_dir, headers)
+}
+
+fn bench_body() -> &'static str {
+    r#"{"model":"demo-model","messages":[
+        {"role":"user","content":"ada@example.com reported card 4111 1111 1111 1111 on 123-45-6789"}
+    ]}"#
 }

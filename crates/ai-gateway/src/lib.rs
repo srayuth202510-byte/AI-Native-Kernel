@@ -17,8 +17,11 @@
 //!
 //! - ตรวจ request ทั้งหมด แต่ตรวจ response เฉพาะ prefix เพราะการตรวจทั้ง response
 //!   ไม่เข้ากันกับ streaming (SSE) — ดู `docs/pivot_ai_infra_security.md` §6
-//! - ยังไม่มี TLS termination ในตัว process (ต้องวางหลัง reverse proxy ที่มี TLS)
-//! - ยังไม่มีการควบคุมพร้อมกัน (concurrency limit) และ rate limit ต่อผู้เช่า
+//! - TLS termination เป็นทางเลือก: ไม่ใส่ `--tls-cert/--tls-key` แล้วรับ HTTP
+//!   เปล่าเพื่อให้วางหลัง reverse proxy ที่มี TLS ได้ แต่ถ้าใส่ค่าไม่ครบคู่
+//!   process จะไม่ยอมสตาร์ทเลย (fail-closed) — ดู [`tls`]
+//! - ยังไม่บังคับเพดานขำขอพร้อมกันต่อผู้เช่า (`max_concurrent` ถูกอ่านจาก
+//!   นโยบายแต่ยังไม่มีตัวนับ) ดู `docs/pivot_ai_infra_security.md` §8.1
 
 #![deny(unsafe_code)]
 
@@ -26,6 +29,7 @@ pub mod entry;
 pub mod policy;
 pub mod proxy;
 pub mod routes;
+pub mod tls;
 pub mod wire;
 
 pub use entry::{ApiAuditChain, ApiAuditEntry, ApiAuditError, ApiDecision, new_request_id};
@@ -35,6 +39,7 @@ pub use policy::{
 };
 pub use proxy::{ResponseInspection, Upstream};
 pub use routes::{AppState, build_router};
+pub use tls::{TlsError, TlsSettings};
 pub use wire::{
     ChatRequest, EmbeddingInput, EmbeddingRequest, Endpoint, RequestSummary, SummaryError,
 };
@@ -102,6 +107,8 @@ pub struct GatewayConfig {
     pub guard_enabled: bool,
     /// เปิดใช้งานตัวตรวจจับการขโมยโมเดลหรือไม่
     pub extraction_enabled: bool,
+    /// ตั้งค่า TLS termination — `None` คือรับ HTTP เปล่า (วางหลัง proxy ที่มี TLS)
+    pub tls: Option<TlsSettings>,
 }
 
 impl Default for GatewayConfig {
@@ -116,6 +123,7 @@ impl Default for GatewayConfig {
             max_inspect_prefix_bytes: 4096,
             guard_enabled: true,
             extraction_enabled: true,
+            tls: None,
         }
     }
 }
@@ -146,6 +154,12 @@ impl GatewayConfig {
             return Err(GatewayError::Config(
                 "upstream_timeout must be greater than zero".to_string(),
             ));
+        }
+        // TLS ที่ตั้งค่าไว้ต้องใช้ได้จริง — ค่าที่ครบคู่แต่พาธว่างจะทำให้
+        // operator คิดว่าเข้าผ่าน TLS แล้วทั้งที่จริง ๆ แล้วรับ plaintext
+        if let Some(tls) = &self.tls {
+            tls.validate()
+                .map_err(|e| GatewayError::Config(e.to_string()))?;
         }
         Ok(())
     }
@@ -620,6 +634,32 @@ mod tests {
     #[test]
     fn config_defaults_validate() {
         assert!(GatewayConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn config_rejects_incomplete_tls_pair() {
+        // ใส่แค่ cert อย่างเดียว = operator คิดว่าเข้าผ่าน TLS แต่จริง ๆ แล้ว
+        // พอร์ตยังรับ plaintext ได้ การยอมรับค่าแบบนี้แย่กว่าการไม่มี TLS เลย
+        let config = GatewayConfig {
+            tls: Some(TlsSettings {
+                cert_file: PathBuf::from("/etc/ai-gateway/tls.crt"),
+                key_file: PathBuf::new(),
+            }),
+            ..GatewayConfig::default()
+        };
+        assert!(matches!(config.validate(), Err(GatewayError::Config(_))));
+    }
+
+    #[test]
+    fn config_accepts_complete_tls_pair() {
+        let config = GatewayConfig {
+            tls: Some(TlsSettings {
+                cert_file: PathBuf::from("/etc/ai-gateway/tls.crt"),
+                key_file: PathBuf::from("/etc/ai-gateway/tls.key"),
+            }),
+            ..GatewayConfig::default()
+        };
+        assert!(config.validate().is_ok());
     }
 
     #[test]
