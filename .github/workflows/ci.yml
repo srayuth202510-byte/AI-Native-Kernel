@@ -12,16 +12,12 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
-      # Docker service runs in separate container - use TCP
-      DOCKER_HOST: tcp://docker:2375
-      DOCKER_TLS_CERTDIR: ""
-    # Docker needed for testcontainers-based Qdrant tests
-    services:
-      docker:
-        image: docker:27-dind
-        options: --privileged --pid=host
-        env:
-          DOCKER_TLS_CERTDIR: ""
+    # NOTE: GitHub-hosted ubuntu-24.04 runners already ship a running Docker
+    # daemon at unix:///var/run/docker.sock — testcontainers works out of the
+    # box. Do NOT add a `docker:dind` service: its `docker` hostname does not
+    # resolve from the job container (lookup fails, exit code from
+    # `docker version` = 1), which broke every stage after setting
+    # DOCKER_HOST=tcp://docker:2375.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -50,11 +46,7 @@ jobs:
           ls -la crates/kernel-companion/prebuilt-bpf/
 
       - name: Verify Docker available for testcontainers
-        run: |
-          docker version
-          docker run --rm hello-world
-
-      - name: Wait for Docker daemon to be fully ready
+        timeout-minutes: 5
         run: |
           for i in {1..30}; do
             if docker info >/dev/null 2>&1; then
@@ -64,6 +56,8 @@ jobs:
             echo "Waiting for Docker daemon... ($i/30)"
             sleep 2
           done
+          docker version
+          docker run --rm hello-world
 
       - name: Run CI validation suite
         timeout-minutes: 75
