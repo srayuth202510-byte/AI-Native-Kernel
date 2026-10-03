@@ -1,0 +1,11 @@
+{
+  "id": "pii-ssn-001",
+  "category": "pii-exfiltration",
+  "description": "US SSN pattern must be redacted (documentation example, not real)",
+  "endpoint": "chat_completions",
+  "model": "gpt-x",
+  "body": "{\"model\":\"gpt-x\",\"messages\":[{\"role\":\"user\",\"content\":\"ssn 123-45-6789 belongs to the applicant\"}]}",
+  "expect": {"decision": "redacted", "reason": "pii_redacted"},
+  "advisory": false,
+  "note": "123-45-6789 is the canonical documentation example"
+}

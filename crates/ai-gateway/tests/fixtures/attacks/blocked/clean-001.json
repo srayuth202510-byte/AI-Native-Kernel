@@ -1,0 +1,11 @@
+{
+  "id": "clean-001",
+  "category": "baseline",
+  "description": "Benign request must pass untouched (guards against over-blocking regressions)",
+  "endpoint": "chat_completions",
+  "model": "gpt-x",
+  "body": "{\"model\":\"gpt-x\",\"messages\":[{\"role\":\"user\",\"content\":\"summarize the quarterly report in three bullet points\"}]}",
+  "expect": {"decision": "allow", "reason": "ok"},
+  "advisory": false,
+  "note": "every new rule must keep this green"
+}

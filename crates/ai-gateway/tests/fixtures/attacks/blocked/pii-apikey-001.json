@@ -1,0 +1,11 @@
+{
+  "id": "pii-apikey-001",
+  "category": "pii-exfiltration",
+  "description": "API-key-shaped secret must be redacted (synthetic key)",
+  "endpoint": "chat_completions",
+  "model": "gpt-x",
+  "body": "{\"model\":\"gpt-x\",\"messages\":[{\"role\":\"user\",\"content\":\"deploy with key sk-abcdefghijklmnopqrstuvwx tonight\"}]}",
+  "expect": {"decision": "redacted", "reason": "pii_redacted"},
+  "advisory": false,
+  "note": "synthetic sk- test key"
+}

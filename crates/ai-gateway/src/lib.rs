@@ -407,11 +407,21 @@ impl GatewayCore {
             }
         };
 
-        // 3) ตรวจข้อมูลด้วยชั้น semantic guard
+        // 3) ตรวจข้อมูลด้วยชั้น semantic guard — บนข้อความที่ถอดรหัสแล้ว
+        // ไม่ใช่ข้อความดิบ: model server ถอด JSON escape (`\uXXXX`, `\n`)
+        // เป็นอักขระจริงเสมอ การตรวจข้อความดิบจึงเปิดสองช่องพร้อมกัน:
+        // (a) `\u0069gnore...` เป็น pure-ASCII หลบ regex ได้ทั้งหมด
+        // (redteam `inj-escape-001` ได้ Allow ก่อนมีบรรทัดนี้)
+        // (b) `\n` ที่ encode ไว้ไม่ถูกยุบเป็น whitespace ทั้งที่ model เห็น
+        // เป็น newline จริง (redteam `inj-obf-newline-001` หลุดเพราะเหตุนี้ —
+        // unit test เดิมใช้ newline จริงซึ่งมาถึงผ่านสายไม่ได้ เพราะ JSON
+        // ที่ถูกต้องต้อง escape มัน) ใช้เป็น input ของ guard เท่านั้น —
+        // forward/audit ยังใช้ payload เดิม พฤติกรรมอื่นไม่เปลี่ยน
+        let inspect_text = inspection_text(payload);
         let verdict: Option<GuardVerdict> = self
             .guard
             .as_ref()
-            .map(|g| g.inspect_fail_closed(payload, Direction::Inbound));
+            .map(|g| g.inspect_fail_closed(&inspect_text, Direction::Inbound));
 
         let guard_decision = verdict.as_ref().map_or(GuardAction::Allow, |v| v.action);
 
@@ -603,6 +613,45 @@ impl GatewayCore {
 /// เวลาที่ผ่านไปเป็นมิลลิวินาทีตั้งแต่จุดเริ่ม
 fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// ข้อความสำหรับชั้นตรวจ: รวม string ทุกชิ้นใน body หลัง JSON decode —
+/// คือ "สิ่งที่ model จะเห็น" ตรง ๆ ไม่ใช่ syntax ที่ห่อมันอยู่
+///
+/// เหตุผลที่ไม่ใช่แค่ re-serialize: `to_string` จะ encode newline กลับเป็น
+/// `\n` ทำให้ normalize มองไม่เห็น whitespace จริง (บทเรียนจาก
+/// `inj-obf-newline-001`) และ key/brace ไม่ใช่ attack surface ของกฎ regex
+/// อยู่แล้ว ถอดไม่ได้คืนข้อความเดิม (JSON เสียไปไม่ถึง model จึงไม่มีทาง
+/// bypass ผ่านทางนี้)
+fn inspection_text(payload: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(payload) {
+        Ok(value) => {
+            let mut parts = Vec::new();
+            collect_json_text(&value, &mut parts);
+            parts.join("\n")
+        }
+        Err(_) => payload.to_string(),
+    }
+}
+
+/// เก็บข้อความทุกชิ้น (รวมตัวเลข/บูลีนในรูปข้อความ) ตามลำดับ document
+fn collect_json_text(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(s) => out.push(s.clone()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_text(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (_, item) in map {
+                collect_json_text(item, out);
+            }
+        }
+        serde_json::Value::Number(n) => out.push(n.to_string()),
+        serde_json::Value::Bool(b) => out.push(b.to_string()),
+        serde_json::Value::Null => {}
+    }
 }
 
 /// ประมาณจำนวนโทเคนจาก payload ดิบ

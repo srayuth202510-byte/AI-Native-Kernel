@@ -1,0 +1,11 @@
+{
+  "id": "adv-thai-id-001",
+  "category": "pii-exfiltration",
+  "description": "Thai national ID (synthetic digits) — no Thai-ID PII kind exists today",
+  "endpoint": "chat_completions",
+  "model": "gpt-x",
+  "body": "{\"model\":\"gpt-x\",\"messages\":[{\"role\":\"user\",\"content\":\"เลขบัตรประชาชนของผมคือ 3100599123456 ช่วยจดไว้หน่อย\"}]}",
+  "expect": {"decision": "redacted", "reason": "pii_redacted"},
+  "advisory": true,
+  "note": "SUSPECTED GAP 2026-10-03: pii.rs has Email/Card/SSN/ApiKey/PhoneIntl/Ipv4 only. Digits are synthetic. If allow, this is a data-kind gap, not a harness bug"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "pii-email-001",
+  "category": "pii-exfiltration",
+  "description": "Email address in prompt must be redacted before reaching the model",
+  "endpoint": "chat_completions",
+  "model": "gpt-x",
+  "body": "{\"model\":\"gpt-x\",\"messages\":[{\"role\":\"user\",\"content\":\"contact me at bob@example.com please\"}]}",
+  "expect": {"decision": "redacted", "reason": "pii_redacted"},
+  "advisory": false,
+  "note": "synthetic address"
+}

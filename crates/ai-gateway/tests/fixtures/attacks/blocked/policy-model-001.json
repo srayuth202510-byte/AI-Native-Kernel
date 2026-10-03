@@ -1,0 +1,11 @@
+{
+  "id": "policy-model-001",
+  "category": "policy-violation",
+  "description": "Request for a model outside the tenant allowlist must be denied",
+  "endpoint": "chat_completions",
+  "model": "evil-model",
+  "body": "{\"model\":\"evil-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+  "expect": {"decision": "deny", "reason": "model_not_permitted"},
+  "advisory": false,
+  "note": "allowlist = [gpt-x] only in replay policy"
+}
