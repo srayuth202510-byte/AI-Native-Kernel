@@ -199,6 +199,11 @@ impl DataPlanePolicy {
         }
     }
 
+    /// วนทุกรายการนโยบายของผู้เช่า
+    pub fn tenants_iter(&self) -> impl Iterator<Item = &TenantPolicy> {
+        self.tenants.values()
+    }
+
     /// สร้างนโยบายแบบปฏิเสธทุกคน (ค่าเริ่มต้นที่ปลอดภัยที่สุด)
     #[must_use]
     pub fn deny_all() -> Self {

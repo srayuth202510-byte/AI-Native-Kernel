@@ -1,7 +1,8 @@
 # Pivot: AI-Native Kernel → AI Infrastructure Security Platform
 
 > Status: **accepted — in execution.** Committed 2026-09; Phase 1 steps 1–8 of §7
-> are shipped, plus step 9 (ANK-068, TLS + concurrent-tenant P99). Supersedes the
+> are shipped, plus step 9 (ANK-068, TLS + concurrent-tenant P99) and step 10
+> (ANK-069, per-tenant concurrency ceiling). Supersedes the
 > "AI agent kernel" positioning in `README.md` /
 > `docs/ai_native_kernel_plan_v2.html`. The kernel code is **retained**, not replaced.
 >
@@ -229,10 +230,14 @@ The two concurrency rows (ANK-068) close the gap this section used to admit to. 
   delay you would expect from 16 writers × ~30 µs of serialized audit work. It stays inside the
   2 ms budget at this concurrency, but the max outlier (~2.0 ms) sits *on* the budget line.
   Tail latency for one tenant is therefore a **function of how many requests that tenant sends
-  at once**, and there is currently no ceiling on it: `max_concurrent` is read from the policy
-  (`policy.rs:146`) and `AuthError::ConcurrencyLimit` already maps to 429 (`routes.rs:148`),
-  but nothing enforces it (ANK-069). Until that lands, "concurrent requests to the same tenant"
-  is the honest weak spot in this table.
+  at once**, which is why ANK-069 now caps that number: each tenant gets a semaphore sized from
+  `max_concurrent`, and the permit is held for the *whole* request — including the entire life
+  of an SSE stream, not just until the handler returns. Beyond the ceiling the gateway returns
+  `429 concurrency_limit` and writes an audit entry, because a shed request with no trace is a
+  control nobody can reconstruct later. One caveat worth stating plainly: a ceiling bounds the
+  worst case, it does not remove the queueing. A tenant that sits exactly at its limit still
+  pays the serialized-audit delay above, so operators should size `max_concurrent` against the
+  2 ms budget rather than against peak CPU.
 
 Caveats: the redaction path is ~2.2x the clean path because it allocates and copies a
 rewritten string; the max outliers (~100–550 µs on single-stream, ~2 ms on the same-tenant
@@ -258,6 +263,7 @@ Each step is independently shippable and independently revertable.
 | 7 | `ank verify-audit` + audit export | ANK-066 | ✅ | Same JSON schema on both planes (`capability_security::verify_report`); golden-shape test pins field names |
 | 8 | Reposition docs/README | ANK-067 | ✅ | — |
 | 9 | TLS termination in-process + P99 under concurrent tenants | ANK-068 | ✅ | HTTPS enforced E2E; plaintext/untrusted-CA rejected; per-tenant and same-tenant chain P99 asserted in `perf_budget` |
+| 10 | Enforce per-tenant `max_concurrent` | ANK-069 | ✅ | Semaphore per tenant; permit held across the full SSE stream; over-ceiling → 429 + audit entry |
 
 On step 7, verification is done (`ank-cli verify-audit <file>` for the host plane,
 `ai-gateway verify-audit --dir <dir>` across every data-plane shard) and SIEM export is
@@ -281,11 +287,11 @@ Stated up front so we can watch the signals:
    The CI stage runs the budget as `required` since 2026-10-02 (buyer decision §9.1) — a
    regression blocks the merge. If shared-runner noise ever flakes it, revert to `non-blocking`
    only with evidence attached, not silently. Two gaps remain, and they are the reason this is
-   still a tripwire rather than a published benchmark: (a) not validated against a real vLLM
-   host with TLS and concurrent tenants on separate cores — the numbers above are in-process
-   inspection on a shared dev box, and TLS socket cost is excluded entirely; (b) no ceiling on
-   per-tenant concurrency, so a single tenant can still queue itself onto the budget line
-   (ANK-069).
+   still a tripwire rather than a published benchmark: not validated against a real vLLM host
+   with TLS and concurrent tenants on separate cores — the numbers above are in-process
+   inspection on a shared dev box, and TLS socket cost is excluded entirely. Per-tenant
+   concurrency is now capped (ANK-069), but "capped" and "fast" are different claims and only
+   the first one is measured.
 2. **The PII/signature layer gets dismissed as "just regex."** It probably will be. The
    answer is the host plane — the regex layer is the on-ramp, not the pitch.
 3. **eBPF/LSM deployment friction.** Requiring privileged, kernel-specific setup to get

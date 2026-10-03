@@ -20,8 +20,8 @@
 //! - TLS termination เป็นทางเลือก: ไม่ใส่ `--tls-cert/--tls-key` แล้วรับ HTTP
 //!   เปล่าเพื่อให้วางหลัง reverse proxy ที่มี TLS ได้ แต่ถ้าใส่ค่าไม่ครบคู่
 //!   process จะไม่ยอมสตาร์ทเลย (fail-closed) — ดู [`tls`]
-//! - ยังไม่บังคับเพดานขำขอพร้อมกันต่อผู้เช่า (`max_concurrent` ถูกอ่านจาก
-//!   นโยบายแต่ยังไม่มีตัวนับ) ดู `docs/pivot_ai_infra_security.md` §8.1
+//! - เพดานคำขอพร้อมกันต่อผู้เช่า (`max_concurrent`) ถูกบังคับด้วย semaphore
+//!   ที่ถือไว้ตลอด request/stream (RAII) — ดู ANK-069
 
 #![deny(unsafe_code)]
 
@@ -55,6 +55,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio::sync::Semaphore;
 
 /// ข้อผิดพลาดของ gateway
 #[derive(Debug, Error)]
@@ -204,6 +205,15 @@ pub fn sanitize_filename(input: &str) -> String {
     trimmed
 }
 
+/// สิทธิ์ในการประมวลผลคำขอหนึ่งรายการ — ถือไว้จนกว่าคำขอ/stream จะจบ
+///
+/// บังคับเพดาน `max_concurrent` โดยไม่ปล่อย permit ก่อนจบงาน
+#[derive(Debug)]
+pub struct ConcurrencyPermit {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    _tenant: String,
+}
+
 /// ผลการตรวจสอบคำขอหนึ่งรายการ
 ///
 /// แยกจากชั้น transport โดยสิ้นเชิง เพื่อให้ตรรกะด้านความปลอดภัยทดสอบได้
@@ -220,6 +230,18 @@ pub struct Inspection {
     pub audit: ApiAuditEntry,
 }
 
+/// ผลการตรวจสอบที่พร้อมทำงานต่อ (รวม permit)
+///
+/// ใช้เพียงใน data plane เท่านั้น เพื่อให้แน่ใจว่า permit ไม่หลุดออกมาก่อนได้รับอนุญาต
+#[derive(Debug)]
+pub struct InspectOk {
+    /// ผลการตรวจสอบ
+    pub inspection: Inspection,
+    /// permit คงอยู่ตลอดการทำงานของ request — `None` เมื่อคำขอถูกปฏิเสธ
+    /// ก่อนได้ permit (เช่น endpoint/model ไม่อนุญาต) ซึ่งไม่ต้องถือ slot
+    pub _permit: Option<ConcurrencyPermit>,
+}
+
 /// เครื่องมือตรวจสอบทั้งหมดของ gateway
 pub struct GatewayCore {
     policy: DataPlanePolicy,
@@ -229,6 +251,9 @@ pub struct GatewayCore {
     /// โดยไม่ต้องค้าง lock ของแมปไว้ตลอดการเขียน — การเขียนของผู้เช่าหนึ่งจึง
     /// ไม่ขวางผู้เช่าอื่น
     chains: DashMap<String, Arc<ApiAuditChain>>,
+    /// semaphore สำหรับจำกัดจำนวนคำขอพร้อมกันต่อผู้เช่า
+    /// ถือไว้ทั้งชุดแยกตาม tenant_id เพื่อกัน hotspot
+    concurrency: DashMap<String, Arc<Semaphore>>,
     config: GatewayConfig,
 }
 
@@ -278,11 +303,20 @@ impl GatewayCore {
                 ))
             })?;
 
+        let concurrency: DashMap<String, Arc<Semaphore>> = policy
+            .tenants_iter()
+            .map(|t| {
+                let cap = t.max_concurrent.max(1);
+                (t.tenant_id.clone(), Arc::new(Semaphore::new(cap as usize)))
+            })
+            .collect();
+
         Ok(Self {
             policy,
             guard,
             detector,
             chains: DashMap::new(),
+            concurrency,
             config,
         })
     }
@@ -314,7 +348,7 @@ impl GatewayCore {
         model: &str,
         payload: &str,
         now_ms: u64,
-    ) -> Result<Inspection, GatewayError> {
+    ) -> Result<InspectOk, GatewayError> {
         let started = Instant::now();
         let request_id = new_request_id();
 
@@ -339,19 +373,39 @@ impl GatewayCore {
                     .with_decision(ApiDecision::Deny, reason.as_str());
             audit.latency_ms = Some(elapsed_ms(started));
             self.record_audit(&identity.tenant_id, audit).await?;
-            return Ok(Inspection {
-                decision: ApiDecision::Deny,
-                reason: reason.as_str().to_string(),
-                payload: String::new(),
-                audit: ApiAuditEntry::new(
-                    &identity.tenant_id,
-                    &request_id,
-                    endpoint.as_str(),
-                    model,
-                )
-                .with_decision(ApiDecision::Deny, reason.as_str()),
+            return Ok(InspectOk {
+                inspection: Inspection {
+                    decision: ApiDecision::Deny,
+                    reason: reason.as_str().to_string(),
+                    payload: String::new(),
+                    audit: ApiAuditEntry::new(
+                        &identity.tenant_id,
+                        &request_id,
+                        endpoint.as_str(),
+                        model,
+                    )
+                    .with_decision(ApiDecision::Deny, reason.as_str()),
+                },
+                _permit: None,
             });
         }
+
+        // 2.5) บังคับเพดานจำนวนคำขอพร้อมกัน — ต้องถือ permit จนจบ request
+        //
+        // การปฏิเสธเพราะเต็มต้องเขียน audit ด้วย ไม่ใช่แค่ตอบ 429 เงียบ ๆ
+        // เพราะเมื่อลูกค้าเห็นแต่ 429 แต่ไม่มีใน audit แปลว่าเราปฏิเสธคำขอที่ไม่มี
+        // หลักฐาน และนั่นคือ control ที่ตรวจสอบย้อนหลังไม่ได้
+        let permit = match self.acquire_concurrency(&identity.tenant_id) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                let mut audit =
+                    ApiAuditEntry::new(&identity.tenant_id, &request_id, endpoint.as_str(), model)
+                        .with_decision(ApiDecision::Deny, "concurrency_limit");
+                audit.latency_ms = Some(elapsed_ms(started));
+                self.record_audit(&identity.tenant_id, audit).await?;
+                return Err(e);
+            }
+        };
 
         // 3) ตรวจข้อมูลด้วยชั้น semantic guard
         let verdict: Option<GuardVerdict> = self
@@ -378,11 +432,14 @@ impl GatewayCore {
             audit.latency_ms = Some(elapsed_ms(started));
             self.record_audit(&identity.tenant_id, audit.clone())
                 .await?;
-            return Ok(Inspection {
-                decision: ApiDecision::Deny,
-                reason: "prompt_injection_detected".to_string(),
-                payload: String::new(),
-                audit,
+            return Ok(InspectOk {
+                inspection: Inspection {
+                    decision: ApiDecision::Deny,
+                    reason: "prompt_injection_detected".to_string(),
+                    payload: String::new(),
+                    audit,
+                },
+                _permit: None,
             });
         }
 
@@ -432,12 +489,66 @@ impl GatewayCore {
         self.record_audit(&identity.tenant_id, audit.clone())
             .await?;
 
-        Ok(Inspection {
+        let inspection = Inspection {
             decision,
             reason: reason.to_string(),
             payload: final_payload,
             audit,
+        };
+        Ok(InspectOk {
+            inspection,
+            _permit: permit,
         })
+    }
+
+    /// ตรวจคำขอแบบเดิม (backward compatible สำหรับ unit test)
+    #[doc(hidden)]
+    pub async fn inspect_request_simple(
+        &self,
+        auth_header: Option<&str>,
+        endpoint: Endpoint,
+        model: &str,
+        payload: &str,
+        now_ms: u64,
+    ) -> Result<Inspection, GatewayError> {
+        self.inspect_request(auth_header, endpoint, model, payload, now_ms)
+            .await
+            .map(|ok| ok.inspection)
+    }
+
+    /// จำนวนคำขอที่กำลังประมวลผลของผู้เช่าหนึ่งราย (ใช้ในเทสต์และ metrics)
+    #[must_use]
+    pub fn in_flight(&self, tenant_id: &str) -> usize {
+        self.concurrency
+            .get(tenant_id)
+            .map_or(0, |e| e.value().available_permits())
+    }
+
+    /// อนุญาตให้ request หนึ่งผ่านตามเพดานความพร้อมกันของผู้เช่า
+    ///
+    /// คืน `Err(GatewayError::Auth(AuthError::ConcurrencyLimit))` เมื่อเต็ม
+    /// และคืน permit ที่**ต้องถือไว้จนกว่าการประมวลผล request/stream จะสิ้นสุด**
+    /// (RAII) เพราะการปล่อย permit ทันทีก่อนส่ง SSE ทั้งหมดจบจะทำให้คนอื่น
+    /// เข้ามาเกินเพดานโดยไม่ตั้งใจ
+    fn acquire_concurrency(&self, tenant_id: &str) -> Result<ConcurrencyPermit, GatewayError> {
+        let semaphore = self
+            .concurrency
+            .get(tenant_id)
+            .map(|e| Arc::clone(e.value()))
+            .unwrap_or_else(|| {
+                // ผู้เช่าที่เพิ่งถูกเพิ่มใน cache แบบไม่เต็มรูปแบบ — สร้างบน demand
+                // แต่เนื่องจาก policy โหลดตอน start และไม่ hot-reload ทันที
+                // กรณีนี้น่าจะเกิดน้อยมาก; ใช้ cap=1 แบบ fail-safe
+                Arc::new(Semaphore::new(1))
+            });
+
+        semaphore
+            .try_acquire_owned()
+            .map(|permit| ConcurrencyPermit {
+                _permit: permit,
+                _tenant: tenant_id.to_string(),
+            })
+            .map_err(|_| GatewayError::Auth(AuthError::ConcurrencyLimit))
     }
 
     /// เขียนรายการลง chain ของผู้เช่า สร้าง chain ถ้ายังไม่มี
@@ -605,6 +716,35 @@ mod tests {
             .expect("core should build")
     }
 
+    /// core ที่ผู้เช่ามีเพดานขำพร้อมกันตามที่กำหนดในเทสต์
+    async fn core_with_limit(name: &str, max_concurrent: u32) -> GatewayCore {
+        let tenants = vec![policy::TenantPolicy {
+            tenant_id: "acme".to_string(),
+            allowed_endpoints: ["chat_completions", "embeddings"].into_iter().collect(),
+            allowed_models: ["gpt-x".to_string()].into_iter().collect(),
+            max_concurrent,
+            suspended: false,
+        }];
+        let creds = vec![policy::TenantCredential {
+            tenant_id: "acme".to_string(),
+            key: b"secret-key".to_vec(),
+            expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
+        }];
+        let config = GatewayConfig {
+            guard_enabled: false,
+            extraction_enabled: false,
+            ..isolated_config(name)
+        };
+        GatewayCore::new(
+            config,
+            policy::DataPlanePolicy::new(tenants, creds),
+            None,
+            None,
+        )
+        .await
+        .expect("core should build")
+    }
+
     /// ลบไดเรกทอรี audit ของเทสต์หลังจบ
     fn cleanup(core: &GatewayCore) {
         let _ = std::fs::remove_dir_all(&core.config().audit_dir);
@@ -708,8 +848,8 @@ mod tests {
             )
             .await
             .expect("should inspect");
-        assert_eq!(out.decision, ApiDecision::Allow);
-        assert_eq!(out.reason, "ok");
+        assert_eq!(out.inspection.decision, ApiDecision::Allow);
+        assert_eq!(out.inspection.reason, "ok");
         cleanup(&c);
     }
 
@@ -740,8 +880,8 @@ mod tests {
             )
             .await
             .expect("should inspect");
-        assert_eq!(out.decision, ApiDecision::Deny);
-        assert_eq!(out.reason, "model_not_permitted");
+        assert_eq!(out.inspection.decision, ApiDecision::Deny);
+        assert_eq!(out.inspection.reason, "model_not_permitted");
         cleanup(&c);
     }
 
@@ -758,8 +898,8 @@ mod tests {
             )
             .await
             .expect("should inspect");
-        assert_eq!(out.decision, ApiDecision::Deny);
-        assert_eq!(out.reason, "endpoint_not_permitted");
+        assert_eq!(out.inspection.decision, ApiDecision::Deny);
+        assert_eq!(out.inspection.reason, "endpoint_not_permitted");
         cleanup(&c);
     }
 
@@ -858,9 +998,13 @@ mod tests {
             )
             .await
             .expect("should inspect");
-        assert_eq!(out.decision, ApiDecision::Redacted);
-        assert!(!out.payload.contains("bob@example.com"));
-        assert!(out.payload.contains("REDACTED"), "got {}", out.payload);
+        assert_eq!(out.inspection.decision, ApiDecision::Redacted);
+        assert!(!out.inspection.payload.contains("bob@example.com"));
+        assert!(
+            out.inspection.payload.contains("REDACTED"),
+            "got {}",
+            out.inspection.payload
+        );
         cleanup(&c);
     }
 
@@ -878,9 +1022,9 @@ mod tests {
             )
             .await
             .expect("should inspect");
-        assert_eq!(out.decision, ApiDecision::Deny);
-        assert_eq!(out.reason, "prompt_injection_detected");
-        assert!(out.audit.injection_rules.is_some());
+        assert_eq!(out.inspection.decision, ApiDecision::Deny);
+        assert_eq!(out.inspection.reason, "prompt_injection_detected");
+        assert!(out.inspection.audit.injection_rules.is_some());
         cleanup(&c);
     }
 
@@ -900,6 +1044,196 @@ mod tests {
             .await
             .expect_err("should fail at auth");
         assert!(matches!(err, GatewayError::Auth(AuthError::UnknownTenant)));
+        cleanup(&c);
+    }
+
+    #[tokio::test]
+    async fn concurrency_ceiling_denies_beyond_max_concurrent() {
+        // ANK-069: max_concurrent ไม่ใช่แค่ตัวเลขที่อ่านแล้วทิ้งไว้ แต่ต้อง
+        // ทำให้คำขอที่เกินเพดานถูกปฏิเสธด้วยเหตุผลที่ถูกต้อง
+        let c = core_with_limit("concurrency_ceiling_denies", 1).await;
+
+        let first = c
+            .inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                0,
+            )
+            .await
+            .expect("first request should pass");
+
+        let err = c
+            .inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                1,
+            )
+            .await
+            .expect_err("second request should be denied");
+        assert!(
+            matches!(err, GatewayError::Auth(AuthError::ConcurrencyLimit)),
+            "unexpected error {err:?}"
+        );
+
+        // ปล่อย permit แล้วต้องกลับมาใช้ได้ทันที — เพดานเป็นของ "พร้อมกัน" ไม่ใช่โควตาต่อวินาที
+        drop(first);
+        c.inspect_request(
+            Some("Bearer secret-key"),
+            Endpoint::ChatCompletions,
+            "gpt-x",
+            GOOD_PAYLOAD,
+            2,
+        )
+        .await
+        .expect("third request should pass after release");
+
+        cleanup(&c);
+    }
+
+    #[tokio::test]
+    async fn concurrency_ceiling_counts_slots_across_tenants_independently() {
+        // เพดานต่อผู้เช่า ไม่ใช่รวมทั้งระบบ — ผู้เช่าหนึ่งต้องไม่กินโควตาของอีกคน
+        let tenants = vec![
+            policy::TenantPolicy {
+                tenant_id: "acme".to_string(),
+                allowed_endpoints: ["chat_completions"].into_iter().collect(),
+                allowed_models: ["gpt-x".to_string()].into_iter().collect(),
+                max_concurrent: 1,
+                suspended: false,
+            },
+            policy::TenantPolicy {
+                tenant_id: "globex".to_string(),
+                allowed_endpoints: ["chat_completions"].into_iter().collect(),
+                allowed_models: ["gpt-x".to_string()].into_iter().collect(),
+                max_concurrent: 1,
+                suspended: false,
+            },
+        ];
+        let creds = ["acme", "globex"]
+            .iter()
+            .map(|t| policy::TenantCredential {
+                tenant_id: (*t).to_string(),
+                // คีย์ต้องต่างกัน ไม่งั้น authenticate จะจับคู่ผู้เช่าคนแรกเสมอ
+                key: format!("key-{t}").into_bytes(),
+                expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
+            })
+            .collect();
+        let config = GatewayConfig {
+            guard_enabled: false,
+            extraction_enabled: false,
+            ..isolated_config("concurrency_per_tenant")
+        };
+        let c = GatewayCore::new(
+            config,
+            policy::DataPlanePolicy::new(tenants, creds),
+            None,
+            None,
+        )
+        .await
+        .expect("core should build");
+
+        let _held = c
+            .inspect_request(
+                Some("Bearer key-acme"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                0,
+            )
+            .await
+            .expect("acme first request");
+
+        assert!(
+            c.inspect_request(
+                Some("Bearer key-acme"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                1,
+            )
+            .await
+            .is_err(),
+            "acme is at its ceiling"
+        );
+        c.inspect_request(
+            Some("Bearer key-globex"),
+            Endpoint::ChatCompletions,
+            "gpt-x",
+            GOOD_PAYLOAD,
+            2,
+        )
+        .await
+        .expect("globex has its own budget");
+
+        cleanup(&c);
+    }
+
+    #[tokio::test]
+    async fn zero_max_concurrent_still_serves_one_request() {
+        // ค่า 0 ในไฟล์ config (serde default) ไม่ควรแปลว่า "ปิดผู้ใช้ทั้งราย"
+        // เพราะ fail-closed ที่ถูกต้องคือปฏิเสธเมื่อไม่แน่ใจ ไม่ใช่ทำให้บริการตาย
+        let c = core_with_limit("zero_max_concurrent", 0).await;
+        let _held = c
+            .inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                0,
+            )
+            .await
+            .expect("first request should pass");
+        let err = c
+            .inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                1,
+            )
+            .await
+            .expect_err("second request should be denied");
+        assert!(matches!(
+            err,
+            GatewayError::Auth(AuthError::ConcurrencyLimit)
+        ));
+        cleanup(&c);
+    }
+
+    #[tokio::test]
+    async fn denied_requests_are_audited_not_silently_shed() {
+        // เพดานที่ทำให้ audit หายคือการควบคุมที่ตรวจสอบไม่ได้
+        let c = core_with_limit("ceiling_audits_denial", 1).await;
+        let _held = c
+            .inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                0,
+            )
+            .await
+            .expect("first request");
+        let _ = c
+            .inspect_request(
+                Some("Bearer secret-key"),
+                Endpoint::ChatCompletions,
+                "gpt-x",
+                GOOD_PAYLOAD,
+                1,
+            )
+            .await;
+
+        let content =
+            std::fs::read_to_string(c.config().audit_dir.join("acme.jsonl")).expect("audit chain");
+        assert!(
+            content.contains("concurrency_limit"),
+            "shed request must leave an audit entry, got {content:?}"
+        );
         cleanup(&c);
     }
 

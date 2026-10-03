@@ -259,15 +259,20 @@ async fn handle(
     let auth = headers.get("authorization").and_then(|v| v.to_str().ok());
     let now_ms = now_millis();
 
-    let inspection = state
+    let inspect_ok = state
         .core
         .inspect_request(auth, endpoint, &summary.model, text, now_ms)
         .await
         .map_err(|e| to_api_error(&e))?;
+    let decision = inspect_ok.inspection.decision;
+    let reason = inspect_ok.inspection.reason.clone();
+    let payload_redacted = inspect_ok.inspection.payload.clone();
+    let base_audit_req = inspect_ok.inspection.audit.clone();
+    let permit = inspect_ok._permit;
 
-    match inspection.decision {
+    match decision {
         ApiDecision::Deny => {
-            let (status, code) = match inspection.reason.as_str() {
+            let (status, code) = match reason.as_str() {
                 "model_not_permitted" | "endpoint_not_permitted" => {
                     (StatusCode::FORBIDDEN, "policy_violation")
                 }
@@ -278,15 +283,15 @@ async fn handle(
                 status,
                 "invalid_request_error",
                 code,
-                client_reason(&inspection.reason),
+                client_reason(&reason),
             ));
         }
         ApiDecision::Allow | ApiDecision::Redacted => {}
     }
 
     // ถ้ามีการปิดบังข้อมูลส่วนบุคคล ต้องส่งต่อเป็นเนื้อหาที่ปิดบังแล้ว
-    let forward_body = if inspection.decision == ApiDecision::Redacted {
-        Bytes::from(inspection.payload.into_bytes())
+    let forward_body = if decision == ApiDecision::Redacted {
+        Bytes::from(payload_redacted.into_bytes())
     } else {
         body
     };
@@ -320,11 +325,16 @@ async fn handle(
         // สำหรับ SSE ต้องบันทึก audit หลังตรวจ prefix — wrap stream เพื่อบันทึกเมื่อจบ
         // บันทึกทันทีที่เห็น chunk แรก (ซึ่งคือ prefix ที่ตรวจแล้ว) หรือ error จาก
         // การตรวจ เพราะ downstream อาจหยุด poll หลัง error แล้วโค้ดท้ายสตรีมจะไม่รัน
-        let tenant_id = inspection.audit.tenant_id.clone();
+        let tenant_id = base_audit_req.tenant_id.clone();
         let core = state.core.clone();
-        let base_audit = inspection.audit.clone();
+        let base_audit = base_audit_req.clone();
 
         let stream = stream! {
+            // permit ต้องถูกจับโดยตัว stream เอง ไม่ใช่ตัวแปรของ handler
+            // ถ้าประกาศไว้ข้างบน stream จะถูก drop เมื่อ handler คืนค่า
+            // แล้วเพดานจะหลุดไปตอนที่สตรีมยังเปิดอยู่ — ซึ่งคือช่องโหว่
+            // ของ control นี้พอดี
+            let _permit_guard = permit;
             let mut audit_recorded = false;
 
             for await chunk in stream {
@@ -388,23 +398,24 @@ async fn handle(
         proxy::inspect_buffered(state.guard.as_deref(), &raw).map_err(|e| to_api_error(&e))?;
 
     // บันทึก audit สำหรับ response inspection
-    let response_audit = response_audit_entry(inspection.audit.clone(), &response_inspection);
+    let response_audit = response_audit_entry(base_audit_req.clone(), &response_inspection);
     state
         .core
-        .record_audit(&inspection.audit.tenant_id, response_audit)
+        .record_audit(&base_audit_req.tenant_id, response_audit)
         .await
         .map_err(|e| to_api_error(&e))?;
+    let _permit_guard = permit;
 
     if response_inspection != ResponseInspection::Clean {
         tracing::info!(
             ?response_inspection,
-            tenant = %inspection.audit.tenant_id,
+            tenant = %base_audit_req.tenant_id,
             "response flagged"
         );
     }
 
     let mut resp = proxy::client_response(status, out_headers, inspected);
-    resp.extensions_mut().insert(inspection.audit);
+    resp.extensions_mut().insert(base_audit_req.clone());
     Ok(resp)
 }
 
@@ -649,6 +660,54 @@ mod tests {
         assert_eq!(out.decision, ApiDecision::Allow);
     }
 
+    /// mock upstream ที่ส่ง SSE ช้า ๆ เพื่อให้เทสต์มีเวลาส่งคำขอที่สอง
+    /// ไปยังระหว่างที่สตรีมแรกยังไม่จบ
+    async fn mock_slow_sse_upstream(
+        chunks: usize,
+        gap: Duration,
+    ) -> (tokio::task::JoinHandle<()>, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let task = tokio::spawn(async move {
+            let body: String = (0..chunks)
+                .map(|i| format!("data: {{\"i\":{i}}}\n\n"))
+                .collect::<Vec<_>>()
+                .join("");
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            // รับได้หลาย connection พร้อมกัน เพราะเทสต์ต้องยืนยันว่าคำขอที่สาม
+            // (หลังสตรีมแรกจบ) ผ่านได้จริง ไม่ใช่แค่ไม่โดนปฏิเสธ
+            // ถ้าวน connection เป็นลำดับ คำขอที่สามจะต้องรองรอ connection
+            // แรกที่กำลังค้างอยู่ ทำให้เทสต์ flaky โดยไม่เกี่ยวกับตรรกะ
+            let resp = Arc::new(resp);
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let resp = Arc::clone(&resp);
+                tokio::spawn(async move {
+                    let mut socket = socket;
+                    let mut buf = vec![0u8; 8192];
+                    let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+                    if tokio::io::AsyncWriteExt::write_all(&mut socket, resp.as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    // ค้าง socket ไว้ให้ stream ยังไม่จบ
+                    tokio::time::sleep(gap).await;
+                    let _ = tokio::io::AsyncWriteExt::shutdown(&mut socket).await;
+                });
+            }
+        });
+        (task, format!("http://{addr}"))
+    }
+
     /// mock upstream ที่ตอบ SSE คงที่ — ผูกพอร์ตอิสระ รับหนึ่ง connection แล้วปิด
     async fn mock_sse_upstream(body: &'static str) -> (tokio::task::JoinHandle<()>, String) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -672,6 +731,10 @@ mod tests {
     }
 
     fn state_with_guard(dir: &str, upstream_url: &str) -> AppState {
+        state_with_guard_and_limit(dir, upstream_url, 10)
+    }
+
+    fn state_with_guard_and_limit(dir: &str, upstream_url: &str, max_concurrent: u32) -> AppState {
         let config = crate::GatewayConfig {
             audit_dir: std::env::temp_dir().join(format!("gw-routes-{dir}")),
             policy_file: std::env::temp_dir().join("unused.json"),
@@ -689,7 +752,7 @@ mod tests {
             tenant_id: "acme".to_string(),
             allowed_endpoints: ["chat_completions", "embeddings"].into_iter().collect(),
             allowed_models: ["gpt-x".to_string()].into_iter().collect(),
-            max_concurrent: 10,
+            max_concurrent,
             suspended: false,
         }];
         let creds = vec![TenantCredential {
@@ -752,6 +815,84 @@ mod tests {
         assert!(
             content.contains("pii_redacted_in_response"),
             "response redaction must be audited, got {content:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrency_ceiling_covers_live_sse_stream() {
+        // ANK-069: permit ต้องถูกถือจนสตรีมจบ ไม่ใช่แค่จนกว่า handler คืนค่า
+        // ถ้าปล่อยเร็วเกินไป ผู้โจมตีที่เปิด stream ค้างไว้ 20 สตรีมจะผ่านเพดานได้
+        let (_mock, url) = mock_slow_sse_upstream(3, Duration::from_millis(1500)).await;
+        let state = state_with_guard_and_limit("sse-ceiling", &url, 1);
+
+        // คำขอแรก: ได้ Response กลับมาแต่ยังไม่อ่าน body = สตรีมยังไม่จบ
+        let resp = handle(
+            state.clone(),
+            auth_header(),
+            Bytes::from_static(BODY.as_bytes()),
+            Endpoint::ChatCompletions,
+        )
+        .await
+        .expect("first request should start");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // คำขอที่สองต้องถูกปฏิเสธ 429 ระหว่างที่สตรีมแรกยังค้างอยู่
+        let err = handle(
+            state.clone(),
+            auth_header(),
+            Bytes::from_static(BODY.as_bytes()),
+            Endpoint::ChatCompletions,
+        )
+        .await
+        .expect_err("should be shed while first stream is live");
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.code, "concurrency_limit");
+
+        // กิน stream ให้จบ แล้วต้องกลับมาใช้ได้ — เพดานเป็นของ "พร้อมกัน"
+        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+
+        let third = handle(
+            state,
+            auth_header(),
+            Bytes::from_static(BODY.as_bytes()),
+            Endpoint::ChatCompletions,
+        )
+        .await
+        .expect("stream finished so the slot is free again");
+        axum::body::to_bytes(third.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+    }
+
+    #[tokio::test]
+    async fn concurrency_shed_is_audited_with_reason() {
+        // 429 ที่ไม่มี audit = control ที่ตรวจสอบย้อนหลังไม่ได้
+        let (_mock, url) = mock_slow_sse_upstream(2, Duration::from_millis(1200)).await;
+        let state = state_with_guard_and_limit("sse-ceiling-audit", &url, 1);
+        let _live = handle(
+            state.clone(),
+            auth_header(),
+            Bytes::from_static(BODY.as_bytes()),
+            Endpoint::ChatCompletions,
+        )
+        .await
+        .expect("first request");
+        let _ = handle(
+            state.clone(),
+            auth_header(),
+            Bytes::from_static(BODY.as_bytes()),
+            Endpoint::ChatCompletions,
+        )
+        .await
+        .expect_err("shed");
+
+        let content = std::fs::read_to_string(
+            std::env::temp_dir().join("gw-routes-sse-ceiling-audit/acme.jsonl"),
+        )
+        .expect("audit chain");
+        assert!(
+            content.contains("concurrency_limit"),
+            "shed request must be audited, got {content:?}"
         );
     }
 }

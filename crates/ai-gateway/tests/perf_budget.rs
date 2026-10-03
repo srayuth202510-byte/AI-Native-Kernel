@@ -336,11 +336,11 @@ async fn budget_inspect_request_including_audit_p99_within_budget() {
         latencies.push(start.elapsed());
         assert!(
             matches!(
-                inspection.decision,
+                inspection.inspection.decision,
                 ai_gateway::ApiDecision::Allow | ai_gateway::ApiDecision::Redacted
             ),
             "unexpected decision {:?}",
-            inspection.decision
+            inspection.inspection.decision
         );
     }
 
@@ -411,11 +411,11 @@ async fn budget_concurrent_tenants_p99_within_budget() {
                 latencies.push(start.elapsed());
                 assert!(
                     matches!(
-                        inspection.decision,
+                        inspection.inspection.decision,
                         ai_gateway::ApiDecision::Allow | ai_gateway::ApiDecision::Redacted
                     ),
                     "unexpected decision {:?}",
-                    inspection.decision
+                    inspection.inspection.decision
                 );
             }
             latencies
@@ -473,7 +473,12 @@ async fn budget_concurrent_same_tenant_chain_lock_p99_within_budget() {
 
     // ผู้เช่าคนเดียว — ทุก request เขียน chain ไฟล์เดียวกัน จึง serialize บน mutex
     // ของ chain นั้นตามการออกแบบ (ดู §5 "per-tenant chains")
-    let (core, audit_dir, headers) = concurrent_fixture("concurrent-same-tenant", 1).await;
+    //
+    // เพดานต้องยกพอให้ {CONCURRENCY} writers ผ่านได้ทั้งหมด ไม่งั้นเทสต์นี้จะวัด
+    // "โควตาหมด" แทน "mutex ช้า" — ซึ่งเป็นคนละเรื่องกัน การทดสอบเพดานมีที่
+    // budget_concurrency_ceiling_is_enforced_under_real_concurrency แยกแล้ว
+    let (core, audit_dir, headers) =
+        concurrent_fixture_with_limit("concurrent-same-tenant", 1, CONCURRENCY as u32).await;
     let header = headers.first().expect("fixture has one tenant").clone();
     let body = bench_body();
 
@@ -537,6 +542,35 @@ async fn concurrent_fixture(
     name: &str,
     tenants: usize,
 ) -> (std::sync::Arc<GatewayCore>, PathBuf, Vec<String>) {
+    concurrent_fixture_with_limit(name, tenants, 10).await
+}
+
+/// เหมือน [`concurrent_fixture`] แต่กำหนดเพดานขำพร้อมกันเอง
+async fn concurrent_fixture_with_limit(
+    name: &str,
+    tenants: usize,
+    max_concurrent: u32,
+) -> (std::sync::Arc<GatewayCore>, PathBuf, Vec<String>) {
+    concurrent_fixture_full(name, tenants, max_concurrent, true).await
+}
+
+/// fixture ที่ปิดชั้นตรวจข้อมูล — ใช้กับเทสต์ที่วัด**ตรรกะ**ของเพดาน
+/// ไม่ใช่ latency เพราะงบ 2ms ของ guard ใน debug build จะ fail-closed
+/// ปฏิเสธคำขอก่อนถึงจุดที่เรากำลังวัด
+async fn concurrent_fixture_without_guard(
+    name: &str,
+    tenants: usize,
+    max_concurrent: u32,
+) -> (std::sync::Arc<GatewayCore>, PathBuf, Vec<String>) {
+    concurrent_fixture_full(name, tenants, max_concurrent, false).await
+}
+
+async fn concurrent_fixture_full(
+    name: &str,
+    tenants: usize,
+    max_concurrent: u32,
+    with_guard: bool,
+) -> (std::sync::Arc<GatewayCore>, PathBuf, Vec<String>) {
     let audit_dir = std::env::temp_dir().join(format!(
         "ai-gw-perf-{name}-{}-{}",
         std::process::id(),
@@ -547,8 +581,8 @@ async fn concurrent_fixture(
     ));
     let config = GatewayConfig {
         audit_dir: audit_dir.clone(),
-        guard_enabled: true,
-        extraction_enabled: true,
+        guard_enabled: with_guard,
+        extraction_enabled: with_guard,
         ..GatewayConfig::default()
     };
 
@@ -559,7 +593,7 @@ async fn concurrent_fixture(
             tenant_id: format!("tenant-{i}"),
             allowed_endpoints: ["chat_completions"].into_iter().collect(),
             allowed_models: ["demo-model".to_string()].into_iter().collect(),
-            max_concurrent: 10,
+            max_concurrent,
             suspended: false,
         });
         creds.push(TenantCredential {
@@ -583,4 +617,89 @@ fn bench_body() -> &'static str {
     r#"{"model":"demo-model","messages":[
         {"role":"user","content":"ada@example.com reported card 4111 1111 1111 1111 on 123-45-6789"}
     ]}"#
+}
+
+/// ANK-069: ต้องพิสูจน์ว่าเพดาน "พร้อมกัน" บังคับจริงภายใต้ concurrency จริง
+/// ไม่ใช่แค่ถือ handle ค้างไว้ — และผู้ที่โดนปฏิเสธต้องถูกนับแยกจากที่ผ่าน
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn budget_concurrency_ceiling_is_enforced_under_real_concurrency() {
+    const LIMIT: u32 = 4;
+    const WORKERS: usize = 32;
+    const ROUNDS: usize = 40;
+
+    let (core, audit_dir, headers) = concurrent_fixture_without_guard("ceiling", 1, LIMIT).await;
+    let body = bench_body();
+
+    let mut handles = Vec::with_capacity(WORKERS);
+    for w in 0..WORKERS {
+        let core = std::sync::Arc::clone(&core);
+        let header = headers[0].clone();
+        let body = body.to_string();
+        handles.push(tokio::spawn(async move {
+            let mut admitted = 0usize;
+            let mut shed = 0usize;
+            for r in 0..ROUNDS {
+                match core
+                    .inspect_request(
+                        Some(header.as_str()),
+                        Endpoint::ChatCompletions,
+                        "demo-model",
+                        &body,
+                        (w * ROUNDS + r) as u64,
+                    )
+                    .await
+                {
+                    Ok(ok) => {
+                        // permit ถูกถืออยู่ระหว่างนี้ — เหมือน handler ที่ยังทำงานไม่เสร็จ
+                        admitted += 1;
+                        assert!(ok._permit.is_some(), "admitted request must hold a slot");
+                        drop(ok);
+                    }
+                    Err(e) => {
+                        assert!(
+                            matches!(
+                                e,
+                                ai_gateway::GatewayError::Auth(
+                                    ai_gateway::AuthError::ConcurrencyLimit
+                                )
+                            ),
+                            "only the ceiling may shed load, got {e:?}"
+                        );
+                        shed += 1;
+                    }
+                }
+            }
+            (admitted, shed)
+        }));
+    }
+
+    let mut admitted = 0usize;
+    let mut shed = 0usize;
+    for h in handles {
+        let (a, s) = h.await.expect("worker must not panic");
+        admitted += a;
+        shed += s;
+    }
+
+    assert_eq!(
+        admitted + shed,
+        WORKERS * ROUNDS,
+        "every request must get a verdict, none may vanish"
+    );
+    assert!(
+        shed > 0,
+        "32 workers on a ceiling of {LIMIT} must produce shedding, got 0"
+    );
+    // ทุกการปฏิเสธต้องมีร่องรอยใน audit
+    let content = std::fs::read_to_string(audit_dir.join("tenant-0.jsonl")).expect("audit chain");
+    let shed_audited = content
+        .lines()
+        .filter(|l| l.contains("concurrency_limit"))
+        .count();
+    assert_eq!(
+        shed_audited, shed,
+        "every shed request must be audited: {shed_audited} audited vs {shed} shed"
+    );
+
+    let _ = std::fs::remove_dir_all(&audit_dir);
 }

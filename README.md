@@ -268,7 +268,9 @@ Policy file example (`/etc/ai-gateway/policy.json`):
 
 Environment variables: `ANK_GATEWAY_LISTEN`, `ANK_GATEWAY_UPSTREAM`, `ANK_GATEWAY_AUDIT_DIR`, `ANK_GATEWAY_POLICY_FILE`, `ANK_GATEWAY_GUARD`, `ANK_GATEWAY_EXTRACTION`, `ANK_GATEWAY_TLS_CERT`, `ANK_GATEWAY_TLS_KEY`, `ANK_LOG`.
 
-> ⚠️ `max_concurrent` ใน policy file ถูกอ่านแล้วแต่ **ยังไม่ถูกบังคับใช้** (ดู ANK-069) — ผู้เช่าหนึ่งยิงพร้อมกันได้ไม่จำกัดในตอนนี้
+> ✅ `max_concurrent` ถูกบังคับใช้จริง (ANK-069) — permit ถูกถือตลอดอายุ request รวมช่วงที่
+> stream ยังไม่จบ เมื่อเกินเพดานจะได้ `429 concurrency_limit` และมี audit ทุกครั้ง
+> (ค่า `0` ถูกตีความเป็น 1 ไม่ใช่ "ปิดผู้ใช้ทั้งราย" เพราะเป็นค่า default ของ serde ในไฟล์ที่ไม่ได้ตั้ง)
 
 ---
 
@@ -325,9 +327,9 @@ Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `sc
 | ANK-066 | `verify-audit` & Audit Export | capability-security | ✅ done — JSON export ทั้งสอง plane + golden-shape test |
 | ANK-067 | Reposition Docs & README for AI Security Pivot | infra | ✅ done |
 | ANK-068 | TLS termination + P99 under concurrent tenants | ai-gateway | ✅ done — TLS 1.3 in-process + 8-tenant P99 ~111 µs / same-tenant chain P99 ~706 µs |
-| ANK-069 | Enforce per-tenant `max_concurrent` | ai-gateway | 🔲 todo — ค่าถูกอ่านจาก policy แต่ยังไม่มีตัวนับ |
+| ANK-069 | Enforce per-tenant `max_concurrent` | ai-gateway | ✅ done — semaphore ต่อผู้เช่า, permit ครอบ SSE, 429 + audit |
 
-งาน Phase 1 ครบทั้ง 8 ขั้นตอนแล้ว (บวกขั้นที่ 9 = TLS + concurrency proof) — ดู `docs/pivot_ai_infra_security.md` §7 สำหรับรายละเอียด
+งาน Phase 1 ครบ 10 ขั้นตอนแล้ว (ขั้นที่ 9 = TLS + concurrency proof, ขั้นที่ 10 = per-tenant concurrency ceiling) — ดู `docs/pivot_ai_infra_security.md` §7 สำหรับรายละเอียด
 
 ---
 
