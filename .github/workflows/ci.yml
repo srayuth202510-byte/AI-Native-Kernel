@@ -12,6 +12,13 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
+    # Docker needed for testcontainers-based Qdrant tests
+    services:
+      docker:
+        image: docker:27-dind
+        options: --privileged --pid=host
+        env:
+          DOCKER_TLS_CERTDIR: ""
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -38,6 +45,14 @@ jobs:
           fi
           echo "Prebuilt objects:"
           ls -la crates/kernel-companion/prebuilt-bpf/
+
+      - name: Verify Docker available for testcontainers
+        run: |
+          docker version
+          docker run --rm hello-world
+
+      - name: Set Docker host for testcontainers
+        run: echo "DOCKER_HOST=unix:///var/run/docker.sock" >> $GITHUB_ENV
 
       - name: Run CI validation suite
         timeout-minutes: 75
