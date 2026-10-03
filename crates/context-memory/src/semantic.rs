@@ -365,7 +365,7 @@ impl SemanticStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{qdrant_container, with_qdrant};
+    use crate::test_utils::qdrant_container;
     use std::env;
 
     fn qdrant_url() -> String {
