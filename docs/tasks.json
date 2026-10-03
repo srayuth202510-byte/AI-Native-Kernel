@@ -790,5 +790,16 @@
     "module": "semantic-guard",
     "assignee": "AI",
     "due": ""
+  },
+  {
+    "id": "ANK-073",
+    "type": "feature",
+    "title": "Watchtower Phase A: metrics + alert rules + webhook dispatch",
+    "desc": "[done] crate ใหม่ watchtower ตาม design doc ที่อนุมัติแล้ว: SecurityEvent normalize จาก audit, /metrics ด้วย prometheus crate (convention เดียวกับ capability-security/src/metrics.rs), rules engine แบบ windowed ต่อ tenant (severity/dedup/cooldown, mock clock ในเทสต์), webhook sink กลาง (timeout 5s retry 3 backoff queue มีขอบเขต ทิ้งแบบนับได้), ต่อเข้า ai-gateway (feed จาก request path + /metrics route) default notify-only ทุกกฎ auto-suspend ปิด (opt-in ราย tenant) threshold อยู่ config ไม่ใช่โค้ด เสร็จ: crate watchtower (event/rules-dedup-cooldown/webhook-retry/metrics-prometheus, 22 tests) + wire เข้า ai-gateway (feed ทุก decision path, /metrics route, --alert-webhook + bearer ทาง env, pipeline watcher A9) default notify-only/observe-only threshold ใน default_rules() (tune โดย operator) A10 เลื่อน Phase B (ต้องมี baseline store) perf budget ไม่ขยับ",
+    "status": "done",
+    "priority": "high",
+    "module": "watchtower",
+    "assignee": "AI",
+    "due": ""
   }
 ]

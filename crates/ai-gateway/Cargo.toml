@@ -27,6 +27,9 @@ bytes = { workspace = true }
 capability-security = { path = "../capability-security" }
 semantic-guard = { path = "../semantic-guard" }
 extraction-det = { path = "../extraction-det" }
+watchtower = { path = "../watchtower" }
+prometheus = { workspace = true }
+secrecy = { workspace = true }
 async-stream = { workspace = true }
 # TLS termination — ring provider เหมือน context-memory/mesh_tls (H7) ไม่ดึง
 # aws-lc-rs ที่ต้องมี cmake/nasm ตอน build

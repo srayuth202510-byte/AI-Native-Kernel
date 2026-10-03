@@ -195,6 +195,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/v1/completions", post(completions))
         .route("/v1/embeddings", post(embeddings))
         .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics))
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
 }
@@ -202,6 +203,25 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
 /// จุดตรวจสุขภาพ — ไม่เปิดเผยข้อมูลภายใน
 async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
+}
+
+/// metrics ของ watchtower ในรูป Prometheus text — สำหรับ Grafana scrape
+///
+/// มีแค่ตัวนับ/เกจรวม ไม่มี PII, ไม่มี key, ไม่มี payload — ปลอดภัยพอให้
+/// เปิดบนพอร์ตเดียวกับ gateway ได้ (ต่างจาก audit ที่ต้องป้องกัน)
+async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    match watchtower::WatchtowerMetrics::render(state.core.watch_registry()) {
+        Ok(body) => (
+            StatusCode::OK,
+            [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+            body,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "metrics render failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "metrics unavailable").into_response()
+        }
+    }
 }
 
 async fn chat_completions(

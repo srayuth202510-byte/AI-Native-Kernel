@@ -13,6 +13,7 @@ members = [
     "crates/ai-gateway",
     "crates/semantic-guard",
     "crates/extraction-det",
+    "crates/watchtower",
 ]
 
 [workspace.dependencies]

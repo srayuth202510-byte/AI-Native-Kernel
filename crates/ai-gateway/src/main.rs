@@ -55,6 +55,11 @@ struct Args {
     /// PEM private key for TLS termination (must be paired with --tls-cert)
     #[arg(long, env = "ANK_GATEWAY_TLS_KEY")]
     tls_key: Option<PathBuf>,
+
+    /// Webhook URL for watchtower alerts — unset means observe-only
+    /// (metrics + rules still run, nothing leaves the process)
+    #[arg(long, env = "ANK_GATEWAY_ALERT_WEBHOOK")]
+    alert_webhook: Option<String>,
 }
 
 /// AI Infrastructure Security Gateway
@@ -113,6 +118,10 @@ fn merge_args(outer: &Args, inner: &Args) -> Args {
         log_level: inner.log_level.clone().or_else(|| outer.log_level.clone()),
         tls_cert: inner.tls_cert.clone().or_else(|| outer.tls_cert.clone()),
         tls_key: inner.tls_key.clone().or_else(|| outer.tls_key.clone()),
+        alert_webhook: inner
+            .alert_webhook
+            .clone()
+            .or_else(|| outer.alert_webhook.clone()),
     }
 }
 
@@ -173,6 +182,7 @@ fn build_config(args: &Args) -> Result<GatewayConfig, String> {
         guard_enabled: args.guard_enabled.unwrap_or(true),
         extraction_enabled: args.extraction_enabled.unwrap_or(true),
         tls: tls_settings(args)?,
+        alert_webhook_url: args.alert_webhook.clone(),
         ..defaults
     };
     config.validate().map_err(|e| e.to_string())?;
@@ -267,6 +277,57 @@ async fn serve(config: GatewayConfig) -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+
+    // watchtower dispatch: ต่อเมื่อ operator ตั้ง webhook เท่านั้น ไม่มี URL =
+    // observe-only (metrics + rules ทำงาน แต่ไม่มีอะไรออกนอก process)
+    // bearer อ่านจาก env อย่างเดียว ไม่รับผ่าน CLI (กันโผล่ใน ps/process list)
+    if let Some(url) = config.alert_webhook_url.clone() {
+        let bearer: Option<secrecy::SecretString> = match std::env::var("ANK_GATEWAY_ALERT_BEARER")
+        {
+            Ok(s) => match s.parse() {
+                Ok(token) => Some(token),
+                Err(e) => {
+                    eprintln!("Invalid ANK_GATEWAY_ALERT_BEARER: {e}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            },
+            Err(_) => None,
+        };
+        match watchtower::WebhookSink::new(&url, bearer) {
+            Ok(sink) => {
+                let dispatcher = Arc::new(watchtower::Dispatcher::start(
+                    sink,
+                    watchtower::DEFAULT_QUEUE_CAPACITY,
+                    Some(core.watch_metrics().clone()),
+                ));
+                core.attach_dispatcher(dispatcher.clone());
+                core.watch_metrics().pipeline_healthy.set(1);
+                // A9: watcher ตาบอด — dispatcher ตายต้องมีคนเห็นและร้อง
+                // (ร้องผ่าน log ตรงนี้เพราะร้องผ่าน pipeline ที่ตายไม่ได้)
+                let health = core.watch_metrics().clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        if !dispatcher.is_alive() {
+                            health.pipeline_healthy.set(0);
+                            tracing::error!(
+                                "watchtower dispatcher died — alerting pipeline is blind"
+                            );
+                            return;
+                        }
+                    }
+                });
+                tracing::info!(webhook = %url, "watchtower dispatch enabled");
+            }
+            Err(e) => {
+                eprintln!("Alert webhook setup failed: {e}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    } else {
+        core.watch_metrics().pipeline_healthy.set(1);
+        tracing::info!("watchtower observe-only mode (no alert webhook configured)");
+    }
 
     let addr: SocketAddr = match config.listen_addr.parse() {
         Ok(a) => a,

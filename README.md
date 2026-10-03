@@ -314,7 +314,7 @@ Environment variables: `ANK_GATEWAY_LISTEN`, `ANK_GATEWAY_UPSTREAM`, `ANK_GATEWA
 Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `scripts/run-privileged.sh cargo test -p kernel-companion --test privileged_h1_h2` (H2/H3).
 ---
 
-## 9. Task Tracking (ANK-060..070)
+## 9. Task Tracking (ANK-060..073)
 
 | ID | Title | Module | Status |
 |---|-------|--------|--------|
@@ -329,8 +329,11 @@ Privileged validation: `sudo scripts/validate-ebpf-attach.sh` (H1) และ `sc
 | ANK-068 | TLS termination + P99 under concurrent tenants | ai-gateway | ✅ done — TLS 1.3 in-process + 8-tenant P99 ~111 µs / same-tenant chain P99 ~706 µs |
 | ANK-069 | Enforce per-tenant `max_concurrent` | ai-gateway | ✅ done — semaphore ต่อผู้เช่า, permit ครอบ SSE, 429 + audit |
 | ANK-070 | Validate added latency vs real model backend | ai-gateway | ✅ done — TLS + Ollama, added P50 ~0.5 ms, inspection <1 ms ทั้ง 232 คำขอ |
+| ANK-071 | Thai-language prompt injection rules | semantic-guard | ✅ done — 4 กฎไทย, redteam 17/17 |
+| ANK-072 | Thai national ID PII kind (checksum) | semantic-guard | ✅ done — mod-11, redacted by default |
+| ANK-073 | Watchtower Phase A (metrics + rules + webhook) | watchtower | 🔄 in-progress — crate ใหม่ + ต่อ gateway แล้ว |
 
-งาน Phase 1 ครบ 11 ขั้นตอนแล้ว (ขั้นที่ 9 = TLS + concurrency proof, ขั้นที่ 10 = per-tenant concurrency ceiling, ขั้นที่ 11 = real-backend validation) — ดู `docs/pivot_ai_infra_security.md` §7 สำหรับรายละเอียด
+งาน Phase 1 ครบ 11 ขั้นตอนแล้ว (ขั้นที่ 9 = TLS + concurrency proof, ขั้นที่ 10 = per-tenant concurrency ceiling, ขั้นที่ 11 = real-backend validation) บวกงาน monitoring (ANK-073) — ดู `docs/pivot_ai_infra_security.md` §7 สำหรับรายละเอียด
 
 ---
 

@@ -122,7 +122,7 @@ V1..V7 (detectors ที่มีอยู่แล้ว)
 | A7 | Tenant ถูกระงับแล้วยังมีคนเรียก (abuse ต่อ / key หลุด) | HIGH | `tenant_suspended` >5 / 5min | แจ้ง + พิจารณา revoke key |
 | A8 | Host-plane: quarantine PID | CRITICAL | ทุกครั้งที่ T-cell สั่ง quarantine | แจ้ง + PID/tenant/เหตุผล |
 | A9 | Pipeline ตาบอด (meta-alert — สำคัญสุด) | CRITICAL | `pipeline_healthy=0` หรือ `alerts_dropped_total` เพิ่ม | แจ้งช่องทางสำรอง (rules engine ล้มต้องไม่พึ่งตัวเองแจ้ง) |
-| A10 | Latency anomaly ต่อ tenant (exfil ช้า / backend ผิดปกติ) | WARN | P99 latency เบี่ยง >3σ จาก baseline 7 วัน | แจ้ง + ชวนดู ไม่ auto-action |
+| A10 | Latency anomaly ต่อ tenant (exfil ช้า / backend ผิดปกติ) | WARN | P99 latency เบี่ยง >3σ จาก baseline 7 วัน | แจ้ง + ชวนดู ไม่ auto-action | **เลื่อนเป็น Phase B** — engine ปัจจุบันนับผลรวมในหน้าต่างเท่านั้น ไม่มี distribution/baseline store ใส่ตอนนี้คือ threshold มั่วกว่าเดิม |
 
 ## 5.5 Red-team corpus & replay harness (สร้างแล้ว 2026-10-03 — ไม่รอ Phase A)
 
@@ -203,5 +203,45 @@ task (Thai rules / Thai-ID kind) หรือกลายเป็น blocked (�
 5. **เกณฑ์ A1–A10 รับได้ไหม** — ตัวเลขตั้งต้นมาจากอากาศ ต้อง tune จาก traffic จริง
    ใครเป็นเจ้าของการ tune (platform team หรือเรา)?
 
-> อนุมัติเอกสารนี้ = ตอบ 5 ข้อนี้ + ตั้ง task ANK-071 (Phase A) ใน `docs/tasks.json`
-> งานโค้ดเริ่มได้ทันทีหลังอนุมัติ ไม่ต้องรอ design รอบสอง
+## 8.5 ตัวอย่าง webhook payload (สำหรับคนต่อ Slack/PagerDuty)
+
+`POST <url>` + `Authorization: Bearer <token>` (ถ้าตั้งค่า) + body:
+
+```json
+{
+  "schema": "watchtower.alert/v1",
+  "rule_id": "injection-burst",
+  "tenant_id": "acme",
+  "severity": "high",
+  "total": 12,
+  "window_started_ms": 1790994992000,
+  "sample": {
+    "category": "prompt_injection",
+    "reason": "prompt_injection_detected",
+    "request_id": "f13f5943-7569-4cce-a373-99de2cd5bf90",
+    "evidence": "instr-override,th-instr-override"
+  }
+}
+```
+
+- **Slack**: Incoming Webhook รับ JSON นี้แล้ว format ต่อเอง (มี `rule_id` +
+  `sample.request_id` พร้อมสืบกลับไปหา audit chain)
+- **PagerDuty Events API v2**: แมป `severity`: critical/high → `critical`,
+  warn → `warning`, info → `info`; `rule_id` → `dedup_key` (dedup ฝั่งเราทำแล้ว
+  ที่ cooldown — PagerDuty จะได้ไม่ซ้ำซ้อน)
+- `schema` มี version ไว้เผื่อเปลี่ยนรูปร่างโดยไม่เงียบ
+
+## 9. คำตอบที่อนุมัติแล้ว (2026-10-03 → task ANK-073)
+
+1. **ช่องทางแรก: generic webhook sink** (JSON/HTTPS + bearer + timeout + retry) —
+   Slack/PagerDuty/Opsgenie/LINE รับ webhook ได้หมด ไม่ผูก vendor ไม่เขียนซ้ำ
+2. **Auto-response วันแรก: notify-only ทุกกฎ** — `auto_suspend: false` default,
+   opt-in ราย tenant หลังดูข้อมูล 2 สัปดาห์ A2 เป็นตัวเต็งตัวแรก พร้อม circuit
+   breaker (auto-action พุ่งทั้งระบบ = freeze + meta-alert)
+3. **ชื่อ crate: `watchtower`**
+4. **ไม่เก็บ event ดิบซ้ำ** — audit chain คือ store เดียว alert เก็บ pointer
+   (`tenant + request_id + chain hash`) rules engine เก็บแค่ counter แบบ windowed
+5. **คน tune คือ platform team** — threshold อยู่ใน config ไม่ใช่โค้ด 2 สัปดาห์แรก
+   ทุกกฎโหมด observe (log อย่างเดียว) red-team corpus คือเครื่องมือตรวจการ tune
+
+> อนุมัติแล้ว งานโค้ด Phase A เริ่มได้ทันที ไม่ต้องรอ design รอบสอง
