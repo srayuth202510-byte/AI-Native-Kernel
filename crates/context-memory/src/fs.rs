@@ -616,17 +616,31 @@ mod tests {
 
     // ── Integration tests (require Qdrant) ─────────────────────────
 
+    fn is_docker_error(e: &anyhow::Error) -> bool {
+        let msg = e.to_string().to_lowercase();
+        msg.contains("docker not available")
+            || msg.contains("socket not found")
+            || msg.contains("connection refused")
+            || msg.contains("connection reset")
+            || msg.contains("no such file or directory")
+            || msg.contains("permission denied")
+            || msg.contains("timeout")
+            || msg.contains("failed to pull")
+            || msg.contains("docker daemon")
+    }
+
     #[tokio::test]
     async fn test_semantic_file_system_operations() -> Result<()> {
         // Try testcontainers first, fall back to external Qdrant if Docker unavailable
         let url = match crate::test_utils::qdrant_container().await {
             Ok(container) => container.http_url(),
-            Err(e) if e.to_string().contains("Docker not available") => {
+            Err(e) if is_docker_error(&e) => {
                 if check_qdrant_online().await {
                     qdrant_url()
                 } else {
                     eprintln!(
-                        "Skipping test: No Qdrant available (Docker not available, no external QDRANT_URL)"
+                        "Skipping test: No Qdrant available (Docker error: {}, no external QDRANT_URL)",
+                        e
                     );
                     return Ok(());
                 }

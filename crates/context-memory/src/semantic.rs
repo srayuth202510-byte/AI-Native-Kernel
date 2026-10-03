@@ -457,6 +457,19 @@ mod tests {
         assert_eq!(result[0].1.get("score_val").unwrap(), "2.71");
     }
 
+    fn is_docker_error(e: &anyhow::Error) -> bool {
+        let msg = e.to_string().to_lowercase();
+        msg.contains("docker not available")
+            || msg.contains("socket not found")
+            || msg.contains("connection refused")
+            || msg.contains("connection reset")
+            || msg.contains("no such file or directory")
+            || msg.contains("permission denied")
+            || msg.contains("timeout")
+            || msg.contains("failed to pull")
+            || msg.contains("docker daemon")
+    }
+
     #[tokio::test]
     async fn test_qdrant_semantic_store() -> Result<()> {
         // Try testcontainers first, fall back to external Qdrant if Docker unavailable
@@ -465,13 +478,14 @@ mod tests {
                 let url = container.http_url();
                 run_qdrant_semantic_store_test(&url).await
             }
-            Err(e) if e.to_string().contains("Docker not available") => {
+            Err(e) if is_docker_error(&e) => {
                 // Fall back to external Qdrant if configured
                 if check_qdrant_online().await {
                     run_qdrant_semantic_store_test(&qdrant_url()).await
                 } else {
                     eprintln!(
-                        "Skipping test: No Qdrant available (Docker not available, no external QDRANT_URL)"
+                        "Skipping test: No Qdrant available (Docker error: {}, no external QDRANT_URL)",
+                        e
                     );
                     Ok(())
                 }
@@ -487,12 +501,13 @@ mod tests {
                 let url = container.http_url();
                 run_qdrant_semantic_store_multiple_points_test(&url).await
             }
-            Err(e) if e.to_string().contains("Docker not available") => {
+            Err(e) if is_docker_error(&e) => {
                 if check_qdrant_online().await {
                     run_qdrant_semantic_store_multiple_points_test(&qdrant_url()).await
                 } else {
                     eprintln!(
-                        "Skipping test: No Qdrant available (Docker not available, no external QDRANT_URL)"
+                        "Skipping test: No Qdrant available (Docker error: {}, no external QDRANT_URL)",
+                        e
                     );
                     Ok(())
                 }
@@ -508,12 +523,13 @@ mod tests {
                 let url = container.http_url();
                 run_qdrant_semantic_store_empty_search_test(&url).await
             }
-            Err(e) if e.to_string().contains("Docker not available") => {
+            Err(e) if is_docker_error(&e) => {
                 if check_qdrant_online().await {
                     run_qdrant_semantic_store_empty_search_test(&qdrant_url()).await
                 } else {
                     eprintln!(
-                        "Skipping test: No Qdrant available (Docker not available, no external QDRANT_URL)"
+                        "Skipping test: No Qdrant available (Docker error: {}, no external QDRANT_URL)",
+                        e
                     );
                     Ok(())
                 }

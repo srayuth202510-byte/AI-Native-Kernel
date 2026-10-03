@@ -12,6 +12,9 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
+      # Docker service runs in separate container - use TCP
+      DOCKER_HOST: tcp://docker:2375
+      DOCKER_TLS_CERTDIR: ""
     # Docker needed for testcontainers-based Qdrant tests
     services:
       docker:
@@ -61,9 +64,6 @@ jobs:
             echo "Waiting for Docker daemon... ($i/30)"
             sleep 2
           done
-
-      - name: Set Docker host for testcontainers
-        run: echo "DOCKER_HOST=unix:///var/run/docker.sock" >> $GITHUB_ENV
 
       - name: Run CI validation suite
         timeout-minutes: 75
