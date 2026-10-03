@@ -757,5 +757,16 @@
     "module": "ai-gateway",
     "assignee": "AI",
     "due": ""
+  },
+  {
+    "id": "ANK-070",
+    "type": "feature",
+    "title": "Validate gateway added latency against a real model backend",
+    "desc": "[done] ใช้ Ollama ในเครื่อง (qwen2.5-coder:7b + nomic-embed-text, CPU) เป็น backend จริงแทน mock: gateway เปิด TLS จริง (rcgen self-signed, client trust ไม่มีปิด verification) ยิง paired direct-vs-gatewayed 8 tenants ผล: seq embeddings added P50 ~0.4-0.6ms (3 รัน: 579/414/564us) ต่ำกว่างบ 2ms ~4เท่า, server-side inspection P99 <1ms ทั้ง 232 คำขอรวมโหลด concurrent, audit chain ตรวจผ่านทุก tenant, ไม่มี 429 ผิดพลาด บทเรียนระเบียบวิธี: paired-diff P99 วัด spike asymmetry ของ backend (direct arm เองมี tail 47-67ms, zeros 30-40%) จึง gate ที่ P50 + inspection P99 แล้วรายงาน tail ไว้เฉย ๆ ดู tests/real_backend.rs (ignored, รันมือ) เหลือ: vLLM บน GPU / separate cores / production network ยังไม่ได้วัด",
+    "status": "done",
+    "priority": "high",
+    "module": "ai-gateway",
+    "assignee": "AI",
+    "due": ""
   }
 ]

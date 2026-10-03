@@ -1,8 +1,9 @@
 # Pivot: AI-Native Kernel → AI Infrastructure Security Platform
 
 > Status: **accepted — in execution.** Committed 2026-09; Phase 1 steps 1–8 of §7
-> are shipped, plus step 9 (ANK-068, TLS + concurrent-tenant P99) and step 10
-> (ANK-069, per-tenant concurrency ceiling). Supersedes the
+> are shipped, plus step 9 (ANK-068, TLS + concurrent-tenant P99), step 10
+> (ANK-069, per-tenant concurrency ceiling) and step 11 (ANK-070, real-backend
+> validation). Supersedes the
 > "AI agent kernel" positioning in `README.md` /
 > `docs/ai_native_kernel_plan_v2.html`. The kernel code is **retained**, not replaced.
 >
@@ -211,6 +212,8 @@ ordering of layers is the durable result, not the third digit.
 | **`inspect_request`, everything incl. audit write** | **~23 µs** | **~36–52 µs** | **~380–550 µs** |
 | 8 tenants concurrent (250 req each, 4 workers) | ~46 µs | ~111 µs | ~1.3 ms |
 | **1 tenant, 16 concurrent writers on one chain** | **~414 µs** | **~706 µs** | **~2.0 ms** |
+| real backend, TLS, added cost per pair (seq embeddings, n=100 ×3 runs) | P50 ~0.4–0.6 ms | (backend-noise dominated, reported not gated) | — |
+| real backend, server-side inspection under concurrent load (n=232) | <1 ms | <1 ms | <1 ms |
 
 The last row of the single-stream block is the one that matters: `inspect_request` is what the
 handler actually calls, and it writes the per-tenant audit chain **inline** —
@@ -264,6 +267,7 @@ Each step is independently shippable and independently revertable.
 | 8 | Reposition docs/README | ANK-067 | ✅ | — |
 | 9 | TLS termination in-process + P99 under concurrent tenants | ANK-068 | ✅ | HTTPS enforced E2E; plaintext/untrusted-CA rejected; per-tenant and same-tenant chain P99 asserted in `perf_budget` |
 | 10 | Enforce per-tenant `max_concurrent` | ANK-069 | ✅ | Semaphore per tenant; permit held across the full SSE stream; over-ceiling → 429 + audit entry |
+| 11 | Validate added latency vs real model backend | ANK-070 | ✅ | TLS gateway → Ollama (CPU), paired direct-vs-gatewayed, 8 tenants; added P50 ~0.5 ms, inspection <1 ms; `real_backend.rs` (manual) |
 
 On step 7, verification is done (`ank-cli verify-audit <file>` for the host plane,
 `ai-gateway verify-audit --dir <dir>` across every data-plane shard) and SIEM export is
@@ -286,12 +290,20 @@ Stated up front so we can watch the signals:
    same-tenant case (16 writers on one chain) is the tight one: 706 µs P99 with a ~2 ms max.
    The CI stage runs the budget as `required` since 2026-10-02 (buyer decision §9.1) — a
    regression blocks the merge. If shared-runner noise ever flakes it, revert to `non-blocking`
-   only with evidence attached, not silently. Two gaps remain, and they are the reason this is
-   still a tripwire rather than a published benchmark: not validated against a real vLLM host
-   with TLS and concurrent tenants on separate cores — the numbers above are in-process
-   inspection on a shared dev box, and TLS socket cost is excluded entirely. Per-tenant
-   concurrency is now capped (ANK-069), but "capped" and "fast" are different claims and only
-   the first one is measured.
+   only with evidence attached, not silently. One gap is now half-closed (ANK-070):
+   the gateway was pointed at a real model backend (local Ollama, CPU) behind real TLS,
+   with paired direct-vs-gatewayed requests across 8 tenants (`real_backend.rs`, run by
+   hand — 3 runs). Systematic added cost is **P50 ~0.4–0.6 ms** (proxy + TLS mechanics;
+   ~4x under budget) and server-side inspection stayed **sub-millisecond for all 232
+   requests including under concurrent load**, with every audit chain verifying and no
+   spurious 429s. The methodology lesson is recorded in the test: paired-diff P99 does
+   *not* measure the gateway's tail — the direct arm itself shows 47–67 ms tails on a
+   36 ms median and 30–40% of pairs come back zero-or-negative, so the P99 of diffs
+   measures backend spike asymmetry. The test therefore gates P50 + inspection P99 and
+   reports the tails without gating them. What remains genuinely unmeasured — the reason
+   this is still a tripwire rather than a published benchmark — is a GPU vLLM fleet on
+   separate cores over a production network. Per-tenant concurrency is capped (ANK-069),
+   but "capped" and "fast" are different claims and only the first one is measured.
 2. **The PII/signature layer gets dismissed as "just regex."** It probably will be. The
    answer is the host plane — the regex layer is the on-ramp, not the pitch.
 3. **eBPF/LSM deployment friction.** Requiring privileged, kernel-specific setup to get
