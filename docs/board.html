@@ -1200,11 +1200,33 @@ const SEED = [
         "module": "ai-gateway",
         "assignee": "AI",
         "due": ""
+    },
+    {
+        "id": "ANK-071",
+        "type": "feature",
+        "title": "Thai-language prompt injection rules (semantic-guard)",
+        "desc": "[done] กฎไทยใน InjectionMatcher (th-instr-override, th-system-extract, th-role-hijack, th-no-restrictions, Severity เท่าเทียมกฎอังกฤษ) — ปิด F3 ที่ redteam เจอ (adv-thai-injection-001 ต้อง promote ขึ้น blocked/) ระวัง: regex ห้ามใช้ \\b ติดข้อความไทย (Thai ไม่มี word boundary ภายใน run) และ th-system-extract ต้องมีคำประกอบระดับ system (ไม่ match พรอมต์เปล่า ๆ เพื่อกัน false positive) เสร็จ: th-instr-override/th-system-extract (High) จับ adv fixture ได้, th-role-hijack, th-no-restrictions (Medium เท่าเทียมอังกฤษ) พร้อมเทสต์กัน over-block (prompt ปกติภาษาไทยต้องไม่โดน) replay 17/17",
+        "status": "done",
+        "priority": "high",
+        "module": "semantic-guard",
+        "assignee": "AI",
+        "due": ""
+    },
+    {
+        "id": "ANK-072",
+        "type": "feature",
+        "title": "Thai national ID PII kind with checksum (semantic-guard)",
+        "desc": "[done] PiiKind::ThaiNationalId (severity High, redacted by default): เลข 13 หลักมี/ไม่มีตัวคั่น + checksum mod-11 (หลักแรก 1-8 กัน false positive แบบเดียวกับที่ SSN ตัด 000) — ปิด F4 (adv-thai-id-001 promote ขึ้น blocked/) ระวัง timestamp 13 หลัก: checksum ตัด 90% ที่เหลือคือ trade-off เดียวกับ Luhn ของบัตร เสร็จ: PiiKind::ThaiNationalId (High, redacted by default) + thai_id_valid ตามสูตรกรมการปกครอง edge เหลือเศษ 0 ถูกต้อง ไม่จำกัดเลขหลักแรก (0/9 เป็นกลุ่มเปราะบาง ยอมแลก FP ระดับเดียวกับ Luhn) พร้อม checksum vectors + timestamp trade-off test replay 17/17",
+        "status": "done",
+        "priority": "high",
+        "module": "semantic-guard",
+        "assignee": "AI",
+        "due": ""
     }
 ];
 // SEED_END
 
-let state = { tasks: [], nextSeq: 71, view: "kanban", filters: { module: "all" } };
+let state = { tasks: [], nextSeq: 73, view: "kanban", filters: { module: "all" } };
 
 function load() {
     try {

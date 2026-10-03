@@ -182,6 +182,7 @@ impl Default for GuardConfig {
         redact_kinds.insert(PiiKind::CreditCard);
         redact_kinds.insert(PiiKind::UsSsn);
         redact_kinds.insert(PiiKind::ApiKey);
+        redact_kinds.insert(PiiKind::ThaiNationalId);
         Self {
             max_input_bytes: 256 * 1024,
             budget: Duration::from_millis(2),

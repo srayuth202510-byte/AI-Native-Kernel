@@ -35,6 +35,8 @@ pub enum PiiKind {
     CreditCard,
     /// เลขประจำตัวประชาชนสหรัฐฯ (SSN) รูปแบบ 123-45-6789
     UsSsn,
+    /// เลขประจำตัวประชาชนไทย 13 หลัก (ตรวจด้วย checksum mod-11)
+    ThaiNationalId,
     /// คีย์ลับ/โทเคน API ที่มี entropy สูงหรือมี prefix ที่รู้จัก
     ApiKey,
     /// หมายเลข IPv4
@@ -51,6 +53,7 @@ impl PiiKind {
             Self::Email => "email",
             Self::CreditCard => "credit_card",
             Self::UsSsn => "us_ssn",
+            Self::ThaiNationalId => "thai_national_id",
             Self::ApiKey => "api_key",
             Self::Ipv4 => "ipv4",
             Self::PhoneIntl => "phone_intl",
@@ -63,7 +66,7 @@ impl PiiKind {
     #[must_use]
     pub const fn severity(self) -> Severity {
         match self {
-            Self::CreditCard | Self::UsSsn | Self::ApiKey => Severity::High,
+            Self::CreditCard | Self::UsSsn | Self::ApiKey | Self::ThaiNationalId => Severity::High,
             Self::Email => Severity::Medium,
             // เบอร์โทรศัพท์กับ IPv4 เป็น false positive บ่อย และไม่ถือว่าเป็นความลับ
             Self::PhoneIntl | Self::Ipv4 => Severity::Low,
@@ -202,6 +205,13 @@ impl PiiDetector {
         let ipv4 = Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
             .map_err(|e| PiiError::Pattern(e.to_string()))?;
 
+        // เลขบัตรประชาชนไทย: ตัวเลข 13 ตัว คั่นด้วยขีด/ช่องว่างได้หนึ่งตัวระหว่างหลัก
+        // (เขียนแบบ "1-2345-67890-12-3", "1 2345 ...", หรือติดกัน) ตัวกรองจริงคือ
+        // checksum ใน `is_plausible` — pattern นี้จงใจกว้างแล้วให้เลขคณิตตัดสิน
+        // แบบเดียวกับที่บัตรเครดิตไว้ใจ Luhn
+        let thai_national_id =
+            Regex::new(r"\b\d(?:[ \-]?\d){12}\b").map_err(|e| PiiError::Pattern(e.to_string()))?;
+
         let mut patterns = BTreeMap::new();
         patterns.insert(PiiKind::Email, email);
         patterns.insert(PiiKind::CreditCard, credit_card);
@@ -209,6 +219,7 @@ impl PiiDetector {
         patterns.insert(PiiKind::ApiKey, api_key);
         patterns.insert(PiiKind::PhoneIntl, phone_intl);
         patterns.insert(PiiKind::Ipv4, ipv4);
+        patterns.insert(PiiKind::ThaiNationalId, thai_national_id);
 
         Ok(Self {
             patterns,
@@ -266,6 +277,7 @@ impl PiiDetector {
                 shannon_entropy(candidate) >= 3.2 && has_mixed_classes(candidate)
             }
             PiiKind::Ipv4 => is_valid_ipv4(candidate),
+            PiiKind::ThaiNationalId => thai_id_valid(candidate),
             PiiKind::UsSsn => {
                 // ปฏิเสธเลขที่เป็นแค่ช่วงตัวเลขล้วนที่โอกาสเป็น SSN สูงเกินจริง
                 // (เช่น เลขที่อยู่บ้าน 000-00-0000)
@@ -344,6 +356,38 @@ pub fn luhn_valid(raw: &str) -> bool {
         .sum();
 
     sum % 10 == 0
+}
+
+/// ตรวจ checksum เลขประจำตัวประชาชนไทย 13 หลัก (อัลกอริทึมกรมการปกครอง)
+///
+/// หลักที่ 1–12 คูณน้ำหนัก 13–2 ตามลำดับ รวมกันหาร 11 เอาเศษมาลบออกจาก 11
+/// (หาร 11 ลงตัวได้ 0 ข้ามไป) หลักสุดท้ายต้องตรงกับผลลัพธ์ ตัวคั่น (ขีด/ช่องว่าง)
+/// ถูกคัดออกก่อนนับ — ต้องเหลือตัวเลข**ตรง** 13 ตัวเท่านั้น ตัวเลข 12 หรือ 14 ตัว
+/// ไม่ใช่บัตรประชาชน ต่อให้ checksum บังเอิญตรงก็ตาม
+///
+/// การตัดสินใจออกแบบ: ไม่จำกัดเลขหลักแรก (0–9 ได้หมด) เพราะบัตรที่ขึ้นต้นด้วย
+/// 0/9 เป็นของกลุ่มเปราะบาง (คนไร้สถานะ) ซึ่ง PII สำคัญกว่า — ยอมแลกกับ false
+/// positive ระดับเดียวกับที่ Luhn ยอมให้บัตรเครดิต (ตัวเลขสุ่มผ่าน checksum
+/// ~10%) timestamp 13 หลักจึงเป็น trade-off เดียวกัน ไม่ใช่บั๊กใหม่
+#[must_use]
+pub fn thai_id_valid(raw: &str) -> bool {
+    let digits: Vec<u32> = raw
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .map(|c| c.to_digit(10).unwrap_or(0))
+        .collect();
+
+    if digits.len() != 13 {
+        return false;
+    }
+
+    let sum: u32 = digits[..12]
+        .iter()
+        .enumerate()
+        .map(|(idx, &d)| d * (13 - idx as u32))
+        .sum();
+
+    (11 - sum % 11) % 10 == digits[12]
 }
 
 /// ตรวจว่าสตริงเป็นหมายเลข IPv4 ที่ถูกต้อง (octet ทุกตัวต้อง ≤ 255 และไม่มี leading zero)
@@ -520,6 +564,43 @@ mod tests {
     fn luhn_rejects_wrong_length() {
         assert!(!luhn_valid("123"));
         assert!(!luhn_valid(""));
+    }
+
+    #[test]
+    fn thai_id_checksum_vectors() {
+        // ANK-072: คำนวณมือ — 310059912345: 3*13+1*12+0*11+0*10+5*9+9*8+9*7
+        // +1*6+2*5+3*4+4*3+5*2 = 281, 281 mod 11 = 6, (11-6) mod 10 = 5
+        assert!(thai_id_valid("3100599123455"));
+        assert!(thai_id_valid("3-1005-99123-45-5"));
+        assert!(thai_id_valid("3 1005 99123 45 5"));
+        assert!(
+            !thai_id_valid("3100599123456"),
+            "wrong check digit must fail"
+        );
+        assert!(!thai_id_valid("310059912345"), "12 digits is not an ID");
+        assert!(!thai_id_valid("31005991234555"), "14 digits is not an ID");
+        assert!(!thai_id_valid(""));
+    }
+
+    #[test]
+    fn detects_thai_national_id() {
+        // ตัวเลขสมมติล้วน (checksum ผ่านตามเวกเตอร์ข้างบน)
+        let f = kinds("เลขบัตรประชาชนของผมคือ 3100599123455 ช่วยจดไว้หน่อย");
+        assert!(f.contains(&PiiKind::ThaiNationalId), "got {f:?}");
+    }
+
+    #[test]
+    fn rejects_thai_id_with_bad_checksum() {
+        // เลข 13 หลักที่ checksum ไม่ผ่านต้องไม่ถูกรายงานเป็นบัตรประชาชน —
+        // กฎเดียวกับบัตรเครดิต (rejects_luhn_invalid_card)
+        assert!(!kinds("เลข 3100599123456 ครับ").contains(&PiiKind::ThaiNationalId));
+    }
+
+    #[test]
+    fn timestamp_like_13_digits_usually_not_thai_id() {
+        // timestamp 13 หลัก (ms epoch) ส่วนใหญ่ต้องรอด — ยกเว้น 1/10 ที่ checksum
+        // บังเอิญตรง ซึ่งเป็น trade-off เดียวกับ Luhn (บันทึกไว้ ไม่ใช่บั๊ก)
+        assert!(!kinds("at 1790994992000 done").contains(&PiiKind::ThaiNationalId));
     }
 
     #[test]

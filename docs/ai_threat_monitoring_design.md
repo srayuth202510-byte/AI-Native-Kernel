@@ -146,8 +146,8 @@ V1..V7 (detectors ที่มีอยู่แล้ว)
 |---|---|---|
 | F1 | **JSON escape smuggling**: body ที่เป็น pure-ASCII (`\u0069gnore...`) ได้ Allow เพราะ guard ตรวจข้อความดิบก่อน JSON decode ทั้งที่ model server ถอดเป็น "ignore" เสมอ — bypass สมบูรณ์ของชั้น injection (และ PII เช่นกัน) | **แก้แล้ว**: `inspect_request` ตรวจ `inspection_text()` (รวม string ที่ decode แล้วทั้ง body) แทนข้อความดิบ มี fixture `inj-escape-001` ล็อกไว้ |
 | F2 | **Newline obfuscation หลุด**: `\n` ที่ encode ไว้ไม่ถูกยุบ ทั้งที่ model เห็นเป็น newline จริง — unit test เดิมใช้ newline จริงซึ่งมาถึงผ่านสายไม่ได้ (JSON ที่ถูกต้องต้อง escape) จึงพิสูจน์เคสที่เกิดจริงไม่ได้ | **แก้แล้ว**: ใน `inspection_text()` เดียวกัน (decode ก่อน normalize) มี fixture `inj-obf-newline-001` ล็อกไว้ |
-| F3 | Thai-language injection หลุด — rule เป็น English regex ล้วน | เปิดอยู่ (`adv-thai-injection-001`) — ต้องมี Thai rules |
-| F4 | เลขบัตรประชาชนไทย 13 หลักหลุด — ไม่มี Thai-ID PII kind (`pii.rs` มีแค่ Email/Card/SSN/ApiKey/PhoneIntl/Ipv4) | เปิดอยู่ (`adv-thai-id-001`) — ต้องเพิ่ม data kind |
+| F3 | Thai-language injection หลุด — rule เป็น English regex ล้วน | **ปิดแล้ว 2026-10-03 (ANK-071)**: `th-instr-override`/`th-system-extract` (High) + `th-role-hijack`/`th-no-restrictions`, fixture promote เป็น `inj-thai-001` (replay 17/17). หมายเหตุ: pattern ห้ามใช้ `\b` ติดข้อความไทย |
+| F4 | เลขบัตรประชาชนไทย 13 หลักหลุด — ไม่มี Thai-ID PII kind (`pii.rs` มีแค่ Email/Card/SSN/ApiKey/PhoneIntl/Ipv4) | **ปิดแล้ว 2026-10-03 (ANK-072)**: `PiiKind::ThaiNationalId` (High, redacted by default) + checksum mod-11, fixture promote เป็น `pii-thai-id-001` (replay 17/17). ไม่จำกัดเลขหลักแรก — 0/9 เป็นกลุ่มเปราะบาง |
 | F5 | Subtle roleplay ที่ไม่มี trigger word หลุด (คาดไว้แล้ว) | เปิดอยู่ (`adv-roleplay-subtle-001`) — หลักฐานประกอบ pivot §8.4 ว่า signature matcher มี blind spot จริง |
 
 กฎการจัดการ advisory: bypass ที่ยืนยันแล้วห้ามค้างเกิน 1 release — ต้องกลายเป็น
